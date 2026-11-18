@@ -488,18 +488,14 @@ system folder, a folder below `/var` or `/.snapshots` among them, outside the
 hidden root for another part of that filesystem, while the mount there shows
 it, and the crypttab lines without `tcrypt-hidden`, `swap` or `tmp` that the
 boot opens as LUKS for the LUKS device that filesystem lies on while the decoy
-mounts another part of it at `/` or by such a line. On NixOS, for such a root
-while the decoy mounts another part of that filesystem at `/` or at a system
-folder, `suspicious-nails-reference` lets be the names the decoy's
-`/etc/nixos` gives the devices that filesystem lies on as the `device` or
-`label` of its `fileSystems` entries for `/` and its system folders and as the
-name or `device` of its `boot.initrd.luks.devices` entries, as
-`hardware-configuration.nix` does for `/` and `/home`, where such an entry
-holds nothing but plain literals, as `nixos-generate-config` writes it. It
-still refuses such a name anywhere else, an entry's options among them, any
-other expression in such an entry, the root's mount point, the root's own
-folder and its name inside the filesystem where the text gives them (the
-check reads text and does not evaluate Nix), and a name of any other device.
+mounts another part of it at `/` or by such a line. Nor does it cover
+`suspicious-nails-reference` on NixOS: the check still refuses such a root
+while the decoy's `/etc/nixos` names a device that filesystem lies on, as
+`hardware-configuration.nix` usually does, since it reads the configuration as
+text and cannot tell whether Nix uses such a name only for the decoy's own
+mounts; a later release may tell these apart by evaluating the configuration.
+For such a root it also refuses a line that names the root's own folder or
+subvolume, with the flag or without it.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or

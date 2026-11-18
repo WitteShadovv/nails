@@ -1104,38 +1104,18 @@ of this changelog for that version becomes the release notes word for word, and
   where it used low urgency. A desktop may show a notification of low urgency without a banner, so
   the channel could be reported as planted while the desktop showed no banner for it. The operator
   guide says when `plant` counts the channel as planted.
-- On NixOS, with `--allow-decoy-storage`, `suspicious-nails-reference` lets be the decoy's own names
-  for the filesystem a hidden root the flag accepts is a folder or a btrfs subvolume of, where the
-  decoy itself mounts another part of that filesystem at `/` or at a system folder. A name of a
-  device that filesystem lies on (its device path, kernel name, `/dev/block` link, `/dev/disk/by-*`
-  links, uuid, `PARTUUID`, label, partition label or LUKS mapping) passes where `/etc/nixos` gives
-  it as the `device` or `label` of a `fileSystems` entry for `/` or a system folder, or in the name
-  or `device` of a `boot.initrd.luks.devices` entry, where that entry is written as
-  `nixos-generate-config` writes it: `"…"` strings that end on their line and hold no interpolation,
-  lists and sets of them, and `true`, `false` or a number as the value of an attribute other than
-  `device` and `label`. The check says how many lines it let be. Before, the
-  `hardware-configuration.nix` of nearly every install, which names the device of `/` and `/home`,
-  failed the check for the flag's documented cases (a bind of a folder of `/`, a subvolume beside
-  `/home`). The devices come from the attach gate's own decision, which the check makes again
-  through the automount guard, by kernel name and device number, and a device the kernel shows
-  otherwise while the check reads it keeps its names. Still refused, with the flag too: such a name
-  anywhere else (an entry for another folder such as `/btr_pool`, an entry's options,
-  `boot.resumeDevice`, a service's own settings, a `let` binding, a comment), every other expression
-  in such an entry or around the entries in the value of `fileSystems` or `boot.initrd.luks.devices`
-  (`lib.mkForce`, `lib.concatStrings`, a `+`, a parenthesis, `if`, `let`, `inherit`, a reference
-  such as `config.fileSystems."/".device`, a path, an interpolation), whatever it builds, the root's
-  mount point and its units, the folder the root is as another mount of the filesystem shows it, the
-  root's own name inside the filesystem wherever it stands as a word of its own, comments included,
-  or as a defined attribute name (`subvol=./@vault`, `/btr_pool/@vault`, btrbk's
-  `subvolume."@vault"`), on btrfs a `subvolid=` with the subvolume's id in any base the kernel reads
-  or that is no number, a `subvol=`, `subvolid=` (both on btrfs) or `X-mount.subdir=` value that is
-  empty or holds an interpolation, a name of any other device the volume is stored on, a place that
-  may give such a name and cannot be read, NAILS's own text and the word `nails`. The root's own
-  names and these expressions count only with the flag. Without the flag, and for a root that is the
-  whole filesystem, that the decoy mounts no other part of at `/` or at a system folder, or whose
-  storage cannot be judged, every name refuses as before. The check now also reads a path with `.`
-  components (`/mnt/./data`) as the kernel does, and a line with the escapes of its strings read as
-  Nix reads them (see Fixed), with or without the flag.
+- On NixOS, for a hidden root that is a folder or a btrfs subvolume of a filesystem the decoy uses,
+  `suspicious-nails-reference` also refuses a line of `/etc/nixos` that names the root's own place,
+  with `--allow-decoy-storage` or without it: the folder the root is as another mount of that
+  filesystem shows it, the root's own name inside the filesystem wherever it stands as a word of its
+  own, comments included, or as a defined attribute name (`subvol=./@vault`, `/btr_pool/@vault`,
+  btrbk's `subvolume."@vault"`), on btrfs a `subvolid=` with the subvolume's id in any base the
+  kernel reads or one that is no number, and a `subvol=` (on btrfs) or `X-mount.subdir=` value that
+  is empty or holds an interpolation. It still refuses such a root while `/etc/nixos` names a device
+  that filesystem lies on, as `hardware-configuration.nix` usually does, with the flag too: it reads
+  text and cannot tell whether Nix uses such a name only for the decoy's own mounts. Its fix now
+  says so. A later release may tell these apart by evaluating the configuration. The check now also
+  reads a path with `.` components (`/mnt/./data`) as the kernel does.
 
 ### Fixed
 
@@ -1223,6 +1203,7 @@ of this changelog for that version becomes the release notes word for word, and
   `"/dev/mapper/d\ata"`, `luks.devices."d\ata"`, `inherit "d\ata";` in a `luks.devices` block) is
   refused as the plain name is, and so is a crypttab line that starts after a newline a string
   writes as an escape (`"x /dev/a none\ndata /dev/sdc1 none luks"`). Before, such a line passed.
+
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
@@ -2749,18 +2730,18 @@ of this changelog for that version becomes the release notes word for word, and
   `/` and its system folders that mount another part of that filesystem, while their mounts are
   there, and the crypttab lines its boot opens for the device that filesystem lies on (see Fixed),
   on an encrypted decoy too, while a line for another folder still fails it. On NixOS
-  `suspicious-nails-reference` lets be the names the decoy's `/etc/nixos` gives the devices that
-  filesystem lies on, as `hardware-configuration.nix` does for `/` and `/home` (see Changed). A
-  separate drive that a line of the fstab mounts at `/srv` passes `hidden-volume` with the flag's
-  warning, and `backend-entries` refuses that line, which mounts the volume itself. One also mounted
-  at `/srv` by hand is refused, and so is the copy that mount propagation makes of a mount at or
-  below a bind line's source, and a root whose folder a mount that no fstab line makes shows too (a
-  `/home` or `/srv` partition that systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS
-  dataset that ZFS mounts by its mountpoint property). That refusal first says not to unmount a
-  mount the computer makes by itself, then how to unmount one made by hand. A directory of a disk
-  bound at the root now needs the disk's own mount gone. `docs/decoy-requirements.md` says where
-  GNOME, KDE Plasma and udiskie keep the setting, which is not verified for every release. A VM test
-  records whether udiskie mounts a drive that cryptsetup unlocked, and in it udiskie did.
+  `suspicious-nails-reference` still refuses such a root while the decoy's `/etc/nixos` names its
+  filesystem's device, as `hardware-configuration.nix` usually does. A separate drive that a line of
+  the fstab mounts at `/srv` passes `hidden-volume` with the flag's warning, and `backend-entries`
+  refuses that line, which mounts the volume itself. One also mounted at `/srv` by hand is refused,
+  and so is the copy that mount propagation makes of a mount at or below a bind line's source, and a
+  root whose folder a mount that no fstab line makes shows too (a `/home` or `/srv` partition that
+  systemd-gpt-auto-generator mounts, ostree's `/sysroot`, a ZFS dataset that ZFS mounts by its
+  mountpoint property). That refusal first says not to unmount a mount the computer makes by itself,
+  then how to unmount one made by hand. A directory of a disk bound at the root now needs the disk's
+  own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the
+  setting, which is not verified for every release. A VM test records whether udiskie mounts a drive
+  that cryptsetup unlocked, and in it udiskie did.
 - On a decoy root mounted `relatime`, `nails check`, activation and the way back no longer leave the
   moment they ran in the access times of the decoy's programs, libraries, data files and unit files.
   The network record and the way back ask the kernel over netlink for the links, rules and firewall
