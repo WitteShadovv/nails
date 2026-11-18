@@ -294,16 +294,22 @@ impl Scanner {
                     continue;
                 }
                 attribute = false;
-                let defined = places.len();
+                let (defined, named) = (places.len(), names.len());
                 let stack = self.stack(in_comment);
                 let option = !in_comment && !stack.bound();
                 if let Some((next, inherits)) =
                     stack.definition(line, i, (indent, option), &mut names, &mut places)
                 {
-                    for place in &places[defined..] {
-                        if place.range.start > 0 && line[place.range.start - 1] == b'"' {
-                            escaped.extend(quoted_escapes(line, place.range.clone()));
-                        }
+                    let quoted = places[defined..]
+                        .iter()
+                        .map(|place| &place.range)
+                        .chain(names[named..].iter().map(|(range, _)| range))
+                        .filter(|range| range.start > 0 && line[range.start - 1] == b'"');
+                    let mut ranges: Vec<Range<usize>> = quoted.cloned().collect();
+                    ranges.sort_by_key(|range| range.start);
+                    ranges.dedup();
+                    for range in ranges {
+                        escaped.extend(quoted_escapes(line, range));
                     }
                     if inherits && !in_comment {
                         self.note(i..i + b"inherit".len());
