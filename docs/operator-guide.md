@@ -882,8 +882,11 @@ The decoy journal imports what the kernel and PID 1 log after the cursor: PID
 1's kill line, with its name, of a process of the session that stays in
 uninterruptible sleep (on a hung network or FUSE mount, say) past the last
 step's bounded wait; the `Deactivated successfully.` line of a mount unit
-whose mount the scrub detached, where PID 1 takes in the detach only after
-that two-second wait; the hidden service manager's last lines, which a plain soft-reboot logs too (the
+whose mount the scrub detached, where PID 1 has not taken the unit down when
+the last step's wait for it ends: after about two seconds, at once when
+`systemctl` gives no answer or for a mount point whose path is not valid
+UTF-8 (the wait cannot name its unit), and with no wait at all where there is
+no `systemctl`; the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
 ((sd-close))`, and, where the soft-reboot leaves udevd running (as with

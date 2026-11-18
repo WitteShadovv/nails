@@ -1127,8 +1127,10 @@ of this changelog for that version becomes the release notes word for word, and
   so what their units' stop commands change is scrubbed and restored too, and sets the volume's
   message limit to zero. The `/run` scrub detaches the mounts below what it removes, such as the
   tmpfs NixOS's shutdown mounts at `/run/initramfs`, and PID 1 could log the end of that mount's
-  unit after the cursor: the step now waits, for at most two seconds, until PID 1 has taken those
-  units down. It leaves udevd running, as before, for the events of the network
+  unit after the cursor: the step now waits, for about two seconds at most, until PID 1 has taken
+  those units down. The line still follows the cursor where PID 1 has not by then, where
+  `systemctl` gives no answer or is missing, and for a mount point whose path is not valid UTF-8.
+  It leaves udevd running, as before, for the events of the network
   restore, so where the soft-reboot leaves udevd running
   (as with systemd 257 and 255 on Debian 13 and Ubuntu 24.04) PID 1 still ends udevd and its
   workers after the cursor with the generic lines a plain soft-reboot logs. journald's sockets,
