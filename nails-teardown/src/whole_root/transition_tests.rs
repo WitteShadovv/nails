@@ -627,8 +627,8 @@ fn the_session_s_leftovers_end_before_the_scrub_takes_what_their_stop_wrote() {
 
 #[test]
 fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
-    // udevd still runs at the way back (systemd before 258 leaves it until
-    // PID 1's final kill), and so does a unit of the session the shutdown
+    // udevd still runs at the way back (the soft-reboot of Debian 13 and
+    // Ubuntu 24.04 leaves it until PID 1's final kill), and so does a unit of the session the shutdown
     // does not stop, while another unit is still stopping. The way back
     // lets that stop end before it ends anything, and leaves udevd running
     // for the events its network restore causes.

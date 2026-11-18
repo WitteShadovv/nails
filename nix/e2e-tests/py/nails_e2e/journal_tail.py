@@ -79,9 +79,9 @@ class Machine(Protocol):
 #: NixOS logs it) and the switch, the final kill of the helpers it forks to
 #: close a descriptor, which it starts after the step, and the final kill of
 #: udevd and its workers, which the way back leaves running for the events
-#: its network restore causes, where the soft-reboot leaves udevd running (systemd
-#: before 258). None carries a name of the session, and a plain soft-reboot
-#: logs them as well.
+#: its network restore causes, where the soft-reboot leaves udevd running
+#: (as on Debian 13 and Ubuntu 24.04). None carries a name of the session,
+#: and a plain soft-reboot logs them as well.
 HIDDEN_PID1_LINES = (
     re.compile(r"systemd-soft-reboot\.service: Deactivated successfully\."),
     re.compile(r"Finished (systemd-soft-reboot\.service - )?Reboot System Userspace\."),
@@ -166,10 +166,10 @@ def reopened_socket(text: str) -> str:
 
 
 #: A service manager opening udevd's kernel or control socket, by unit name
-#: and description, or by its description alone. Before systemd 258 PID 1
-#: fails udevd's kernel socket when an event comes in while udevd is stopped
-#: inside a soft-reboot, and the decoy's start then opens it anew, which a
-#: plain soft-reboot does not.
+#: and description, or by its description alone. On Debian 13 PID 1 failed
+#: udevd's kernel socket when an event came in while udevd was stopped inside
+#: a soft-reboot, and the decoy's start then opened it anew, which a plain
+#: soft-reboot does not.
 UDEV_REOPENED = re.compile(
     r"systemd\[1\]: Listening on "
     r"(systemd-udevd-(kernel|control)\.socket - )?udev (Kernel|Control) Socket\."
