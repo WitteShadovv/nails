@@ -545,7 +545,13 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
 /// procfs `proc`, with a number no process can have, so nothing signals a
 /// real one.
 fn leftover(proc: &Path, unit: &str) -> u32 {
-    let pid = 4_194_400;
+    leftover_at(proc, 4_194_400, unit)
+}
+
+/// [`leftover`] with the number `pid`, which must be above the kernel's
+/// highest (`PID_MAX_LIMIT`, 4194304).
+fn leftover_at(proc: &Path, pid: u32, unit: &str) -> u32 {
+    assert!(pid > 4_194_304);
     let dir = proc.join(pid.to_string());
     fs::create_dir_all(&dir).unwrap();
     let mut fields = vec!["S", "1", "1", "1", "0", "-1", "0"];
@@ -616,6 +622,77 @@ fn the_session_s_leftovers_end_before_the_scrub_takes_what_their_stop_wrote() {
     assert!(
         !r.join("lngr-stopped").exists(),
         "what the leftover's stop wrote to /run is scrubbed"
+    );
+}
+
+#[test]
+fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
+    // udevd still runs at the way back (systemd before 258 leaves it until
+    // PID 1's final kill), and so does a unit of the session the shutdown
+    // does not stop, while another unit is still stopping. The way back
+    // lets that stop end before it ends anything, and leaves udevd running
+    // for the events its network restore causes.
+    let world = World::new();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let places = tail::Places {
+        proc: world.dir.path().join("fake-proc"),
+        sys_dev_block: world.dir.path().join("sys/dev/block"),
+        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
+    };
+    let pid = leftover_at(&places.proc, 4_194_400, "lngr.service");
+    leftover_at(&places.proc, 4_194_401, "systemd-udevd.service");
+    let all_calls = world.dir.path().join("all-calls");
+    let stopping = world.dir.path().join("still-stopping");
+    fs::write(&stopping, "").unwrap();
+    let systemctl = world.dir.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> {all_calls}\n\
+             if [ \"$1\" = list-jobs ]; then\n\
+               echo '7 soft-reboot.target start waiting'\n\
+               [ -e {stopping} ] && echo '12 slow.service stop running' && rm {stopping}\n\
+               exit 0\n\
+             fi\n\
+             if [ \"$1 $2\" = 'stop --no-block' ]; then\n\
+               rm -r {proc}/{pid}\n\
+             fi\n",
+            all_calls = all_calls.display(),
+            stopping = stopping.display(),
+            proc = places.proc.display(),
+        ),
+        0o755,
+    );
+    let mut env = world.env(true, 1_000);
+    env.systemctl = Some(systemctl);
+    env.tail = Some(places);
+
+    let outcome = run(&env);
+
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+    let every_call = fs::read_to_string(&all_calls).unwrap();
+    let stops: Vec<&str> = every_call
+        .lines()
+        .filter(|call| call.starts_with("stop --no-block"))
+        .collect();
+    assert_eq!(stops, ["stop --no-block -- lngr.service"], "{every_call}");
+    // Two job listings come before the first stop: the one that still saw
+    // the shutdown's stop and the one that found it done.
+    let first_stop = every_call
+        .lines()
+        .position(|call| call.starts_with("stop --no-block"))
+        .unwrap();
+    assert_eq!(
+        every_call
+            .lines()
+            .take(first_stop)
+            .filter(|call| call.starts_with("list-jobs"))
+            .count(),
+        2,
+        "{every_call}"
     );
 }
 

@@ -24,7 +24,7 @@
 //!   streams ([`crate::whole_root::tail::drop_journal_streams`]), and record
 //!   the entry.
 //! - **Leave** (hidden to decoy): end the session's processes that PID 1
-//!   would still kill at the switch ([`crate::whole_root::tail`]), repoint
+//!   would still kill at the switch, but udevd's ([`crate::whole_root::tail`]), repoint
 //!   `/run/current-system` back to the decoy, make the disks the session set read-only writable again and remove
 //!   the rule, the drop-ins and the masks, scrub `/run`
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
@@ -714,7 +714,8 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // First the session's processes PID 1 would still kill at the switch:
     // ending them runs their units' stop commands, whose writes to /run the
     // scrub below removes and whose changes to the network and to utab the
-    // restores below undo.
+    // restores below undo. udevd stays for the events the network restore
+    // causes ([`tail::LEFT_TO_THE_SWITCH`]).
     end_session_leftovers(env, plan);
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
