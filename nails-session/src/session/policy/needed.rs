@@ -11,7 +11,7 @@
 //! `noauto` says, and is kept off like any line the boot mounts
 //! ([`super::decide_all`]).
 
-use super::{Decision, NOAUTO_KEPT, Origin, Present, Units, gate};
+use super::{Decision, NOAUTO_KEPT, Origin, Present, Units, Unreached, Unskippable, gate};
 use crate::session::fstab::{
     FstabEntry, escape_path, holds_a_backslash, may_be_required_by, mount_unit,
 };
@@ -55,8 +55,8 @@ struct Reach {
     sure: bool,
 }
 
-/// The decision for `entries[at]`, a `noauto` line with only options NAILS
-/// reads that its decision masks as one nothing requires: the mask of a line
+/// The decision for `entries[at]`, a `noauto` line that its decision masks
+/// as one nothing requires: the mask of a line
 /// nothing NAILS reads pulls in ([`NOAUTO_KEPT`]), or of one kept off for
 /// another reason (at or below the hidden root, a network filesystem), where
 /// the unit of another line that the boot starts ([`starts`]) needs its mount
@@ -72,7 +72,11 @@ struct Reach {
 /// ([`holds_a_backslash`]), the warning says the target may require it, and
 /// the mask is not recorded as a required one. The warning names the lines
 /// the targets require, or may, that hold the mount up ([`Origin::Needed`]).
-/// `None` where the decision stands.
+/// A line with an option NAILS does not read ([`unread_fstab_options`]) stays
+/// masked, as that option may have the boot mount it in other ways too:
+/// where a target requires it, or may, the mask names that target, which it
+/// keeps from being reached ([`Unskippable::Unread`]). `None` where the
+/// decision stands.
 pub(super) fn needed_below(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -82,15 +86,17 @@ pub(super) fn needed_below(
     let entry = &entries[at];
     let Decision::Mask {
         reason: kept_for,
+        units: masked,
         unreached: None,
         ..
     } = &decided[at]
     else {
         return None;
     };
-    if !entry.is_noauto() || !unread_fstab_options(entry).is_empty() {
+    if !entry.is_noauto() {
         return None;
     }
+    let unread = !unread_fstab_options(entry).is_empty();
     let needers = needers(entries, decided, at);
     // The reason names a line that requires it, one the boot surely starts
     // (not `noauto`) and that requires it as NAILS reads it where there is
@@ -160,6 +166,22 @@ pub(super) fn needed_below(
     } else {
         format!("{kept_for}, and {needs}")
     };
+    if unread {
+        // An option NAILS does not read may have the boot mount it in other
+        // ways too: the mask stands, and the targets it keeps from being
+        // reached are named.
+        let target = units.required_by?;
+        return Some(Decision::Mask {
+            target: entry.file.clone(),
+            units: masked.clone(),
+            reason: reason.into(),
+            unreached: Some(Unreached {
+                target,
+                cause: Unskippable::Unread,
+                origin: units.origin,
+            }),
+        });
+    }
     // Only a mount starts: a swap is always kept off.
     let mut decision = gate(
         entry.file.clone(),
