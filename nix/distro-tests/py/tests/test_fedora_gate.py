@@ -349,6 +349,17 @@ class CarriedTest(unittest.TestCase):
         # A start is no stop.
         self.assertIsNone(fg.stopped_after(log, "systemd-journald", "gate-late-2"))
 
+    def test_journald_s_sockets_opened_after_the_step_are_found(self) -> None:
+        listening = "systemd[1]: Listening on {} - {}."
+        log = [
+            kmsg(10, listening.format("systemd-journald.socket", "Journal Sockets")),
+            kmsg(20, listening.format("systemd-journald-audit.socket", "Audit")),
+            kmsg(21, listening.format("systemd-journald-dev-log.socket", "Log")),
+            kmsg(22, listening.format("systemd-oomd.socket", "OOM Killer Socket")),
+        ]
+        self.assertEqual(len(fg.reopened_sockets(log, 15)), 2)
+        self.assertEqual(fg.reopened_sockets(log, 30), [])
+
     def test_the_late_writer_logs_through_each_socket(self) -> None:
         stop = fg.LATE_STOP.format(mark="M")
         self.assertIn("logger -t gatelate M-syslog", stop)

@@ -214,6 +214,66 @@ class JudgeTest(unittest.TestCase):
         self.assertFalse(judge_records(ring, [], "NAILSIN1", []).judged)
 
 
+def with_controls(ring: list[Record]) -> list[Record]:
+    """``ring`` with what the plants write when they ran: the hidden
+    journald's stop and the late writer's record after it, before the step,
+    and the lingering unit's record inside the step."""
+    step = next(r for r in ring if "Starting systemd-soft-reboot" in r.text)
+    added = [
+        Record(1502, 63200000, "systemd[1]: Stopped Journal Service."),
+        Record(1503, 63300000, "NAILSLATE1-kmsg"),
+        Record(step.seq + 1, step.usec + 1, "lngr1-stopped"),
+    ]
+    moved = [Record(r.seq + 1, r.usec, r.text) if r.seq > step.seq else r for r in ring]
+    return sorted(moved + added, key=lambda r: r.seq)
+
+
+class ControlTest(unittest.TestCase):
+    def judge(self, ring: list[Record]) -> journal_tail.Verdict:
+        return judge_records(
+            ring, [], "NAILSIN1", ["NAILSLATE1", "lngr1"], "NAILSLATE1", "lngr1"
+        )
+
+    def test_plants_that_ran_leave_nothing_to_find(self) -> None:
+        verdict = self.judge(with_controls(parse_kmsg(RING)))
+        self.assertTrue(verdict.judged)
+        self.assertEqual(verdict.findings, [])
+
+    def test_plants_that_never_ran_fail_the_judgment(self) -> None:
+        found = "\n".join(self.judge(parse_kmsg(RING)).findings)
+        self.assertIn("the late writer did not log", found)
+        self.assertIn("the lingering unit did not run", found)
+
+    def test_a_late_line_before_journald_stopped_proves_nothing(self) -> None:
+        ring = [
+            Record(r.seq, r.usec, "x") if "Stopped Journal Service" in r.text else r
+            for r in with_controls(parse_kmsg(RING))
+        ]
+        ring.append(Record(1499, 62900000, "systemd[1]: Stopped Journal Service."))
+        ring.sort(key=lambda r: r.seq)
+        found = self.judge(ring).findings
+        self.assertEqual(len(found), 1)
+        self.assertIn("the late writer did not log", found[0])
+
+    def test_journald_s_sockets_opened_anew_by_the_decoy_are_found(self) -> None:
+        ring = with_controls(parse_kmsg(RING))
+        last = ring[-1]
+        for n, text in enumerate(
+            (
+                "systemd[1]: Listening on systemd-journald.socket - Journal Sockets.",
+                "systemd[1]: Listening on Journal Socket (/dev/log).",
+                "systemd[1]: Listening on Journal Audit Socket.",
+                "systemd[1]: Listening on systemd-udevd-control.socket - udev "
+                "Control Socket.",
+            ),
+            start=1,
+        ):
+            ring.append(Record(last.seq + n, last.usec + n, text))
+        found = self.judge(ring).findings
+        self.assertEqual(len(found), 3, found)
+        self.assertTrue(all("opened journald's socket anew" in f for f in found))
+
+
 class AllowedTest(unittest.TestCase):
     def test_the_generic_lines_of_each_family_are_allowed(self) -> None:
         for line in (
@@ -241,6 +301,14 @@ class CommandTest(unittest.TestCase):
         self.assertIn("echo M-stdout", stop)
         self.assertIn("MESSAGE=M-native\\\\nSYSLOG_IDENTIFIER=late", stop)
         self.assertIn("| /usr/bin/logger --journald", stop)
+        self.assertTrue(stop.endswith('&& echo M-kmsg > /dev/kmsg"'), stop)
+        self.assertEqual(stop.count(" && "), 3)
+
+    def test_the_linger_stop_writes_to_run_and_then_says_so(self) -> None:
+        self.assertEqual(
+            journal_tail.linger_stop_command("L"),
+            '/bin/sh -c "echo L > /run/L-stop && echo L-stopped > /dev/kmsg"',
+        )
 
 
 if __name__ == "__main__":
