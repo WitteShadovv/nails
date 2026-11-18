@@ -273,6 +273,7 @@ fn a_store_journald_cannot_give_up_is_reported() {
 fn journald_s_unix_sockets_are_found_by_their_paths() {
     let listing = "Num       RefCount Protocol Flags    Type St Inode Path\n\
         0000000000000000: 00000002 00000000 00010000 0001 01 101 /run/systemd/journal/stdout\n\
+        0000000000000000: 00000003 00000000 00000000 0001 03 110 /run/systemd/journal/stdout\n\
         0000000000000000: 00000002 00000000 00000000 0002 01 102 /run/systemd/journal/socket\n\
         0000000000000000: 00000002 00000000 00000000 0002 01 103 /run/systemd/journal/dev-log\n\
         0000000000000000: 00000002 00000000 00000000 0002 01 104 /run/systemd/journal.ns/socket\n\

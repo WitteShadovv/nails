@@ -446,10 +446,19 @@ pub fn settle_journal_sockets(systemctl: &Path, decoy: Option<&[String]>) -> Vec
 /// The netlink protocol of the kernel's audit (`NETLINK_AUDIT`).
 const NETLINK_AUDIT: u32 = 9;
 
+/// The socket flag of a listening socket in a `/proc/<pid>/net/unix` line
+/// (`__SO_ACCEPTCON`).
+const LISTENING: &str = "00010000";
+
+/// The socket type of a stream socket in a `/proc/<pid>/net/unix` line.
+const STREAM: &str = "0001";
+
 /// The socket inodes, in a `/proc/<pid>/net/unix` `listing`, of the sockets
 /// bound to a path below `journal_run`'s `journal/` folder or a namespace's
 /// `journal.<namespace>/` folder: journald's native, `/dev/log`, stream and
-/// any other socket there.
+/// any other socket there. A connection accepted on the stream socket shows
+/// its path as well (journald's stored streams, which PID 1 holds): it is
+/// left out, as nothing waits on it to be accepted.
 pub fn journal_unix_inodes(listing: &str, journal_run: &Path) -> Vec<u64> {
     let prefix = journal_run.join("journal");
     let prefix = prefix.to_string_lossy();
@@ -459,6 +468,9 @@ pub fn journal_unix_inodes(listing: &str, journal_run: &Path) -> Vec<u64> {
         .filter_map(|line| {
             let fields: Vec<&str> = line.split_whitespace().collect();
             let path = fields.get(7)?;
+            if fields.get(4) == Some(&STREAM) && fields.get(3) != Some(&LISTENING) {
+                return None;
+            }
             let rest = path.strip_prefix(prefix.as_ref())?;
             let ours = rest.starts_with('/')
                 || rest
@@ -530,8 +542,7 @@ pub struct Drained {
 /// `/dev/log` sockets, every connection waiting on the stream socket (with
 /// what it carries), and every record waiting in the audit socket. The
 /// sockets stay the same objects, with their labels and their units' start
-/// time, as a plain soft-reboot keeps them. Reading a socket's queue does
-/// not wake PID 1, which watches the sockets only to start journald.
+/// time, as a plain soft-reboot keeps them.
 ///
 /// Run once the session's last writer is gone: what is sent after this
 /// reaches the decoy's journald.
