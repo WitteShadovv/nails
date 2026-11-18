@@ -60,18 +60,19 @@
 //! ([`unread_fstab_options`]): any other option, or a known one with a value
 //! NAILS does not read (`x-systemd.wanted-by=` naming a unit other than
 //! `local-fs.target`, `X-mount.subdir=`, a flag with a value), may change
-//! whether the boot mounts it, and so may an option with a backslash or a
-//! quote, which systemd reads otherwise than the parser splits it. Such a
-//! `noauto` line is masked, its mount and its automount, with a reason that
-//! names the option. A line the policy keeps off anyway, swap too, is masked
-//! rather than skipped where such an option is one of systemd's own
-//! (`x-systemd.`, `x-initrd.`) whose effect on what its units pull in the
-//! session does not read, or holds a backslash or a quote
+//! whether the boot mounts it. Such a `noauto` line is masked, its mount and
+//! its automount, with a reason that names the option. A line the policy
+//! keeps off anyway, swap too, is masked rather than skipped where such an
+//! option is one of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
+//! what its units pull in the session does not read, or holds a backslash
 //! ([`reads_pulls_of`]): what it pulls in is then more than NAILS can tell,
-//! and a skip would leave that free to start. systemd reads no other option
-//! for what a unit pulls in, so a line with `hard` or `vers=4.2` for
-//! `mount.nfs` is skipped as before. Where a boot target requires the units,
-//! the warning says it will not be reached ([`Decision::warning`]).
+//! and a skip would leave that free to start. systemd splits the options at
+//! every comma, as the parser does, quotes or not; only a backslash, after
+//! which it keeps a comma in the option, or a `\054`, which it reads as a
+//! comma, makes it split them otherwise. systemd reads no other option for
+//! what a unit pulls in, so a line with `hard` or `vers=4.2` for `mount.nfs`
+//! is skipped as before. Where a boot target requires the units, the warning
+//! says it will not be reached ([`Decision::warning`]).
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1

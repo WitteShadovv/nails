@@ -148,7 +148,9 @@ fn a_noauto_line_with_an_option_nails_does_not_read_is_masked() {
         ("noauto,comment=x\\054auto", "comment"),
         ("noauto,x-gvfs-show\\054auto", "x-gvfs-show\\054auto"),
         ("noauto,comment=x\\054x-systemd.automount", "comment"),
-        // A comma between quotes stays in the option.
+        // A quote: systemd splits at the comma between the quotes, as NAILS
+        // does, but libmount, which `mount` reads the line with, keeps it in
+        // the option.
         ("noauto,comment=\"x,auto\"", "comment"),
     ] {
         let line = format!("/dev/vdb1 /opt ext4 {options} 0 0");
@@ -188,7 +190,7 @@ fn a_line_a_named_unit_pulls_in_is_kept_off_as_before() {
 }
 
 /// A line the boot mounts with an option of systemd's own that NAILS does not
-/// read, or one with a backslash or a quote, is masked rather than skipped:
+/// read, or one with a backslash, is masked rather than skipped:
 /// the option may pull in units that act on the disk, which a skip would
 /// leave free to start. The warning says the target that requires it is not
 /// reached.
@@ -214,11 +216,6 @@ fn a_mounted_at_boot_line_with_a_systemd_option_nails_does_not_read_is_masked() 
             "/dev/vdb1 /opt ext4 defaults,x-systemd.after=a\\,b.service 0 0",
             &["opt.mount", "opt.automount"],
             "x-systemd.after",
-        ),
-        (
-            "server:/x /net nfs4 rw,comment=\"a,x-systemd.requires=b.service\" 0 0",
-            &["net.mount", "net.automount"],
-            "comment",
         ),
         (
             "/dev/vdb2 none swap sw,x-systemd.nails-probe 0 0",
@@ -319,6 +316,58 @@ fn a_mounted_at_boot_line_with_an_option_systemd_does_not_read_is_skipped() {
         assert_eq!(skip.units, units, "{line}");
         assert_eq!(decision.masked_units(), masked, "{line}");
     }
+    // A double quote changes nothing in how systemd splits the options: the
+    // generator split each of these at every comma, as NAILS does, and gave
+    // the NFS share only Before=remote-fs.target. next skipped them, and so
+    // does NAILS, the target reached.
+    for (line, units) in [
+        (
+            "srv:/y /net nfs4 rw,hard,context=\"system_u:object_r:nfs_t:s0\" 0 0",
+            "net.mount",
+        ),
+        (
+            "srv:/v /net nfs4 rw,context=\"system_u:object_r:nfs_t:s0:c1,c2\" 0 0",
+            "net.mount",
+        ),
+        (
+            "/dev/vdm2 /opt ext4 context=\"system_u:object_r:etc_t:s0\" 0 0",
+            "opt.mount",
+        ),
+        (
+            "/dev/vdx1 /opt ext4 noauto,comment=\"x,auto,y\" 0 0",
+            "opt.mount",
+        ),
+        (
+            "server:/x /net nfs4 rw,comment=\"a,x-systemd.requires=b.service\" 0 0",
+            "net.mount",
+        ),
+        (
+            "/dev/vdb2 none swap sw,comment=\"a,b\" 0 0",
+            "dev-vdb2.swap",
+        ),
+    ] {
+        for decision in [decide_line(line), decide_own(line)] {
+            let skip = decision
+                .skip()
+                .unwrap_or_else(|| panic!("{line}: {decision:?}"));
+            assert_eq!(skip.units, [units], "{line}");
+            assert!(decision.masked_units().is_empty(), "{line}");
+            assert_eq!(decision.warning(), None, "{line}");
+        }
+    }
+    // What the generator pulled in for an option between quotes, NAILS reads
+    // too: the makefs of `comment="x,x-systemd.makefs,y"` is skipped with
+    // the mount.
+    let decision = decide_line("/dev/vdx3 /opt ext4 comment=\"x,x-systemd.makefs,y\" 0 0");
+    assert!(
+        decision
+            .skip()
+            .expect("a skip")
+            .pulled
+            .iter()
+            .any(|unit| unit == "systemd-makefs@dev-vdx3.service"),
+        "{decision:?}"
+    );
     let nfs = decide_line("server:/export /net nfs4 rw,hard,vers=4.2 0 0");
     assert!(reason(&nfs).starts_with("the hidden session would write to the server"));
     // The session reads what these pull in: skipped, each with its checkers.
