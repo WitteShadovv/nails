@@ -308,8 +308,9 @@ fn a_name_in_a_binding_or_a_comment_counts_with_the_flag() {
 /// Without the flag, a name of the hidden volume written with an escape
 /// counts as it does written out, as Nix reads it: its mount point, its
 /// device, a link and a label of its storage, and its mapping's name in a
-/// `luks.devices` entry, as `encrypted.label` and as a cryptsetup unit,
-/// in code and in a comment.
+/// `luks.devices` entry, in an `inherit` there, as `encrypted.label`, as a
+/// cryptsetup unit and in a crypttab line after a newline written as an
+/// escape, in code and in a comment.
 #[test]
 fn an_escape_in_a_name_of_the_hidden_volume_counts_without_the_flag() {
     let sysfs = with_udev(luks_on_a_partition());
@@ -364,12 +365,38 @@ fn an_escape_in_a_name_of_the_hidden_volume_counts_without_the_flag() {
             "d\\ata",
             ReferenceKind::MapperName,
         ),
+        (
+            "{ boot.initrd.luks.devices = { inherit \"d\\ata\"; }; }",
+            "d\\ata",
+            ReferenceKind::MapperName,
+        ),
+        (
+            "{ boot.initrd.luks.devices = { inherit (cfg) \"d\\ata\"; }; }",
+            "d\\ata",
+            ReferenceKind::MapperName,
+        ),
+        (
+            "{ environment.etc.crypttab.text = \"x /dev/a none\\ndata /dev/sdc1 none luks\"; }",
+            "data",
+            ReferenceKind::MapperName,
+        ),
+        (
+            "{ environment.etc.crypttab.text = ''x /dev/a none''\\ndata /dev/sdc1 none luks''; }",
+            "data",
+            ReferenceKind::MapperName,
+        ),
     ] {
         let found = scan(&sysfs, None, content);
         assert_eq!(shown(&found.references), [(1, text, kind)], "{content}");
     }
-    // Escapes Nix reads as another name pass.
-    for content in ["{ x = \"/mnt/d\\\\ata\"; }", "{ x = ''/mnt/d\\ata''; }"] {
+    // Escapes Nix reads as another name pass, and so does a crypttab line
+    // after a backslash Nix keeps.
+    for content in [
+        "{ x = \"/mnt/d\\\\ata\"; }",
+        "{ x = ''/mnt/d\\ata''; }",
+        "{ environment.etc.crypttab.text = \"x /dev/a none\\\\ndata /dev/sdc1 none luks\"; }",
+        "{ boot.initrd.luks.devices = { inherit \"d\\\\ata\"; }; }",
+    ] {
         let found = scan(&sysfs, None, content);
         assert!(found.is_clean(), "{content}: {found:?}");
     }

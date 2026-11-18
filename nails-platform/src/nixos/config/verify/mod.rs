@@ -254,8 +254,9 @@ struct Marker {
 ///   asks about a mapping (`open`, `create`, `close`, `status`, …) up to the
 ///   end of the command, continued lines, comments and prose included, the
 ///   instance of `systemd-cryptsetup@data.service`, or the first field of a
-///   crypttab line at the start of a line or a string (`data UUID=… none
-///   luks`, `data /var/lib/vault.img none luks`);
+///   crypttab line at the start of a line or a string or after a newline
+///   written as an escape in one (`data UUID=… none luks`,
+///   `data /var/lib/vault.img none luks`);
 /// - the kernel's name of each layer of that storage as a whole word, as a
 ///   udev rule writes it (`KERNEL=="sdb2"`; `sdb20` does not count), after
 ///   the markers above, so a line that names the storage by a path reports

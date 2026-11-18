@@ -182,7 +182,8 @@ fn read_id(value: &[u8]) -> Option<u64> {
 ///   `systemd-cryptsetup@data.service` (with `escaped`, the instance name
 ///   systemd writes for a name with a `-` in it, in either spelling);
 /// - at the start of a crypttab line, at the start of the line or of a
-///   string: the name, then the device as a `/dev/` path, a `UUID=`,
+///   string or after a newline in one (`\n` in the line as Nix reads it):
+///   the name, then the device as a `/dev/` path, a `UUID=`,
 ///   `PARTUUID=`, `LABEL=`, `PARTLABEL=` or `ID=` tag, or another absolute
 ///   path (a container file) followed by a key file field.
 fn mapping_name(
@@ -245,13 +246,15 @@ fn luks_entry(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
     })
 }
 
-/// Where a crypttab line can start: at the start of the line and right
-/// after every `"` and `''`, where a string's text may begin.
+/// Where a crypttab line can start: at the start of the line, right after
+/// every `"` and `''`, where a string's text may begin, and right after
+/// every newline, which only a line with the escapes of its strings
+/// decoded holds (`"x /dev/a none\ndata …"`).
 fn crypttab_starts(line: &[u8]) -> impl Iterator<Item = usize> + '_ {
     std::iter::once(0).chain(
         (0..line.len())
-            .filter(|&at| line[at] == b'"' || line[at..].starts_with(b"''"))
-            .map(move |at| at + if line[at] == b'"' { 1 } else { 2 }),
+            .filter(|&at| matches!(line[at], b'"' | b'\n') || line[at..].starts_with(b"''"))
+            .map(move |at| at + if line[at] == b'\'' { 2 } else { 1 }),
     )
 }
 
