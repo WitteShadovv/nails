@@ -276,8 +276,9 @@ class DecoyDiskTest(unittest.TestCase):
         run = gate()
         run.disk = {"way-back-1": {"/etc/x"}}
         quiet(run.judge_disk)
-        self.assertEqual([c["passed"] for c in run.checks], [False])
-        self.assertIn("no control", run.checks[0]["detail"])
+        judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
+        self.assertEqual([c["passed"] for c in judged], [False])
+        self.assertIn("no control", judged[0]["detail"])
 
     def test_judges_each_way_back_against_every_control(self) -> None:
         run = gate()
@@ -288,11 +289,166 @@ class DecoyDiskTest(unittest.TestCase):
             "way-back-2": {"/var/a", "/etc/label"},
         }
         quiet(run.judge_disk)
+        judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
         self.assertEqual(
-            [(c["name"].split(":")[0], c["passed"]) for c in run.checks],
+            [(c["name"].split(":")[0], c["passed"]) for c in judged],
             [("way back 1", True), ("way back 2", False)],
         )
-        self.assertIn("/etc/label", run.checks[1]["detail"])
+        self.assertIn("/etc/label", judged[1]["detail"])
+
+
+# What DECOY_TIMERS printed after a way back on Fedora 45: unbound-anchor's
+# daily timer had come due while the session ran and caught up at the decoy's
+# start, while fstrim's waited and the gate's own timer caught up too.
+TIMERS_AFTER_WAY_BACK = "".join(
+    line + "\n"
+    for line in (
+        "timer=fstrim.timer unit=fstrim.service persistent=yes last=@1794900000 "
+        "start= end= state=inactive",
+        "timer=unbound-anchor.timer unit=unbound-anchor.service persistent=yes "
+        "last=@1794959962 start=@1794959962 end=@1794959964 state=inactive",
+        "timer=gate-timer.timer unit=gate-timer.service persistent=yes "
+        "last=@1794959962 start=@1794959962 end=@1794959962 state=inactive",
+        "now=1794959980.5",
+    )
+)
+ROOT_KEY = "/var/lib/unbound/root.key"
+UNBOUND_STAMP = "/var/lib/systemd/timers/stamp-unbound-anchor.timer"
+
+
+def way_back_timers(**changes: Any) -> dict[str, Any]:
+    """What the gate takes of the decoy's timers after the way back above."""
+    runs, now = fg.timer_runs(TIMERS_AFTER_WAY_BACK)
+    timers: dict[str, Any] = {
+        "lower": 1794959960.0,
+        "now": now,
+        "runs": runs,
+        "times": {
+            ROOT_KEY: (1794959963.2, 1794959963.2),
+            "/var/lib/unbound": (1794959963.2, 1794959963.2),
+            UNBOUND_STAMP: (1794959962.4, 1794959962.0),
+            fg.GATE_TIMER_FILE: (1794959962.6, 1794959962.6),
+            "/etc/x": (1794959963.0, 1794959963.0),
+        },
+        "reruns": {
+            "unbound-anchor.service": [ROOT_KEY, "/var/lib/unbound"],
+            "gate-timer.service": [fg.GATE_TIMER_FILE],
+        },
+    }
+    timers.update(changes)
+    return timers
+
+
+class DecoyTimersTest(unittest.TestCase):
+    def test_reads_the_runs_of_this_start_of_pid_1(self) -> None:
+        runs, now = fg.timer_runs(TIMERS_AFTER_WAY_BACK)
+        self.assertEqual(now, 1794959980.5)
+        self.assertEqual(
+            [(r["unit"], r["start"], r["end"], r["persistent"]) for r in runs],
+            [
+                ("unbound-anchor.service", 1794959962.0, 1794959964.0, True),
+                ("gate-timer.service", 1794959962.0, 1794959962.0, True),
+            ],
+        )
+
+    def test_a_run_still_going_ends_at_none(self) -> None:
+        runs, _ = fg.timer_runs(
+            "timer=a.timer unit=a.service persistent=no last= "
+            "start=@200 end=@100 state=activating\n"
+        )
+        self.assertEqual(
+            [(r["start"], r["end"], r["last"]) for r in runs], [(200.0, None, None)]
+        )
+
+    def test_explains_what_the_unit_changes_again_and_its_stamp(self) -> None:
+        paths = {ROOT_KEY, "/var/lib/unbound", UNBOUND_STAMP, "/etc/x"}
+        self.assertEqual(
+            fg.timer_explained(paths, way_back_timers()),
+            {
+                ROOT_KEY: "unbound-anchor.service",
+                "/var/lib/unbound": "unbound-anchor.service",
+                UNBOUND_STAMP: "unbound-anchor.timer",
+            },
+        )
+
+    def test_a_change_its_run_by_hand_does_not_make_is_not_explained(self) -> None:
+        # /etc/x changed while the unit ran, but the unit did not change it
+        # when the gate started it again: a write of something else.
+        self.assertEqual(fg.timer_explained({"/etc/x"}, way_back_timers()), {})
+
+    def test_a_change_outside_the_run_is_not_explained(self) -> None:
+        early = way_back_timers(times={ROOT_KEY: (1794959950.0, 1794959950.0)})
+        self.assertEqual(fg.timer_explained({ROOT_KEY}, early), {})
+
+    def test_a_run_before_the_switch_explains_nothing(self) -> None:
+        late = way_back_timers(lower=1794959970.0)
+        self.assertEqual(fg.timer_explained({ROOT_KEY, UNBOUND_STAMP}, late), {})
+
+    def test_a_path_with_no_times_or_no_run_is_not_explained(self) -> None:
+        self.assertEqual(fg.timer_explained({"/var/y"}, way_back_timers()), {})
+        self.assertEqual(fg.timer_explained({ROOT_KEY}, {}), {})
+        self.assertEqual(fg.timer_explained({ROOT_KEY}, way_back_timers(runs=[])), {})
+
+    def test_a_stamp_not_dated_at_the_trigger_is_not_explained(self) -> None:
+        moved = way_back_timers(
+            times={UNBOUND_STAMP: (1794959962.4, 1794950000.0)}
+        )
+        self.assertEqual(fg.timer_explained({UNBOUND_STAMP}, moved), {})
+
+    def test_a_timer_s_chance_run_in_one_control_is_no_reference(self) -> None:
+        controls = {
+            "control-1": {"/var/lib/chrony/drift", ROOT_KEY},
+            "control-2": {"/var/lib/chrony/drift"},
+        }
+        explained = {
+            "control-1": {
+                ROOT_KEY: "unbound-anchor.service",
+                "/var/lib/chrony/drift": "unbound-anchor.service",
+            }
+        }
+        self.assertEqual(
+            fg.decoy_reference(controls, explained),
+            [{"/var/lib/chrony/drift"}, {"/var/lib/chrony/drift"}],
+        )
+
+    def test_a_way_back_passes_with_the_decoy_s_timer_runs(self) -> None:
+        # Seen on Fedora 45: unbound-anchor's catch-up wrote its key and its
+        # stamp at the decoy's start after the way back, which no control did.
+        run = gate()
+        run.disk = {
+            "control-1": {"/var/lib/chrony/drift"},
+            "way-back-1": {
+                "/var/lib/chrony/drift",
+                ROOT_KEY,
+                "/var/lib/unbound",
+                UNBOUND_STAMP,
+                fg.GATE_TIMER_FILE,
+            },
+            "control-2": {"/var/lib/chrony/drift"},
+        }
+        run.timers = {"way-back-1": way_back_timers()}
+        quiet(run.judge_disk)
+        self.assertEqual([c["passed"] for c in run.checks], [True, True], run.checks)
+
+    def test_a_write_beside_the_timer_runs_still_fails(self) -> None:
+        run = gate()
+        run.disk = {
+            "control-1": {"/var/lib/chrony/drift"},
+            "way-back-1": {ROOT_KEY, UNBOUND_STAMP, fg.GATE_TIMER_FILE, "/etc/x"},
+        }
+        run.timers = {"way-back-1": way_back_timers()}
+        quiet(run.judge_disk)
+        self.assertEqual([c["passed"] for c in run.checks], [False, True])
+        self.assertIn("'not in a control': ['/etc/x']", run.checks[0]["detail"])
+
+    def test_the_positive_control_needs_the_gate_s_timer_run(self) -> None:
+        run = gate()
+        run.disk = {
+            "control-1": set(),
+            "way-back-1": {fg.GATE_TIMER_FILE},
+        }
+        quiet(run.judge_disk)
+        self.assertEqual([c["passed"] for c in run.checks], [False, False])
 
 
 ROOT = "/dev/vda4"
