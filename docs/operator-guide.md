@@ -137,24 +137,29 @@ line for a root that is the whole filesystem), a `noauto` crypttab line, one
 with `tcrypt-hidden`, `swap` or `tmp`, one that opens the device in plain mode
 or as another kind and any other crypttab line still fail `backend-entries`.
 On NixOS, for such a root, `suspicious-nails-reference` lets be a name of a
-device that filesystem lies on (its device path, kernel name,
-`/dev/disk/by-*` links, uuid, `PARTUUID`, label, partition label or LUKS
-mapping) where `/etc/nixos` gives it as the `device` or `label` of a
-`fileSystems` entry for `/` or a system folder, or in a
-`boot.initrd.luks.devices` entry's name or `device`, as
-`hardware-configuration.nix` does for `/` and `/home`. It says how many lines
-it let be. Such a name anywhere else (an entry for `/btr_pool`, an entry's
-options, `boot.resumeDevice`, a service's own settings, a `let` binding) still
-fails it, and so do the root's mount point, the folder the root is as another
-mount shows it, the root's own name inside the filesystem (`@vault`, or
-`vault` for a folder `/home/alice/vault`) wherever it stands as a word of its
-own or an attribute name, comments included, a `subvolid=` with the
-subvolume's id in any base the kernel reads, a `subvol=`, `subvolid=` or
-`X-mount.subdir=` value NAILS cannot read whole, a `device` or `label` in
-those entries that is not written out in one string, a name of any other
-device the volume is stored on and a place NAILS cannot read. Without the
-flag every such name fails it. The check reads text and does
-not evaluate Nix; [the NixOS decoy requirements](decoy-requirements.md#nixos)
+device that filesystem lies on (its device path, kernel name, `/dev/disk/by-*`
+links, uuid, `PARTUUID`, label, partition label or LUKS mapping) where
+`/etc/nixos` gives it as the `device` or `label` of a `fileSystems` entry for
+`/` or a system folder, or in a `boot.initrd.luks.devices` entry's name or
+`device`, as `hardware-configuration.nix` does for `/` and `/home`, as long as
+the entry is written the way `nixos-generate-config` writes it. It says how
+many lines it let be. Such an entry may hold only `"..."` strings that end on
+their line and hold no `${...}`, lists and sets of them, and `true`, `false`
+or a number as the value of an attribute other than `device` and `label`. Any
+other expression in it (`lib.mkForce`, a `+`, a parenthesis, `if`, `let`,
+`inherit`, a reference such as `config.fileSystems."/".device`, a path, a
+`''...''` string) fails the check with the flag, whatever it builds. Such a
+name anywhere else (an entry for `/btr_pool`, an entry's options,
+`boot.resumeDevice`, a service's own settings, a `let` binding, a comment)
+still fails it, and so do the root's mount point, the folder the root is as
+another mount shows it, the root's own name inside the filesystem (`@vault`,
+or `vault` for a folder `/home/alice/vault`) wherever the text gives it as a
+word of its own or an attribute name, comments included, a `subvolid=` with
+the subvolume's id in any base the kernel reads, a `subvol=` or `subvolid=`
+(both on btrfs) or `X-mount.subdir=` value that is empty or holds `${...}`, a
+name of any other device the volume is stored on and a place NAILS cannot
+read. Without the flag every such name fails it. The check reads text and
+does not evaluate Nix; [the NixOS decoy requirements](decoy-requirements.md#nixos)
 list what it does not read.
 See
 [the attach gate](threat-model.md#the-attach-gate),

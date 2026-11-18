@@ -888,8 +888,9 @@ logind.
     `name` of such an entry or of one in the old list form
     (`luks.devices = [ { name = "data"; … } ]`);
     `fileSystems.<path>.encrypted.label`; `systemd-cryptsetup@data.service`;
-    a crypttab line, at the start of a line or of a string, that starts with
-    the name (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
+    a crypttab line, at the start of a line or of a string or after a
+    newline a string writes as an escape (`\n`), that starts with the name
+    (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
     or a word after `cryptsetup` (or `systemd-cryptsetup`) and one of the
     verbs that open, close or ask about a mapping: `open`, `create`, `close`,
     `remove`, `status`, `resize`, `refresh`, `luksSuspend`, `luksResume`, the
@@ -915,7 +916,9 @@ logind.
   but not where such a prefix is part of another path (`/srv/-/mnt/data`).
 
   The check reads each line as the file writes it and again with the escapes
-  of its strings read as Nix reads them, in code and in comments alike. In a
+  of its strings and quoted attribute names read as Nix reads them (an
+  `inherit "d\ata";` in a `luks.devices` block among them), in code and in
+  comments alike. In a
   `"…"` string `\n`, `\r` and `\t` are a newline, a carriage return and a
   tab, and a backslash before any other character is that character; in a
   `''…''` string `'''` is `''`, `''$` is `$` and `''\` escapes the
@@ -979,10 +982,28 @@ logind.
   in a `fileSystems` entry for another folder (the filesystem's top mounted
   at `/btr_pool` for a backup tool, say), in an entry's options, in
   `boot.resumeDevice`, a udev rule, a service's own settings
-  (`services.beesd`), a `let` binding, or a comment outside such an entry.
-  A place counts by how the attribute path of its definition ends, wherever
-  the definition stands, also inside another set. Attribute names count with
-  the case Nix reads them in (`fileSystems`, not `filesystems`).
+  (`services.beesd`), a `let` binding, or a comment, an entry commented out
+  among them. A place counts by how the attribute path of its definition
+  ends, wherever the definition stands, also inside another set, but only in
+  code outside a `let` block. Attribute names count with the case Nix reads
+  them in (`fileSystems`, not `filesystems`).
+
+  The check lets these names be only in an entry written the way
+  `nixos-generate-config` writes it, since it reads text and cannot tell
+  what Nix makes of anything else. With the flag, an entry for `/` or a
+  system folder and a `boot.initrd.luks.devices` entry may hold only
+  `"…"` strings that end on their line and hold no interpolation (their
+  escapes are read as Nix reads them), lists and sets of them, and `true`,
+  `false` or a number as the whole value of an attribute other than `device`
+  and `label`, and so may the value of `fileSystems` and of
+  `boot.initrd.luks.devices` around their entries (a `lib.mkForce` around
+  them fails). Every other expression there fails the
+  check on its line, whatever it builds: a reference
+  (`config.fileSystems."/".device`), a function call (`lib.mkForce`,
+  `lib.concatStrings`, `toString`), an operator such as `+`, a parenthesis,
+  `if … then … else`, `let`, `with`, `inherit`, an interpolation, a path, a
+  `''…''` string and a string that goes on over the next line. Write such an
+  entry out in full to pass.
 
   The check takes those devices from the attach gate's own decision, which it
   makes again through the automount guard as `hidden-volume` does, by kernel
@@ -1009,13 +1030,10 @@ logind.
   - on btrfs, `subvolid=` with the subvolume's id in any form the kernel
     reads it (`258`, `0x102`, `0402`, `+258`), and a `subvolid=` value that
     is no number;
-  - a value the check cannot read whole: a `subvol=` or `subvolid=` (both on
-    btrfs) or `X-mount.subdir=` value that is empty, holds an interpolation or
-    runs to the end of a string that a `+` goes on with
-    (`"subvol=@va" + "ult"`),
-    and, in the places where it lets the device's names be, a `device` or
-    `label` string that holds an interpolation, that a `+` joins to
-    something, or that goes on over the next line;
+  - a `subvol=` or `subvolid=` (both on btrfs) or `X-mount.subdir=` value
+    that is empty or holds an interpolation, wherever it stands;
+  - every expression other than those plain literals in the entries where
+    the check lets the device's names be, as above;
   - a name of any other device the hidden volume is stored on;
   - a place that may give such a name and cannot be read;
   - NAILS's own text and the word `nails`.
@@ -1023,16 +1041,14 @@ logind.
   Since the root's own name counts wherever it stands as a word of its own,
   a root named like something else in `/etc/nixos` fails too (`vault` beside
   `/var/lib/vault` or in a comment): give the folder or subvolume a name that
-  appears nowhere there. The check reads text and does not evaluate Nix: a
-  name Nix builds from parts outside the values and places above
-  (`lib.concatStrings [ "subvol=@va" "ult" ]`, or `"/srv/@va" + "ult"` as
-  the device of an entry for a folder that is no system folder), a path to
-  the root through a link in the filesystem, and an entry that takes its
-  device from another one without naming it
-  (`inherit (config.fileSystems."/") device;`) are not read. Without the
-  flag, and for a root that is the whole filesystem, that the decoy mounts no
-  other part of at `/` or at a system folder, or whose storage NAILS cannot
-  judge, nothing is let be.
+  appears nowhere there. The check reads text and does not evaluate Nix, so
+  what Nix builds outside those entries is not read, such as a name built
+  from parts (`lib.concatStrings [ "subvol=@va" "ult" ]` in a service's
+  settings, or `"/srv/@va" + "ult"` as the device of an entry for a folder
+  that is no system folder), and neither is a path to the root through a
+  link in the filesystem. Without the flag, and for a root that is the whole
+  filesystem, that the decoy mounts no other part of at `/` or at a system
+  folder, or whose storage NAILS cannot judge, nothing is let be.
 
 ### Ubuntu
 
@@ -2182,12 +2198,15 @@ none (see below). So does the decoy's own crypttab line where its key file or
 header lies in the root's folder, or where the device the boot mounts for one of
 them is one that filesystem lies on (see below). On NixOS,
 `suspicious-nails-reference` lets be the names the decoy's `/etc/nixos` gives
-the devices that filesystem lies on in its `fileSystems` entries for `/` and
-its system folders and in its `boot.initrd.luks.devices` entries, as the
-`hardware-configuration.nix` of most installs does for `/` and `/home`. It
-still refuses such a name anywhere else, the root's mount point, its own
-folder and its name inside the filesystem, and the names of any other device
-(see [NixOS](#nixos)).
+the devices that filesystem lies on as the `device` or `label` of its
+`fileSystems` entries for `/` and its system folders and as the name or
+`device` of its `boot.initrd.luks.devices` entries, as the
+`hardware-configuration.nix` of most installs does for `/` and `/home`, where
+such an entry holds nothing but plain literals, as `nixos-generate-config`
+writes it. It still refuses such a name anywhere else, an entry's options
+among them, any other expression in such an entry, the root's mount point,
+its own folder and its name inside the filesystem, and the names of any other
+device (see [NixOS](#nixos)).
 
 Every other line for that filesystem still fails `backend-entries`: a line for
 any other folder, such as `/pool` or `/home/u`, since it may name the hidden

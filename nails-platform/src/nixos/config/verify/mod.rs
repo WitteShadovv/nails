@@ -346,11 +346,11 @@ pub fn verify_base_config_clean<F: Filesystem>(
 /// path of its definition ends, wherever the definition stands, and only a
 /// definition in code outside a `let` block counts. Anywhere else the name
 /// counts, as before: in a `fileSystems` entry for another folder, in an
-/// entry's other attributes, in a `let` binding, in a comment. A layer of the storage
-/// counts as one of those devices only where sysfs gives it now the same
-/// kernel name and the same device number as `own` holds, which the attach
-/// gate's judge read; every other layer's names count as before, and so does
-/// every place that could not be read.
+/// entry's other attributes, in a `let` binding, in a comment. A layer of the
+/// storage counts as one of those devices only where sysfs gives it now the
+/// same kernel name and the same device number as `own` holds, which the
+/// attach gate's judge read; every other layer's names count as before, and so
+/// does every place that could not be read.
 ///
 /// The root's own place counts as well ([`ReferenceKind::RootPlace`]),
 /// beside its mount point: its folder as the other mounts of the filesystem
@@ -362,15 +362,16 @@ pub fn verify_base_config_clean<F: Filesystem>(
 /// number, and a `subvol=` value the scan cannot read: one that is empty or
 /// holds an interpolation. So does every part that is no plain literal in a
 /// `fileSystems` entry for `/` or a system folder, in a
-/// `boot.initrd.luks.devices` entry, or in the value of `fileSystems` or
-/// `boot.initrd.luks.devices` itself: plain are a `"…"` string that ends on
-/// its line and holds no interpolation (escapes are read), the brackets of
-/// a set or a list, and `true`, `false` or a number as the whole value of an
-/// attribute other than `device` and `label`, as `nixos-generate-config`
-/// writes an entry. Anything else there (a reference, a function call such
-/// as `lib.mkForce`, an operator, a parenthesis, an interpolation, a path,
-/// a `''…''` string, `let`, `with`, `inherit`) counts, since the scan cannot
-/// tell what Nix makes of the entry.
+/// `boot.initrd.luks.devices` entry, or around the entries in the value of
+/// `fileSystems` or `boot.initrd.luks.devices` (`lib.mkForce` around them):
+/// plain are a `"…"` string that ends on its line and holds no
+/// interpolation (escapes are read), the brackets of a set or a list, and
+/// `true`, `false` or a number as the whole value of an attribute other than
+/// `device` and `label`, as `nixos-generate-config` writes an entry. Anything
+/// else there (a reference, a function call such as `lib.mkForce`, an
+/// operator, a parenthesis, an interpolation, a path, a `''…''` string, `let`,
+/// `with`, `inherit`) counts, since the scan cannot tell what Nix makes of the
+/// entry.
 ///
 /// # Errors
 ///
