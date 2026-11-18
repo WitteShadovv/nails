@@ -209,25 +209,20 @@ const NETDEV_SWAP_TARGET: &str = "swap.target (remote-fs.target from systemd 261
 
 /// What requires the unit systemd's fstab generator makes for `entry` (its
 /// automount, if it has one) at boot, as the generator links it: the entry's
-/// boot target, `local-fs.target`, or `remote-fs.target` for a network
-/// filesystem, or `swap.target` for swap ([`NETDEV_SWAP_TARGET`] for a
-/// `_netdev` swap); or the units its `x-systemd.required-by=` options name,
-/// which then take the target's place, `noauto` or not. `None` when nothing
-/// requires it: `nofail` (the target only wants the unit), `noauto` without
-/// an automount and without a unit named to pull it in (nothing pulls it
-/// in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount, which the
-/// generator makes `nofail`.
+/// boot target ([`boot_target`]); or the units its `x-systemd.required-by=`
+/// options name, which then take the target's place, `noauto` or not. `None`
+/// when nothing requires it: `nofail` (the target only wants the unit),
+/// `noauto` without an automount and without a unit named to pull it in
+/// (nothing pulls it in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount,
+/// which the generator makes `nofail`. It reads the options as the parser
+/// splits them, which systemd does otherwise where one holds a backslash
+/// ([`may_be_required_by`]).
 pub fn required_by(entry: &FstabEntry) -> Option<String> {
     if entry.is_swap() {
         if entry.yes_no_option("noauto", "auto") || entry.is_nofail() {
             return None;
         }
-        let target = if entry.has_named("_netdev") {
-            NETDEV_SWAP_TARGET
-        } else {
-            "swap.target"
-        };
-        return Some(target.to_string());
+        return Some(boot_target(entry).to_string());
     }
     let named = |key: &str| -> Vec<&str> {
         entry
@@ -254,15 +249,53 @@ pub fn required_by(entry: &FstabEntry) -> Option<String> {
     Some(boot_target(entry).to_string())
 }
 
-/// The target the fstab generator links the mount of `entry` into when
-/// nothing names another: `remote-fs.target` for a network filesystem,
+/// The target the fstab generator links the unit of `entry` into when
+/// nothing names another: `swap.target` for swap ([`NETDEV_SWAP_TARGET`] for
+/// a `_netdev` swap), `remote-fs.target` for a network filesystem,
 /// `local-fs.target` for any other.
 pub fn boot_target(entry: &FstabEntry) -> &'static str {
-    if entry.is_network() {
+    if entry.is_swap() {
+        if entry.has_named("_netdev") {
+            NETDEV_SWAP_TARGET
+        } else {
+            "swap.target"
+        }
+    } else if entry.is_network() {
         "remote-fs.target"
     } else {
         "local-fs.target"
     }
+}
+
+/// Whether an option of the fstab line `entry` holds a backslash, anywhere in
+/// it: NAILS then cannot read the line's options as systemd does. The parser
+/// splits the options at every comma and decodes nothing in them; systemd
+/// keeps a comma after a backslash in the option and reads `\054` as a comma.
+/// So the `noauto`, `nofail`, `x-systemd.wanted-by=` or
+/// `x-systemd.required-by=` NAILS reads may be none to systemd, and one NAILS
+/// does not read may hide in another option: systemd 260.5's fstab generator
+/// linked the mounts of `comment=x\,nofail` and
+/// `comment=x\,x-systemd.wanted-by=foo.service` into
+/// `local-fs.target.requires` and a swap with `sw,comment=x\,noauto` into
+/// `swap.target.requires`, and read `comment=x\054nofail` as `nofail`. The
+/// session policy reads such a line, where it keeps it off (other than one
+/// for `/usr`) and where it needs a `noauto` line's mount, as one a target
+/// may require, never as one a target surely requires or one nothing
+/// requires ([`super::policy`], [`may_be_required_by`]).
+pub fn holds_a_backslash(entry: &FstabEntry) -> bool {
+    entry.options.iter().any(|option| option.contains('\\'))
+}
+
+/// What requires the unit systemd's fstab generator makes for `entry` at
+/// boot, or may: what [`required_by`] reads, or, where it reads nothing and
+/// an option of the line holds a backslash ([`holds_a_backslash`]), the
+/// line's [`boot_target`], which the generator links the unit into where the
+/// `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads is none to it,
+/// and a line for `/` or `/usr` into whatever its options say: it ignored
+/// `noauto`, `nofail`, `x-systemd.automount`, `x-systemd.wanted-by=` and
+/// `x-systemd.required-by=` on `/usr`.
+pub fn may_be_required_by(entry: &FstabEntry) -> Option<String> {
+    required_by(entry).or_else(|| holds_a_backslash(entry).then(|| boot_target(entry).to_string()))
 }
 
 /// The device the unit systemd makes for `entry` waits for at its start: the

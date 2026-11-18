@@ -12,7 +12,9 @@
 //! ([`super::decide_all`]).
 
 use super::{Decision, NEVER_MOUNTED, Origin, Present, Units, gate};
-use crate::session::fstab::{FstabEntry, escape_path, mount_unit, required_by};
+use crate::session::fstab::{
+    FstabEntry, escape_path, holds_a_backslash, may_be_required_by, mount_unit,
+};
 use crate::session::mount_units::is_unit_name;
 use nails_base::hidden_root::separation::unread_fstab_options;
 use std::path::{Component, Path, PathBuf};
@@ -36,7 +38,7 @@ enum Need {
 }
 
 /// A boot target that requires the mount of a `noauto` line through a line
-/// it requires itself ([`boot_targets`]).
+/// it requires itself, or may ([`boot_targets`]).
 #[derive(Debug)]
 struct Reach {
     /// The target.
@@ -45,9 +47,12 @@ struct Reach {
     /// holds the `noauto` mount up: where the target only wants that line,
     /// the target is reached without the mount.
     line: PathBuf,
-    /// Whether the target requires the mount as far as NAILS reads the
-    /// lines on the way: each requires the next, and none starts only for
-    /// an option NAILS does not read ([`Need::Unread`], a `noauto` line).
+    /// Whether the target requires the mount as far as NAILS reads the lines
+    /// on the way: each requires the next, none starts only for an option
+    /// NAILS does not read ([`Need::Unread`], a `noauto` line), and none has
+    /// an option with a backslash, of which NAILS reads neither what has a
+    /// target require the line nor what keeps it from starting
+    /// ([`holds_a_backslash`]).
     sure: bool,
 }
 
@@ -56,14 +61,16 @@ struct Reach {
 /// starts ([`starts`]) needs its mount ([`need`]): the boot mounts that line
 /// whatever `noauto` says, so it is kept off. Every line that needs it is
 /// read, and through the lines that require it in turn, every boot target
-/// that requires it ([`boot_targets`]): where one does, it is skipped if its
-/// device is there, and masked with a warning that the target will not be
-/// reached if not; where none does, it is masked ([`gate`]). Where NAILS
-/// reads that a target requires it, the warning names those targets; where
-/// only an option NAILS does not read may have one require it, the warning
-/// says the target may require it, and the mask is not recorded as a
-/// required one. The warning names the lines the targets require that hold
-/// the mount up ([`Origin::Needed`]). `None` where the decision stands.
+/// that requires it, or may ([`boot_targets`]): where one does, or may, it is
+/// skipped if its device is there, and masked with a warning that the target
+/// will not be reached if not; where none does, it is masked ([`gate`]).
+/// Where NAILS reads that a target requires it, the warning names those
+/// targets; where a target only may require it, through an option NAILS does
+/// not read or through a line whose options hold a backslash
+/// ([`holds_a_backslash`]), the warning says the target may require it, and
+/// the mask is not recorded as a required one. The warning names the lines
+/// the targets require, or may, that hold the mount up ([`Origin::Needed`]).
+/// `None` where the decision stands.
 pub(super) fn needed_below(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -77,7 +84,9 @@ pub(super) fn needed_below(
     let needers = needers(entries, decided, at);
     // The reason names a line that requires it, one the boot surely starts
     // (not `noauto`) and that requires it as NAILS reads it where there is
-    // such a line, and one a target requires among those.
+    // such a line, one without a backslash in its options, which may hide a
+    // `noauto`, before one with, and one a target requires, or may, among
+    // those.
     let &(other, how) = needers
         .iter()
         .filter(|(_, how)| *how != Need::Wants)
@@ -85,7 +94,8 @@ pub(super) fn needed_below(
             let line = &entries[*other];
             (
                 *how != Need::Requires || line.is_noauto(),
-                required_by(line).is_none(),
+                holds_a_backslash(line),
+                may_be_required_by(line).is_none(),
             )
         })
         .or_else(|| needers.first())?;
@@ -122,8 +132,8 @@ pub(super) fn needed_below(
     };
     let line = &entries[other];
     // A noauto line starts only where an option NAILS does not read may
-    // have it start.
-    let may = how == Need::Unread || line.is_noauto();
+    // have it start, and a backslash may hide a noauto.
+    let may = how == Need::Unread || line.is_noauto() || holds_a_backslash(line);
     let reason = format!(
         "noauto, but the line for {} {}, so the boot {} it",
         line.file.display(),
@@ -177,12 +187,16 @@ fn needers(entries: &[FstabEntry], decided: &[Decision], at: usize) -> Vec<(usiz
 }
 
 /// Add to `reached` the boot targets that require the mount of
-/// `entries[at]`: those that require a line that requires it, or that
-/// requires a line that does in turn, as far as such lines lead, each with
-/// the line it requires and whether NAILS reads every step as a requirement
-/// (`sure` for the steps up to `entries[at]`, [`Reach::sure`]). `seen` holds
-/// the lines read already, and whether they were read as sure: a line read
-/// again as sure is read through once more.
+/// `entries[at]`, or may: those that require a line that requires it, or
+/// that requires a line that does in turn, as far as such lines lead, each
+/// with the line it requires and whether NAILS reads every step as a
+/// requirement (`sure` for the steps up to `entries[at]`, [`Reach::sure`]).
+/// A line with a backslash in its options counts as one a target may
+/// require, never as a sure step, whatever `nofail`, `noauto` or
+/// `x-systemd.wanted-by=` NAILS reads on it ([`holds_a_backslash`],
+/// [`may_be_required_by`]). `seen` holds the lines read already, and whether
+/// they were read as sure: a line read again as sure is read through once
+/// more.
 fn boot_targets(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -196,7 +210,7 @@ fn boot_targets(
             continue;
         }
         let line = &entries[other];
-        let sure = sure && how == Need::Requires && !line.is_noauto();
+        let sure = sure && how == Need::Requires && !line.is_noauto() && !holds_a_backslash(line);
         if seen
             .iter()
             .any(|&(read, was_sure)| read == other && (was_sure || !sure))
@@ -204,7 +218,7 @@ fn boot_targets(
             continue;
         }
         seen.push((other, sure));
-        if let Some(target) = required_by(line) {
+        if let Some(target) = may_be_required_by(line) {
             reached.push(Reach {
                 target,
                 line: if line.is_swap() {

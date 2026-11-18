@@ -194,7 +194,7 @@ gets a fixed decision before the switch:
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
 | a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back, not for `/usr`, with only options NAILS reads (see below), and that no other entry of the fstab pulls in (see the next rows) | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); a unit outside the fstab that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
 | a `noauto` entry with an option NAILS does not read, one it reads in another form (`noauto,x-systemd.after=…`, `noauto,X-mount.subdir=…`, `noauto,nofail=1`), or an option with a backslash or a quote | masked, with its automount: the option may have the boot mount it. `nails check` names the option. Where it is an option with a backslash, or one of systemd's own whose effect NAILS does not read (see below), it may also have a boot target require the entry, and activation and `nails check` warn that such a target is then not reached |
-| a `noauto` entry whose mount another entry needs, one the boot starts (not `noauto` itself) and that is left to the hidden systemd (a tmpfs, an overlay with its upper in RAM, a host share) or put in place: a mount point below it (a tmpfs on a directory of it), a source, a path `x-systemd.requires-mounts-for=` or `x-systemd.wants-mounts-for=` names, or its mount or mount point named by `x-systemd.requires=` or `x-systemd.wants=` | kept unmounted: systemd has that entry's unit require or want the `noauto` mount, so the boot mounts it. Where NAILS cannot read what such an entry names (an option with a backslash, or `x-systemd.requires=` or `x-systemd.wants=` with no value), it is kept unmounted too. Every entry that needs it counts: it is skipped where a boot target requires one of them, or an entry that requires one of them in turn, and the device is there, masked with a warning that the target will not be reached where the device is not there, and masked where entries only want it or targets only want them. The warning names the entries the target requires on the way, which `nofail` lets it be reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`, which `nofail` does not change). Where only an entry with an option NAILS cannot read may pull it in, the warning says that the target may require it, and `nails status` does not list the mask among the units a target requires |
+| a `noauto` entry whose mount another entry needs, one the boot starts (not `noauto` itself) and that is left to the hidden systemd (a tmpfs, an overlay with its upper in RAM, a host share) or put in place: a mount point below it (a tmpfs on a directory of it), a source, a path `x-systemd.requires-mounts-for=` or `x-systemd.wants-mounts-for=` names, or its mount or mount point named by `x-systemd.requires=` or `x-systemd.wants=` | kept unmounted: systemd has that entry's unit require or want the `noauto` mount, so the boot mounts it. Where NAILS cannot read what such an entry names (an option with a backslash, or `x-systemd.requires=` or `x-systemd.wants=` with no value), it is kept unmounted too. Every entry that needs it counts: where a boot target requires, or may require, one of them or an entry that requires one of them in turn, it is skipped if the device is there and masked with a warning if not, and it is masked where entries only want it or targets only want them. The warning names the entries the target requires on the way, which `nofail` lets it be reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`, which `nofail` does not change). An entry on the way that may pull it in only through an option NAILS cannot read, or that has a backslash anywhere in its options, counts as one a target may require, never as one it surely requires (see below). Where only such entries lead to a target, the warning says that the target may require it, and `nails status` does not list the mask among the units a target requires |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | any entry whose mount point is the hidden volume root or lies below it: the hidden volume itself, a disk, a `noauto` or automount entry, a tmpfs | refused, and the activation with it |
 
@@ -223,11 +223,18 @@ effect on what its units pull in the session does not read, or an option with
 a backslash: what such an option pulls in, NAILS cannot tell, and a skip would
 leave it free to start. A quote alone keeps the skip, as systemd reads the
 options of such an entry as NAILS does. A boot target that requires such an
-entry is then not reached, and activation warns of that, naming the option. A
-backslash may hide a comma before `noauto` or `nofail`, so that nothing
-requires the entry: for such an entry, other than one for `/usr`, the warning
-says that the target may require it, and `nails status` does not list the mask
-among the units a target requires.
+entry is then not reached, and activation warns of that, naming the option.
+A backslash anywhere in an entry's options means NAILS cannot read them as
+systemd does, which keeps a comma after a backslash in an option and reads
+`\054` as one: the `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads
+there may be none to systemd, and one NAILS does not read may hide in another
+option. So such an entry the policy keeps off, other than one for `/usr`, is
+masked with the warning that its target may require it, whatever of these
+NAILS reads on it, never without a warning, and `nails status` does not list
+the mask among the units a target requires. An entry for `/usr`, which systemd
+mounts whatever its options say, gets a plain warning that a target is not
+reached, naming the target NAILS reads from the split options, which may not be
+the one systemd uses.
 The session reads the units and paths `x-systemd.requires=`,
 `x-systemd.wants=`, `x-systemd.requires-mounts-for=`,
 `x-systemd.wants-mounts-for=`, `x-systemd.wanted-by=` and
@@ -464,7 +471,8 @@ bound read-only or overlaid keeps its automount off as well: the hidden
 systemd would find the mount point taken and fail the automount, and with it
 `local-fs.target`, which would start the hidden session in emergency mode. The
 automount is skipped where `local-fs.target` requires it and masked where the
-entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
+entry has `nofail`, both read from the options as NAILS splits them, which for
+an option with a backslash may not be how systemd reads them. Masks and skips are runtime files in `/run`, gone with the
 session; a mask is written in `/run/systemd/system` and in
 `/run/systemd/system.control`, which ranks above `/etc/systemd/system`, so it
 also masks a unit installed there. systemd's GPT auto-generator, which would mount partitions the fstab

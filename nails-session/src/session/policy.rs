@@ -74,10 +74,20 @@
 //! is skipped as before. Where a boot target requires the units, the warning
 //! says it will not be reached ([`Decision::warning`]); where such an option
 //! on a masked `noauto` line may have a target require it, the warning says
-//! that target is then not reached. On a line the boot mounts, other than
-//! one for `/usr`, a backslash may hide a comma before `noauto` or `nofail`,
-//! so that nothing requires the line: the warning then says the same as for
-//! a `noauto` line, and the mask is not recorded as a required one.
+//! that target is then not reached.
+//!
+//! A backslash anywhere in a line's options means NAILS cannot read that
+//! line's options as systemd does: the `noauto`, `nofail`,
+//! `x-systemd.wanted-by=` or `x-systemd.required-by=` NAILS reads may be none
+//! to systemd, and one NAILS does not read may hide in another option
+//! ([`holds_a_backslash`]). Such a line the policy keeps off is masked
+//! whatever of these NAILS reads, with the warning a masked `noauto` line
+//! gets, that a target may require it, never without a warning, and the mask
+//! is not recorded as a required one ([`mask_unread`]); a line for `/usr`,
+//! which the generator mounts whatever its options say, gets a plain warning
+//! naming the target NAILS reads off the split options. A line with a backslash that needs a `noauto`
+//! line's mount counts as one a target may require, never as one it surely
+//! requires ([`needed::needed_below`]).
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -90,7 +100,7 @@
 //! and fail to set the automount up, and `local-fs.target`, which requires it
 //! unless the entry is `nofail`, would fail with it and start the hidden
 //! session in emergency mode. The automount is skipped where the target
-//! requires it, and masked where the target only wants it.
+//! requires it and masked where it only wants it, as NAILS splits the options.
 //!
 //! An entry of the decoy's fstab that the next root resolves to another path
 //! than the decoy root does (a symlink on the way that a session replaced or
@@ -132,8 +142,9 @@
 //! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
-    FstabEntry, automount_unit, boot_target, checkers, escape_path, mount_unit, option_named,
-    reads_pulls_of, required_by, swap_unit, waits_for,
+    FstabEntry, automount_unit, boot_target, checkers, escape_path, holds_a_backslash,
+    may_be_required_by, mount_unit, option_named, reads_pulls_of, required_by, swap_unit,
+    waits_for,
 };
 use nails_base::hidden_root::separation::unread_fstab_options;
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
@@ -327,8 +338,9 @@ pub enum Origin {
         /// Those lines: their mount points, or a swap's device.
         lines: Vec<PathBuf>,
         /// Whether NAILS only reads that the target may require the mount,
-        /// through an option it does not read: the warning says so, and the
-        /// mask is not recorded as a required one.
+        /// through an option it does not read or a line whose options hold
+        /// a backslash: the warning says so, and the mask is not recorded as
+        /// a required one.
         may: bool,
     },
 }
@@ -344,12 +356,12 @@ pub enum Unskippable {
     /// ([`super::mount_units`]).
     Unread,
     /// A `noauto` line masked for an option whose effect on what pulls the
-    /// line in NAILS does not read ([`reads_pulls_of`]), or a line the boot
-    /// mounts, other than one for `/usr`, that is kept off and masked for an
-    /// option with a backslash, which may hide a comma before `noauto` or
-    /// `nofail` ([`mask_unread`]): NAILS cannot tell whether that option has
-    /// a boot target require the line, and where it does, the target is not
-    /// reached. Not recorded as a required mask.
+    /// line in NAILS does not read ([`reads_pulls_of`]), or any line, other
+    /// than one for `/usr`, that is kept off and masked for an option with a
+    /// backslash, of which NAILS reads neither what has a target require the
+    /// line nor what keeps it out of one ([`mask_unread`]): NAILS cannot tell
+    /// whether a boot target requires the line, and where one does, the
+    /// target is not reached. Not recorded as a required mask.
     MayRequire,
 }
 
@@ -762,10 +774,13 @@ fn unread_pulls(entry: &FstabEntry, units: &Units) -> Option<String> {
 /// would leave free to start, so the units are masked whatever pulls them in,
 /// and a boot target that requires them is not reached
 /// ([`Unskippable::Unread`]). Where an option of the line holds a backslash,
-/// which may hide a comma before `noauto` or `nofail` that systemd reads, so
-/// that nothing requires the line, the target only may require them
-/// ([`Unskippable::MayRequire`]), unless the generator mounts the line
-/// whatever its options say ([`FstabEntry::is_mandatory`]).
+/// NAILS cannot read what links the line into a target or keeps it out of one
+/// ([`holds_a_backslash`]): a target may require the units whatever NAILS
+/// reads, and the mask says so ([`Unskippable::MayRequire`]), naming the
+/// units the line names by `x-systemd.required-by=`, or else its boot target,
+/// never none ([`may_be_required_by`]). A line for `/usr`, which the
+/// generator mounts whatever its options say, is masked as one a target
+/// requires, the target NAILS reads off the split options.
 fn mask_unread(
     entry: &FstabEntry,
     kept: Vec<String>,
@@ -778,7 +793,7 @@ fn mask_unread(
     } else {
         entry.file.clone()
     };
-    let cause = if !entry.is_mandatory() && entry.options.iter().any(|o| o.contains('\\')) {
+    let cause = if !entry.is_mandatory() && holds_a_backslash(entry) {
         Unskippable::MayRequire
     } else {
         Unskippable::Unread
@@ -787,7 +802,9 @@ fn mask_unread(
         target,
         units: kept,
         reason: format!("{reason}; NAILS cannot tell what its option {option} pulls in").into(),
-        unreached: units.required_by.clone().map(|boot| Unreached {
+        // Only an fstab line gets here ([`unread_options`]), and `units` are
+        // what the generator makes of it: what requires them is read off it.
+        unreached: may_be_required_by(entry).map(|boot| Unreached {
             target: boot,
             cause,
             origin: units.origin.clone(),

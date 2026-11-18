@@ -1050,3 +1050,266 @@ fn a_noauto_line_a_left_line_pulls_in_is_kept_off() {
         );
     }
 }
+
+/// A backslash anywhere in a line's options keeps NAILS from reading what has
+/// a target require the line. systemd 260.5's fstab generator kept the comma
+/// after a backslash in the option: it linked the mounts of
+/// `comment=x\,nofail` and `comment=x\,x-systemd.wanted-by=foo.service` into
+/// `local-fs.target.requires`, and the swaps of `sw,comment=x\,nofail` and
+/// `sw,comment=x\,noauto` into `swap.target.requires`. It read `\054` as a
+/// comma: `nofail,comment=x\054fail` went into `local-fs.target.requires`,
+/// `sw,noauto,comment=x\054auto` into `swap.target.requires`. NAILS read
+/// `nofail`, `x-systemd.wanted-by=` or `noauto` on each and masked it with no
+/// warning, the target left unreached. Each is masked with the warning that
+/// its target may require it, in the decoy's fstab and the hidden session's
+/// own, with its device there or not, and the mask is not recorded as a
+/// required one.
+#[test]
+fn a_line_kept_off_with_a_backslash_is_never_masked_without_a_warning() {
+    let absent = |_: &Path| false;
+    for (line, units, boot) in [
+        (
+            "/dev/vdq1 /q/a ext4 comment=x\\,nofail 0 0",
+            &["q-a.mount", "q-a.automount"][..],
+            "local-fs.target",
+        ),
+        (
+            "/dev/vdq2 /q/b ext4 comment=x\\,x-systemd.wanted-by=foo.service 0 0",
+            &["q-b.mount", "q-b.automount"],
+            "local-fs.target",
+        ),
+        (
+            "/dev/vdq20 /q/u ext4 nofail,comment=x\\054fail 0 0",
+            &["q-u.mount", "q-u.automount"],
+            "local-fs.target",
+        ),
+        (
+            "/dev/vdq13 none swap sw,comment=x\\,nofail 0 0",
+            &["dev-vdq13.swap"],
+            "swap.target",
+        ),
+        (
+            "/dev/vdq14 none swap sw,comment=x\\,noauto 0 0",
+            &["dev-vdq14.swap"],
+            "swap.target",
+        ),
+        (
+            "/dev/vdq21 none swap sw,noauto,comment=x\\054auto 0 0",
+            &["dev-vdq21.swap"],
+            "swap.target",
+        ),
+    ] {
+        let entry = &parse_fstab(line)[0];
+        for decision in [
+            decide_line(line),
+            decide_own(line),
+            decide(entry, &mounts(), Path::new(HIDDEN), &absent),
+            decide_hidden_fstab(entry, &mounts(), Path::new(HIDDEN), &absent),
+        ] {
+            let Decision::Mask {
+                units: masked,
+                unreached,
+                ..
+            } = &decision
+            else {
+                panic!("{line}: {decision:?}");
+            };
+            assert_eq!(masked, units, "{line}");
+            assert_eq!(
+                unreached,
+                &Some(Unreached {
+                    target: boot.into(),
+                    cause: Unskippable::MayRequire,
+                    origin: Origin::Fstab,
+                }),
+                "{line}"
+            );
+            let warning = decision.warning().expect("a warning");
+            assert!(
+                warning.contains(&format!(
+                    "where that option has {boot} or another unit require it, the hidden \
+                     session will not reach that unit"
+                )),
+                "{warning}"
+            );
+            assert!(
+                runtime_units(&[], std::slice::from_ref(&decision))
+                    .required_masks
+                    .is_empty(),
+                "{line}"
+            );
+        }
+    }
+    // A line for /usr, which the generator mounts whatever its options say
+    // (it ignored x-systemd.wanted-by= there and linked usr.mount into
+    // local-fs.target.requires), is masked as one its target requires, with
+    // the warning that the target is not reached: NAILS read the
+    // x-systemd.wanted-by= after the backslash and gave none.
+    let usr = decide_line("/dev/vdu2 /usr ext4 comment=x\\,x-systemd.wanted-by=foo.service 0 0");
+    let Decision::Mask { unreached, .. } = &usr else {
+        panic!("{usr:?}");
+    };
+    assert_eq!(
+        unreached,
+        &Some(Unreached {
+            target: "local-fs.target".into(),
+            cause: Unskippable::Unread,
+            origin: Origin::Fstab,
+        })
+    );
+    let warning = usr.warning().expect("a warning");
+    assert!(
+        warning.contains("the hidden session will not reach local-fs.target, which requires it"),
+        "{warning}"
+    );
+    assert_eq!(runtime_units(&[], &[usr]).required_masks.len(), 2);
+}
+
+/// A line with a backslash in its options that needs a noauto line's mount
+/// may be one a target requires whatever `nofail` or `x-systemd.wanted-by=`
+/// NAILS reads on it: systemd 260.5's fstab generator linked the tmpfs of
+/// `comment=x\,nofail` and of `comment=x\,x-systemd.wanted-by=foo.service`
+/// into `local-fs.target.requires`, and so mounts the noauto line below it at
+/// boot. NAILS read the line as one nothing requires and masked the noauto
+/// line with no warning, local-fs.target left unreached. It is skipped where
+/// its device is there, and masked where it is not, with the warning that
+/// the target may require it, which names that line.
+#[test]
+fn a_noauto_line_a_line_with_a_backslash_needs_is_skipped_or_warned_of() {
+    for (dir, device, unit, below) in [
+        ("/cdata", "/dev/vdc1", "cdata.mount", "comment=x\\,nofail"),
+        (
+            "/edata",
+            "/dev/vde1",
+            "edata.mount",
+            "comment=x\\,x-systemd.wanted-by=foo.service",
+        ),
+    ] {
+        let fstab = format!("{device} {dir} ext4 noauto 0 0\ntmpfs {dir}/tmp tmpfs {below} 0 0\n");
+        let tmp = format!("{dir}/tmp");
+        let there = decide_fstab(&fstab, true);
+        let skip = there[0]
+            .skip()
+            .unwrap_or_else(|| panic!("{fstab}: {there:?}"));
+        assert_eq!(skip.units, [unit], "{fstab}");
+        assert_eq!(skip.device.as_deref(), Some(Path::new(device)), "{fstab}");
+        assert_eq!(
+            reason(&there[0]),
+            format!("noauto, but the line for {tmp} needs its mount, so the boot may mount it")
+        );
+        let absent = decide_fstab(&fstab, false);
+        let Decision::Mask { unreached, .. } = &absent[0] else {
+            panic!("{fstab}: {absent:?}");
+        };
+        assert_eq!(
+            unreached,
+            &Some(Unreached {
+                target: "local-fs.target".into(),
+                cause: Unskippable::NoDevice(device.into()),
+                origin: Origin::Needed {
+                    lines: vec![tmp.clone().into()],
+                    may: true,
+                },
+            }),
+            "{fstab}"
+        );
+        assert_eq!(
+            absent[0].warning().expect("a warning"),
+            format!(
+                "{dir} is masked rather than skipped, as its device {device} is not there: \
+                 local-fs.target may require it, and where it does, the hidden session will not \
+                 reach it, and the units only that target pulls in will not start there. Attach \
+                 the device before activating, or give the fstab entry for {tmp} the nofail \
+                 option (x-systemd.wanted-by= in place of an x-systemd.required-by= it gives)"
+            )
+        );
+        assert_eq!(
+            runtime_units(&parse_fstab(&fstab), &absent).required_masks,
+            [],
+            "{fstab}"
+        );
+    }
+
+    // With a line elsewhere whose backslash may hide what it pulls in, the
+    // reason names the line below, and the warning names both: NAILS named
+    // only the other one, and told to give it the nofail option.
+    let both = "/dev/vdb1 /data ext4 noauto 0 0\n\
+                tmpfs /data/tmp tmpfs comment=x\\054nofail 0 0\n\
+                /dev/vdc1 /cdata ext4 noauto 0 0\n\
+                tmpfs /cdata/tmp tmpfs comment=x\\,nofail 0 0\n";
+    let absent = decide_fstab(both, false);
+    // By depth: /data, /cdata, then the tmpfs lines.
+    assert_eq!(
+        reason(&absent[1]),
+        "noauto, but the line for /cdata/tmp needs its mount, so the boot may mount it"
+    );
+    let warning = absent[1].warning().expect("a warning");
+    assert!(
+        warning.contains("local-fs.target may require it")
+            && warning.ends_with(
+                "give the fstab entries for /data/tmp and /cdata/tmp the nofail option \
+                 (x-systemd.wanted-by= in place of an x-systemd.required-by= they give)"
+            ),
+        "{warning}"
+    );
+    assert_eq!(
+        runtime_units(&parse_fstab(both), &absent).required_masks,
+        []
+    );
+}
+
+/// A line with a backslash in its options that needs a noauto line's mount
+/// is no line a target surely requires: systemd 260.5's fstab generator
+/// read `comment=x\054nofail` as `nofail` and linked the tmpfs below the
+/// noauto line into `local-fs.target.wants` alone, and `comment=x\054noauto`
+/// as `noauto`, linking it nowhere. NAILS warned that the hidden session will
+/// not reach local-fs.target, which requires the noauto line, and recorded
+/// the mask as a required one, which `nails status` listed. Where its
+/// device is not there, the warning says the target may require it, the
+/// mask is not recorded, and the reason says that the boot may mount it.
+#[test]
+fn a_noauto_line_a_line_with_a_backslash_needs_is_one_a_target_may_require() {
+    for below in ["comment=x\\054nofail", "comment=x\\054noauto"] {
+        let fstab = format!("/dev/vdb1 /data ext4 noauto 0 0\ntmpfs /data/tmp tmpfs {below} 0 0\n");
+        let there = decide_fstab(&fstab, true);
+        assert_eq!(
+            there[0].skip().expect("a skip").units,
+            ["data.mount"],
+            "{below}"
+        );
+        let absent = decide_fstab(&fstab, false);
+        assert_eq!(
+            reason(&absent[0]),
+            "noauto, but the line for /data/tmp needs its mount, so the boot may mount it",
+            "{below}"
+        );
+        let Decision::Mask { unreached, .. } = &absent[0] else {
+            panic!("{below}: {absent:?}");
+        };
+        assert_eq!(
+            unreached,
+            &Some(Unreached {
+                target: "local-fs.target".into(),
+                cause: Unskippable::NoDevice("/dev/vdb1".into()),
+                origin: Origin::Needed {
+                    lines: vec!["/data/tmp".into()],
+                    may: true,
+                },
+            }),
+            "{below}"
+        );
+        let warning = absent[0].warning().expect("a warning");
+        assert!(
+            warning.contains(
+                "local-fs.target may require it, and where it does, the hidden session will \
+                 not reach it"
+            ) && !warning.contains("which requires it"),
+            "{warning}"
+        );
+        assert_eq!(
+            runtime_units(&parse_fstab(&fstab), &absent).required_masks,
+            [],
+            "{below}"
+        );
+    }
+}

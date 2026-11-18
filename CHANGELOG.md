@@ -1156,20 +1156,32 @@ of this changelog for that version becomes the release notes word for word, and
   line's unit require or want the `noauto` mount, so the boot mounts it all the same, and NAILS
   left it to the hidden systemd, which would mount the disk read-write for a `tmpfs` line below it
   or one that names it. A line whose pulls NAILS cannot read (an option with a backslash, or
-  `x-systemd.requires=` with no value) keeps it off too. Every line that needs it is read: it is
-  skipped where a boot target requires one of them, or a line that requires one in turn, and its
-  device is there, masked with a warning that the target will not be reached where the device is
-  not there, and masked where nothing a target requires needs it. The warning names the lines the
-  target requires on the way, which `nofail` lets it be reached without (`x-systemd.wanted-by=` in
-  place of an `x-systemd.required-by=`). Where only a line with an option NAILS cannot read may
-  pull it in, the warning says that the target may require it, and `nails status` does not list
-  the mask among the units a target requires.
+  `x-systemd.requires=` with no value) keeps it off too. Every line that needs it is read: where a
+  boot target requires, or may require, one of them or a line that requires one in turn, it is
+  skipped if its device is there and masked with a warning if not, and where none does, it is
+  masked. The warning names the lines the target requires on the way, which `nofail` lets it be
+  reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`). A line on the
+  way that may pull it in only through an option NAILS cannot read, or that has a backslash anywhere
+  in its options, counts as one a target may require, never as one it surely requires: systemd keeps
+  a comma after a backslash in an option and reads `\054` as one, so it may read a `noauto`,
+  `nofail` or `x-systemd.wanted-by=` there that NAILS does not, or not read one that NAILS does (it
+  linked a `tmpfs` line with `comment=x\,nofail` into `local-fs.target.requires`, and read
+  `comment=x\054nofail` as `nofail`). Where only such lines lead to a target, the warning says that
+  the target may require the mount, and `nails status` does not list the mask among the units a
+  target requires.
 - A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
   what its units pull in NAILS does not read, or an option with a backslash, is masked rather than
   skipped, so a boot target that requires it is not reached, and activation warns of that, naming
-  the option. A backslash may hide a comma before `noauto` or `nofail`, so that nothing requires the
-  line: for such a line, other than one for `/usr`, the warning says that the target may require
-  it, and `nails status` does not list the mask among the units a target requires. Options outside
+  the option. A backslash anywhere in a line's options means NAILS cannot read them as systemd
+  does, which keeps a comma after a backslash in an option and reads `\054` as one: it linked the
+  mounts of `comment=x\,nofail` and `comment=x\,x-systemd.wanted-by=foo.service` and the swap of
+  `sw,comment=x\,noauto` into their targets' `.requires`, which NAILS took for lines nothing
+  requires and masked without a warning, and read `comment=x\054noauto` as `noauto`. Such a line
+  kept off, other than one for `/usr`, is now masked with the warning that its target may require
+  it, whatever `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads on it, and `nails status`
+  does not list the mask among the units a target requires. A line for `/usr`, which systemd mounts
+  whatever its options say, gets a plain warning that a target is not reached, naming the target
+  NAILS reads from the split options, which may not be the one systemd uses. Options outside
   systemd's namespaces, such as those of an NFS or CIFS share, keep their skip, and so do options
   with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once,
   or with no value, is kept off.
