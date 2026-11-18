@@ -376,7 +376,12 @@ fn a_mounted_at_boot_line_with_a_backslash_says_its_target_may_require_it() {
         warning.contains("the hidden session will not reach local-fs.target, which requires it"),
         "{warning}"
     );
-    assert_eq!(runtime_units(&[], &[usr]).required_masks.len(), 2);
+    // The generator makes no automount for /usr: only its mount is masked
+    // and recorded.
+    assert_eq!(usr.masked_units(), ["usr.mount"]);
+    let kept = runtime_units(&[], &[usr]);
+    assert_eq!(kept.required_masks.len(), 1, "{:?}", kept.required_masks);
+    assert_eq!(kept.required_masks[0].unit, "usr.mount");
 }
 
 /// systemd reads no option outside its own namespaces for what a unit pulls
@@ -1146,7 +1151,7 @@ fn a_line_kept_off_with_a_backslash_is_never_masked_without_a_warning() {
         &Some(Unreached {
             target: "local-fs.target".into(),
             cause: Unskippable::Unread,
-            origin: Origin::Fstab,
+            origin: Origin::Mandatory,
         })
     );
     let warning = usr.warning().expect("a warning");
@@ -1154,7 +1159,7 @@ fn a_line_kept_off_with_a_backslash_is_never_masked_without_a_warning() {
         warning.contains("the hidden session will not reach local-fs.target, which requires it"),
         "{warning}"
     );
-    assert_eq!(runtime_units(&[], &[usr]).required_masks.len(), 2);
+    assert_eq!(runtime_units(&[], &[usr]).required_masks.len(), 1);
 }
 
 /// A line with a backslash in its options that needs a noauto line's mount

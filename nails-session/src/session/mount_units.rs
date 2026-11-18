@@ -428,7 +428,9 @@ pub fn kept_off(
         .required_masks
         .iter()
         .filter(|mask| mask.cause == MaskCause::ConflictingLines)
-        .map(|mask| conflict_warning(&mask.unit))
+        .map(|mask| mask.unit.as_str())
+        .chain(kept.may_conflicts.iter().map(String::as_str))
+        .map(conflict_warning)
         .collect();
     for mut skip in std::mem::take(&mut kept.skips) {
         let pulled: Result<Vec<Vec<String>>, &str> = skip
@@ -823,6 +825,7 @@ fn decide_one(
             },
             masked: Vec::new(),
             reason: reason.into(),
+            may: false,
         }
     } else {
         mask(path, vec![automount], reason, None, native.origin())

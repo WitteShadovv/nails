@@ -426,6 +426,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 ),
                 masked: Vec::new(),
                 reason: KEPT_BELOW.into(),
+                may: false,
             },
         ),
         (
@@ -439,6 +440,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 ),
                 masked: Vec::new(),
                 reason: KEPT_BELOW.into(),
+                may: false,
             },
         ),
         (
@@ -448,6 +450,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 skip: skip(&["mnt-data-ram.mount"], &[], None),
                 masked: Vec::new(),
                 reason: KEPT_BELOW.into(),
+                may: false,
             },
         ),
         (
@@ -461,6 +464,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 skip: skip(&["mnt-data-archive.automount"], &[], None),
                 masked: vec!["mnt-data-archive.mount".into()],
                 reason: KEPT_BELOW.into(),
+                may: false,
             },
         ),
         (
