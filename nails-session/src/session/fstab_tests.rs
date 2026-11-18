@@ -183,7 +183,7 @@ fn what_requires_an_entry_s_unit_is_read_as_the_generator_links_it() {
         ),
         (
             "/dev/sdb1 /data ext4 nofail,x-systemd.required-by=a.service,x-systemd.required-by=b.service 0 2",
-            Some("a.service b.service"),
+            Some("a.service and b.service"),
         ),
         ("/dev/vda5 none swap sw 0 0", Some("swap.target")),
         // swap.target up to systemd 260, remote-fs.target from 261 on.

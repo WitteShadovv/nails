@@ -302,7 +302,7 @@ pub struct Unreached {
 
 /// Where a unit kept off comes from, and so what makes a boot target want
 /// it rather than require it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     /// An fstab line: `nofail` on it.
     Fstab,
@@ -315,9 +315,19 @@ pub enum Origin {
     /// A unit file installed for a target, which requires it by a link in
     /// its `.requires` directory: `WantedBy=` rather than `RequiredBy=`.
     Installed,
-    /// A `noauto` fstab line that the unit of another line needs, which a
-    /// target requires ([`decide_all`]): `nofail` on that other line.
-    Needed,
+    /// A `noauto` fstab line that the units of other lines need, which a
+    /// target requires, or may ([`decide_all`]): `nofail` on the lines the
+    /// target requires that lead to it, or `x-systemd.wanted-by=` in place
+    /// of an `x-systemd.required-by=` they give, which `nofail` does not
+    /// change.
+    Needed {
+        /// Those lines: their mount points, or a swap's device.
+        lines: Vec<PathBuf>,
+        /// Whether NAILS only reads that the target may require the mount,
+        /// through an option it does not read: the warning says so, and the
+        /// mask is not recorded as a required one.
+        may: bool,
+    },
 }
 
 /// Why a unit a boot target requires is masked rather than skipped.
@@ -457,6 +467,7 @@ impl Decision {
         else {
             return None;
         };
+        let held;
         let remedy = match origin {
             Origin::Fstab => "give the fstab entry the nofail option",
             Origin::Generated => {
@@ -468,12 +479,30 @@ impl Decision {
                 "install the unit with WantedBy= rather than RequiredBy=, so that the target \
                  wants it instead of requiring it"
             }
-            Origin::Needed => "give the fstab entry that needs it the nofail option",
+            Origin::Needed { lines, .. } => {
+                held = needed::wanted_remedy(lines);
+                held.as_str()
+            }
         };
-        let unreached = format!(
-            "the hidden session will not reach {boot}, which requires it, and the units only \
-             that target pulls in will not start there"
-        );
+        // Several targets are named with " and " between them.
+        let several = boot.contains(" and ");
+        let (require, those, they) = if several {
+            ("require", "those targets pull", "they do")
+        } else {
+            ("requires", "that target pulls", "it does")
+        };
+        let unreached = if matches!(origin, Origin::Needed { may: true, .. }) {
+            format!(
+                "{boot} may require it, and where {they}, the hidden session will not reach {}, \
+                 and the units only {those} in will not start there",
+                if several { "them" } else { "it" }
+            )
+        } else {
+            format!(
+                "the hidden session will not reach {boot}, which {require} it, and the units only \
+                 {those} in will not start there"
+            )
+        };
         Some(match cause {
             Unskippable::NoDevice(device) => format!(
                 "{} is masked rather than skipped, as its device {} is not there: {unreached}. \
@@ -746,7 +775,7 @@ fn mask_unread(
         unreached: units.required_by.clone().map(|boot| Unreached {
             target: boot,
             cause: Unskippable::Unread,
-            origin: units.origin,
+            origin: units.origin.clone(),
         }),
     }
 }
@@ -824,7 +853,7 @@ fn gate(
             unreached: Some(Unreached {
                 target: required,
                 cause: Unskippable::NoDevice(device),
-                origin: units.origin,
+                origin: units.origin.clone(),
             }),
         },
         device => Decision::Skip {
@@ -998,7 +1027,7 @@ fn decide_entry(
             let unreached = pulls.as_ref().map(|_| Unreached {
                 target: boot_target(entry).to_string(),
                 cause: Unskippable::MayRequire,
-                origin: units.origin,
+                origin: units.origin.clone(),
             });
             let Some(option) = pulls.or_else(|| unread_options(entry, units).into_iter().next())
             else {
@@ -1148,12 +1177,16 @@ impl KeptOff {
 fn required_masked(decision: &Decision) -> Option<(&[String], MaskCause, Option<&Path>)> {
     let Decision::Mask {
         units,
-        unreached: Some(Unreached { cause, .. }),
+        unreached: Some(Unreached { cause, origin, .. }),
         ..
     } = decision
     else {
         return None;
     };
+    if matches!(origin, Origin::Needed { may: true, .. }) {
+        // NAILS cannot tell that a target requires it.
+        return None;
+    }
     match cause {
         Unskippable::NoDevice(device) => Some((units, MaskCause::DeviceAbsent, Some(device))),
         Unskippable::Unread => Some((units, MaskCause::Undetermined, None)),
