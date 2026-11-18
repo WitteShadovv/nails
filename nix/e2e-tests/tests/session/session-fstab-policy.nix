@@ -38,6 +38,11 @@
 #     local-fs.target.wants: the line is masked whatever pulls it in, so the
 #     hidden boot does not start the tmpfs, a start of it fails, and the disk
 #     stays unmounted and unchanged;
+#   - a disk at /srv/rq, noauto in the fstab, which another tmpfs mount unit
+#     outside the fstab requires, linked into local-fs.target.requires: NAILS
+#     reads the pull, so the line is kept off as one the boot mounts. Its
+#     mount and fsck are skipped, the tmpfs starts, local-fs.target is
+#     reached, and the disk stays unmounted and unchanged;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -136,6 +141,10 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "ra";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "rq";
+        }
       ];
       boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
@@ -221,6 +230,9 @@ in
     PULLED = "/dev/disk/by-id/virtio-ra"
     PULLED_UNIT = "srv-ra.mount"
     PULLER_UNIT = "srv-rt.mount"
+    REQUIRED = "/dev/disk/by-id/virtio-rq"
+    REQUIRED_UNIT = "srv-rq.mount"
+    REQUIRER_UNIT = "srv-rqt.mount"
     BIND_UNIT = "srv-bdata.mount"
     NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
@@ -283,6 +295,10 @@ in
 
     def pulled_hash():
         return machine.succeed(f"sha256sum {PULLED}").split()[0]
+
+
+    def required_hash():
+        return machine.succeed(f"sha256sum {REQUIRED}").split()[0]
 
 
     def backend_entries(config):
@@ -384,6 +400,28 @@ in
     )
     machine.fail("mountpoint -q /srv/ra")
     pulled_before = pulled_hash()
+    # The same with a tmpfs that local-fs.target requires, at /srv/rqt, over
+    # a noauto disk at /srv/rq.
+    machine.succeed(
+        f"mkfs.ext4 -q {REQUIRED} && "
+        f"echo '{REQUIRED} /srv/rq ext4 noauto 0 2' >> /etc/fstab && "
+        "mkdir -p /run/systemd/system/local-fs.target.requires && "
+        f"printf '%s\\n' '[Unit]' 'Requires={REQUIRED_UNIT}' 'After={REQUIRED_UNIT}' "
+        "'[Mount]' 'What=tmpfs' 'Where=/srv/rqt' 'Type=tmpfs' "
+        f"> /run/systemd/system/{REQUIRER_UNIT} && "
+        f"ln -s ../{REQUIRER_UNIT} "
+        f"/run/systemd/system/local-fs.target.requires/{REQUIRER_UNIT} && "
+        "systemctl daemon-reload"
+    )
+    machine.succeed(
+        f"systemctl start {REQUIRER_UNIT} && mountpoint -q /srv/rqt && "
+        f"mountpoint -q /srv/rq && systemctl stop {REQUIRER_UNIT} {REQUIRED_UNIT}"
+    )
+    machine.fail("mountpoint -q /srv/rq")
+    required_before = required_hash()
+    required_fsck = machine.succeed(
+        f"systemd-escape -p --template=systemd-fsck@.service {REQUIRED}"
+    ).strip()
     # A noauto disk at /srv/bsrc, and a bind of a directory on it that
     # local-fs.target requires. systemd has a bind mount require the mounts
     # for its source, so the bind would mount the noauto disk first.
@@ -579,6 +617,24 @@ in
         assert held == "", f"{PULLED} is mounted at {held!r}"
         assert pulled_hash() == pulled_before, "the hidden session changed the noauto disk"
 
+    with subtest("a noauto disk a unit local-fs.target requires pulls in is skipped"):
+        assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
+        required = unit_props(REQUIRED_UNIT, "LoadState", "ActiveState", "ConditionResult")
+        assert required == {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "ConditionResult": "no",
+        }, required
+        for unit in (REQUIRED_UNIT, required_fsck):
+            assert_skipped_here(unit, entered_after)
+        requirer = unit_props(REQUIRER_UNIT, "ActiveState")
+        assert requirer == {"ActiveState": "active"}, requirer
+        machine.succeed("mountpoint -q /srv/rqt")
+        machine.fail("mountpoint -q /srv/rq")
+        held = machine.succeed(f"lsblk -no MOUNTPOINTS {REQUIRED}").strip()
+        assert held == "", f"{REQUIRED} is mounted at {held!r}"
+        assert required_hash() == required_before, "the hidden session changed the noauto disk"
+
     with subtest("decoy swap is masked and never active"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state == "masked", f"{SWAP_UNIT}: {state}"
@@ -654,6 +710,7 @@ in
         assert state != "masked", f"the child disk's mask leaked into the decoy: {state}"
         state = machine.succeed(f"systemctl show -p LoadState --value '{PULLED_UNIT}'").strip()
         assert state != "masked", f"the pulled disk's mask leaked into the decoy: {state}"
+        machine.fail(f"test -e /run/systemd/system/{REQUIRED_UNIT}.d")
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
