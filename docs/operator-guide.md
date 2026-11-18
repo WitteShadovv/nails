@@ -314,19 +314,28 @@ Keep all of it `root`-owned on the hidden volume.
      or not, refuses the activation: the hidden systemd would mount it over the
      hidden volume or inside it. Mount the hidden volume where the decoy
      mounts nothing.
-   - a `noauto` entry is left to the hidden systemd, which never mounts it,
-     only where NAILS reads every option it gives, each read by its name as
-     systemd's fstab generator reads it: `noauto,auto=1` is mounted at boot
-     and `noauto,x-systemd.automount=0` on access, and both are kept off as
-     above. A `noauto` entry with an option outside the lists `backend-entries`
-     reads a plain line by
+   - a `noauto` entry of a local filesystem that is not mounted now is
+     masked, with its automount, whatever pulls it in: a unit outside the
+     fstab that requires its mount (a mount unit with `Requires=` on it that a
+     boot target links, say) would have the hidden systemd mount the disk
+     read-write, and cannot start in the hidden session instead, as it
+     requires the mount by name. Where a boot
+     target requires that unit, the target is not reached; NAILS warns of
+     that where it reads the pull (an entry that needs the mount, below, and a
+     skipped unit whose pulls reach it), not for other units. Each option is
+     read by its name as systemd's fstab generator reads it:
+     `noauto,auto=1` is mounted at boot and `noauto,x-systemd.automount=0`
+     on access, and both are kept off as above. A `noauto` entry with an
+     option outside the lists `backend-entries` reads a plain line by
      (see [decoy-requirements.md](decoy-requirements.md#attaching-the-drive)),
      one of them in another form, or an option with a backslash or a quote,
      is masked, and `nails check` names the option. A `noauto` entry for
      `/usr` is kept off like any entry the boot mounts, as systemd mounts
-     `/usr` whatever `noauto`, `nofail` and `x-systemd.automount` say; and so
-     is a `noauto` entry whose mount another entry the boot starts needs,
-     where that entry is left to the hidden systemd or put in place: a tmpfs
+     `/usr` whatever `noauto`, `nofail`, `x-systemd.automount`,
+     `x-systemd.wanted-by=` and `x-systemd.required-by=` say, and its target
+     requires it; and so is a `noauto` entry, masked as above or kept off for
+     another reason, whose mount another entry the boot starts needs, where
+     that entry is left to the hidden systemd or put in place: a tmpfs
      mounted on a directory of it, an entry with its path as its source, or
      an entry that names its path with `x-systemd.requires-mounts-for=` or
      `x-systemd.wants-mounts-for=`, or its mount or path with
@@ -345,7 +354,9 @@ Keep all of it `root`-owned on the hidden volume.
      says that the target may require it, whatever `noauto`, `nofail` or
      `x-systemd.wanted-by=` NAILS reads on it. Such an entry that needs a
      `noauto` mount counts as one a target may require, never as one it
-     surely requires. A quote does not change how systemd splits the
+     surely requires, though an entry that surely requires such an entry
+     still requires it, with what that entry names before its first option
+     with a backslash. A quote does not change how systemd splits the
      options, so it keeps the skip. An overlay entry that gives `upperdir`
      more than once, or with no value, is kept off.
 
