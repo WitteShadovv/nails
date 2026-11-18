@@ -589,7 +589,8 @@ impl FstabPolicyCheck {
         };
         let native = decoy_units(dirs, &decisions, mounts, &self.hidden_root);
         decisions.extend(native);
-        let (_, unskipped) = mount_units::kept_off(dirs, &entries, &decisions);
+        let (_, unskipped) =
+            mount_units::kept_off(dirs, &entries, &decisions, &policy::device_present);
         let skipped = guarded.skipped();
         let root = &self.root;
         let not_looked_up = |target: &Path| {

@@ -89,10 +89,21 @@ impl Decoy {
     /// `fstab` and these units were given, and the warnings for the skips it
     /// masks instead.
     fn kept_off(&self, fstab: &str, decisions: &[Decision]) -> (KeptOff, Vec<String>) {
+        self.kept_off_with(fstab, decisions, true)
+    }
+
+    /// [`Self::kept_off`] with every device there or none (`present`).
+    fn kept_off_with(
+        &self,
+        fstab: &str,
+        decisions: &[Decision],
+        present: bool,
+    ) -> (KeptOff, Vec<String>) {
         kept_off(
             self.dirs(),
             &crate::session::fstab::parse_fstab(fstab),
             decisions,
+            &|_| present,
         )
     }
 }

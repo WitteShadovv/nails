@@ -4,7 +4,7 @@
 //! What the hidden session keeps from starting for the decisions of every
 //! fstab it may read, and of the units outside them ([`runtime_units`]).
 
-use super::{Decision, Origin, Unreached, Unskippable};
+use super::{Decision, Origin, Present, Unreached, Unskippable};
 use crate::session::fstab::{
     FstabEntry, automount_unit, checkers, mount_unit, required_by, waits_for,
 };
@@ -53,6 +53,64 @@ impl KeptOff {
                     cause,
                     device: device.map(Path::to_path_buf),
                 });
+            }
+        }
+    }
+}
+
+/// What [`KeptOff::needed_noauto`] did with the mount of a `noauto` line
+/// that a unit the hidden boot starts requires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoautoNeeded {
+    /// Skipped, as a line the boot mounts is where its device is there.
+    Skipped,
+    /// Still masked, as the device its lines give is not there.
+    Absent(PathBuf),
+    /// Still masked, as its lines give two devices.
+    Disagree,
+}
+
+impl KeptOff {
+    /// Keep `unit`, the mount of a `noauto` line that only its mask holds
+    /// ([`KeptOff::noauto_masks`]) and that a unit the hidden boot starts
+    /// for a boot target requires, off as a line the boot mounts: skipped
+    /// where the device its lines give is there, with the units they pull in
+    /// that act on it ([`checkers`]); masked, and recorded with why, where
+    /// it is not or where they give two devices.
+    pub fn needed_noauto(
+        &mut self,
+        fstab: &[FstabEntry],
+        unit: &str,
+        present: Present<'_>,
+    ) -> NoautoNeeded {
+        let units = [unit.to_string()];
+        match device_of(fstab, unit) {
+            Some(Some(device)) if !present(&device) => {
+                self.record_masked(&units, MaskCause::DeviceAbsent, Some(&device));
+                NoautoNeeded::Absent(device)
+            }
+            None => {
+                self.record_masked(&units, MaskCause::ConflictingLines, None);
+                NoautoNeeded::Disagree
+            }
+            Some(device) => {
+                self.masks.retain(|mask| mask != unit);
+                self.noauto_masks.retain(|mask| mask != unit);
+                let mut pulled: Vec<String> = Vec::new();
+                let lines = fstab
+                    .iter()
+                    .filter(|entry| !entry.is_swap() && mount_unit(&entry.file) == unit);
+                for checker in lines.flat_map(checkers) {
+                    if !pulled.contains(&checker) {
+                        pulled.push(checker);
+                    }
+                }
+                self.skips.push(Skip {
+                    units: units.to_vec(),
+                    pulled,
+                    device,
+                });
+                NoautoNeeded::Skipped
             }
         }
     }

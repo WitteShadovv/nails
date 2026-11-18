@@ -23,7 +23,7 @@
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
-//! | a local filesystem not mounted now that is `noauto`, without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | masked, its automount too, whatever pulls it in ([`Decision::is_noauto_mask`]): a unit outside the fstab that pulls in its mount (a `Requires=`, a `RequiresMountsFor=`) would have the hidden session mount the disk read-write. Masked, the mount starts for none of them: a unit that requires it by name (`Requires=`) does not start, and systemd 260.5 started one that requires it by a path (`RequiresMountsFor=`) without it. A unit a target links for the line itself is decided as a unit, and its skip, which waits for the line's device, keeps the line off in place of the mask; a skip whose pulls reach it is masked (see [`super::mount_units`]) |
+//! | a local filesystem not mounted now that is `noauto`, without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | masked, its automount too, whatever pulls it in ([`Decision::is_noauto_mask`]): a unit outside the fstab that pulls in its mount (a `Requires=`, a `RequiresMountsFor=`) would have the hidden session mount the disk read-write. Masked, the mount starts for none of them: a unit that requires it by name (`Requires=`) does not start, and systemd 260.5 started one that requires it by a path (`RequiresMountsFor=`) without it. What NAILS reads of the units outside the fstab weighs on the mask: a unit the boot starts for a target that requires it and that needs the mount, a unit file of the same name, a skip whose pulls reach it (see [`super::mount_units`]) |
 //! | `noauto` with an option NAILS does not read | masked, its automount too: the option may have the boot mount it. Where NAILS does not read what the option pulls in either, it may have a boot target require the line, which is warned of, and so is a boot target that requires, or may, a line the boot starts that needs its mount ([`needed::needed_below`]) |
 //! | `noauto` with only options NAILS reads, masked as above or kept off for another reason (at or below the hidden root, a network filesystem), whose mount the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path `x-systemd.requires-mounts-for=` or `wants-mounts-for=` names, a unit or path `x-systemd.requires=` or `wants=` names) | kept unmounted as a line the boot mounts: that unit pulls it in, so the boot mounts it ([`decide_all`]) |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
@@ -157,7 +157,7 @@ use std::path::{Component, Path, PathBuf};
 mod kept;
 mod needed;
 
-pub use kept::{KeptOff, masked_units, masks, runtime_units};
+pub use kept::{KeptOff, NoautoNeeded, masked_units, masks, runtime_units};
 
 /// Whether a device is there now: [`device_present`] on the running system,
 /// a fixed answer in tests.
