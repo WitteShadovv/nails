@@ -17,6 +17,11 @@
 #     the hidden filesystem's unmount line, and a unit that stops after
 #     journald and logs through /dev/log, its standard output and the native
 #     socket. Each proves in the ring buffer that it ran.
+#   - two mounts in /run while deactivate reads the mount table, at a folder
+#     whose name is not valid UTF-8 and at one whose unit name PID 1 shortens
+#     with a hash (nails_e2e.unit_names), of which the way back leaves
+#     nothing. A check on the decoy first finds PID 1's units of such mounts
+#     under the names the way back's wait asks for.
 # After the way back none of these is in the live decoy journal, which holds
 # no record of the hidden session past the cursor but the kernel's lines of
 # the hidden LUKS volume's teardown, the decoy's start opened none of
@@ -74,6 +79,11 @@ in
     with subtest("confirm the decoy keeps a persistent journal"):
         machine.succeed("grep -qi '^Storage=persistent' /etc/systemd/journald.conf")
         machine.succeed("test -d /var/log/journal")
+
+    with subtest("PID 1 names the units of odd mount points as the way back does"):
+        from nails_e2e import unit_names
+
+        unit_names.check(machine)
 
     with subtest("plant a pre-activation journal control on the decoy"):
         machine.succeed(f"logger -t decoy {precontrol_token}")
@@ -133,6 +143,7 @@ in
         hidden_fstype = machine.succeed("findmnt -rno FSTYPE /mnt/data || true").strip()
         # The name check needs the UUID wherever the kernel would log it.
         assert hidden_uuid or hidden_fstype != "ext4", hidden_fstype
+        unit_names.plant(machine)
         journal_tail.write_marker(machine, session_marker)
 
     with subtest("deactivate: neither token is in the live decoy journal"):
@@ -157,6 +168,7 @@ in
         assert verdict.judged and not verdict.findings, verdict.findings
         print(f"the LUKS volume's teardown lines (kmsg-import): {verdict.dm_teardown}")
         machine.wait_until_succeeds("! test -e /run/nextroot", timeout=60)
+        unit_names.planted_gone(machine)
 
     with subtest("the decoy image keeps the control but no hidden token"):
         post = disk_forensics.snapshot(machine, "post-journal-leak", restart=False)
