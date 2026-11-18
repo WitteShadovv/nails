@@ -80,8 +80,75 @@ fn each_leftover_s_outermost_service_is_named_once() {
     );
 }
 
+#[test]
+fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    // journald's socket and its /dev/log socket were listening; the audit
+    // socket was not (the kernel's audit is off), and the syslog socket is
+    // missing.
+    let systemctl = world.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             if [ \"$1\" = list-units ]; then\n\
+               echo 'systemd-journald-dev-log.socket loaded active running Journal Socket (/dev/log)'\n\
+               echo 'systemd-journald.socket loaded active running Journal Sockets'\n\
+               echo 'systemd-journald@x.socket loaded active running Journal Socket for Namespace x'\n\
+               exit 0\n\
+             fi\n\
+             [ \"$2\" = syslog.socket ] && exit 5\nexit 0\n",
+            calls.display()
+        ),
+        0o755,
+    );
+
+    // A unit the system lacks fails alone; the others still go.
+    assert_eq!(empty_journal_sockets(&systemctl), ["stop syslog.socket"]);
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "list-units --plain --no-legend --state=active -- systemd-journald.socket \
+         systemd-journald-dev-log.socket systemd-journald-audit.socket\n\
+         stop systemd-journald.socket\n\
+         stop systemd-journald-dev-log.socket\n\
+         stop systemd-journald-audit.socket\n\
+         stop systemd-journald@*.socket\n\
+         stop syslog.socket\n\
+         reset-failed systemd-journald.service\n\
+         clean --what=fdstore systemd-journald.service\n\
+         start systemd-journald.socket\n\
+         start systemd-journald-dev-log.socket\n"
+    );
+    // Without systemctl every call fails, and none opens a socket again.
+    assert_eq!(
+        empty_journal_sockets(&world.path().join("no-systemctl")).len(),
+        JOURNAL_SOCKETS.len() + 2
+    );
+}
+
+#[test]
+fn only_journald_s_own_listed_sockets_are_opened_again() {
+    assert_eq!(
+        listed_sockets(
+            "systemd-journald-audit.socket loaded active running Journal Audit Socket\n\
+             syslog.socket loaded active listening Syslog Socket\n\
+             systemd-journald@ns.socket loaded active listening Journal Socket\n\
+             \n\
+             systemd-journald.socket loaded active running Journal Sockets\n"
+        ),
+        ["systemd-journald.socket", "systemd-journald-audit.socket"]
+    );
+    assert!(listed_sockets("").is_empty());
+    assert_eq!(
+        journal_socket_calls(&[]).last().unwrap(),
+        &DROP_STREAMS.to_vec(),
+        "with none listed, none is started"
+    );
+}
+
 /// A fake `systemctl` that appends its arguments to `calls` and fails for
-/// `failing`.
+/// `failing` as its second argument.
 fn fake_systemctl(dir: &Path, calls: &Path, failing: &str) -> PathBuf {
     let systemctl = dir.join("systemctl");
     write_executable(
@@ -96,25 +163,14 @@ fn fake_systemctl(dir: &Path, calls: &Path, failing: &str) -> PathBuf {
 }
 
 #[test]
-fn the_journal_sockets_are_stopped_and_the_stream_store_dropped() {
+fn a_store_journald_cannot_give_up_is_reported() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = fake_systemctl(world.path(), &calls, "syslog.socket");
-
-    // A unit the system lacks fails alone; the others still go.
-    assert_eq!(empty_journal_sockets(&systemctl), ["stop syslog.socket"]);
+    // PID 1 refuses to drop the store of a service that is not dead.
+    let systemctl = fake_systemctl(world.path(), &calls, "--what=fdstore");
     assert_eq!(
-        fs::read_to_string(&calls).unwrap(),
-        "stop systemd-journald.socket\n\
-         stop systemd-journald-dev-log.socket\n\
-         stop systemd-journald-audit.socket\n\
-         stop systemd-journald@*.socket\n\
-         stop syslog.socket\n\
-         clean --what=fdstore systemd-journald.service\n"
-    );
-    assert_eq!(
-        empty_journal_sockets(&world.path().join("no-systemctl")).len(),
-        JOURNAL_SOCKETS.len() + 1
+        empty_journal_sockets(&systemctl),
+        ["clean --what=fdstore systemd-journald.service"]
     );
 }
 

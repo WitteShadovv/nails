@@ -13,18 +13,20 @@
 //!   logs `Sending SIGKILL to PID N (<name>)` for each, naming the hidden
 //!   session's processes. The kernel logs the hidden filesystem's
 //!   `unmounting filesystem <UUID>` line when PID 1 leaves the hidden root.
-//!   [`end_leftovers`] kills those processes before the cursor is taken, as
-//!   PID 1 would, so PID 1 finds none of them; [`quiet_hidden_unmount`] sets
-//!   the hidden ext4 filesystem's message limit to zero, so the kernel drops
-//!   that line.
+//!   [`end_leftovers`] kills those processes as PID 1 would, first thing in
+//!   the way back (their units' stop commands then run before the `/run`
+//!   scrub and the restores) and once more before the cursor is taken, so
+//!   PID 1 finds none of them; [`quiet_hidden_unmount`] sets the hidden ext4
+//!   filesystem's message limit to zero, so the kernel drops that line.
 //! - **What waits in journald's sockets.** A soft-reboot keeps the socket
 //!   units of journald open (they never stop at a shutdown), and journald's
 //!   store of standard-output streams with PID 1 (`FileDescriptorStorePreserve=yes`):
 //!   the decoy's journald reads at its start what the hidden root sent them
 //!   after its own journald stopped, the audit records of its last units'
 //!   stops among it. [`empty_journal_sockets`] stops those socket units and
-//!   drops that store, which discards what they hold; the decoy's start opens
-//!   them again, as a boot does.
+//!   drops that store, which discards what they hold, and opens journald's
+//!   own sockets again, empty, so that the decoy's start finds them listening
+//!   as after a plain soft-reboot.
 //!
 //! The switch itself leaves `/run/nextroot` behind, an empty folder where the
 //! decoy root was mounted for it, which a boot never has. It is a mount point
@@ -33,11 +35,18 @@
 //! decoy's `systemd-tmpfiles-setup.service`, which removes the folder and the
 //! line with it at the decoy's start.
 //!
-//! What stays is listed in the residue catalog (`kmsg-import`): PID 1's own
-//! last generic lines (the soft-reboot service's end, `Soft-rebooting.` and,
-//! with the kernel's audit on, their audit records), a filesystem other than
-//! ext4's unmount line, and the kernel's lines of the hidden mapping's
-//! teardown, which the kernel logs as PID 1 starts the decoy.
+//! What stays is listed in the residue catalog (`kmsg-import`,
+//! `journal-socket-carry`): PID 1's own last generic lines (the soft-reboot
+//! service's end, `Soft-rebooting.`, its final kill of the `(sd-close)`
+//! helpers it starts after the step to close a descriptor and, with the
+//! kernel's audit on, the audit records of that service's start and stop and
+//! of the BPF programs it unloads), a process of the session that stays in
+//! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), a
+//! filesystem other than ext4's unmount line, and the kernel's lines of the
+//! hidden mapping's teardown, which the kernel logs as PID 1 starts the
+//! decoy. journald's sockets are new ones, made at the way back, where a
+//! plain soft-reboot keeps those of the boot; and the stream of a process the
+//! soft-reboot leaves running goes with the store ([`drop_journal_streams`]).
 //!
 //! Like the rest of the transition, nothing here logs, and every step is
 //! best effort.
@@ -235,18 +244,60 @@ pub const JOURNAL_SOCKETS: [&str; 5] = [
     "syslog.socket",
 ];
 
+/// The sockets of [`JOURNAL_SOCKETS`] that a plain soft-reboot carries into
+/// the decoy listening, and that the way back opens again once it has
+/// emptied them: journald's own. A namespace's socket (named after a unit of
+/// the session's) and the syslog socket (stopped by the shutdown before the
+/// step) stay closed.
+pub const REOPENED_SOCKETS: [&str; 3] = [
+    "systemd-journald.socket",
+    "systemd-journald-dev-log.socket",
+    "systemd-journald-audit.socket",
+];
+
 /// The service whose descriptor store holds journald's standard-output
 /// streams across its stop and the soft-reboot.
 pub const JOURNAL_SERVICE: &str = "systemd-journald.service";
 
-/// The `systemctl` calls of [`empty_journal_sockets`], in order: stop each of
-/// [`JOURNAL_SOCKETS`] (a unit the system lacks fails alone), then drop
-/// journald's descriptor store.
-pub fn journal_socket_calls() -> Vec<Vec<&'static str>> {
+/// The `systemctl` call that lists which of [`REOPENED_SOCKETS`] are active.
+pub fn active_sockets_call() -> Vec<&'static str> {
+    let mut args = vec![
+        "list-units",
+        "--plain",
+        "--no-legend",
+        "--state=active",
+        "--",
+    ];
+    args.extend(REOPENED_SOCKETS);
+    args
+}
+
+/// The units of [`REOPENED_SOCKETS`] a `systemctl list-units --plain
+/// --no-legend` `listing` names, in the order of [`REOPENED_SOCKETS`].
+pub fn listed_sockets(listing: &str) -> Vec<&'static str> {
+    let named: Vec<&str> = listing
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    REOPENED_SOCKETS
+        .into_iter()
+        .filter(|unit| named.contains(unit))
+        .collect()
+}
+
+/// The `systemctl` calls of [`empty_journal_sockets`], in order, where
+/// `active` are the units of [`REOPENED_SOCKETS`] active before: stop each of
+/// [`JOURNAL_SOCKETS`] (a unit the system lacks fails alone), forget a
+/// failure of journald's (a failed service keeps its descriptor store, and
+/// PID 1 refuses to drop the store of a service that is not dead), drop that
+/// store, then start each of `active` again.
+pub fn journal_socket_calls(active: &[&'static str]) -> Vec<Vec<&'static str>> {
     JOURNAL_SOCKETS
         .iter()
         .map(|unit| vec!["stop", *unit])
+        .chain(std::iter::once(vec!["reset-failed", JOURNAL_SERVICE]))
         .chain(std::iter::once(DROP_STREAMS.to_vec()))
+        .chain(active.iter().map(|unit| vec!["start", *unit]))
         .collect()
 }
 
@@ -261,19 +312,31 @@ pub const DROP_STREAMS: [&str; 3] = ["clean", "--what=fdstore", JOURNAL_SERVICE]
 /// entry records the process-number counter, neither the hidden start nor
 /// the decoy's start after the way back uses them, and the way back's
 /// measure of how many numbers a start uses up to its getty
-/// ([`crate::whole_root::fresh_pids`]) holds for the decoy's start. Returns
-/// whether the call succeeded.
+/// ([`crate::whole_root::fresh_pids`]) holds for the decoy's start.
+///
+/// The store holds the stream of every process journald took one from, a
+/// process the soft-reboot leaves running among them (a root storage daemon,
+/// a `SurviveFinalKillSignal=yes` unit's): such a process's standard output
+/// and error no longer reach the journal from here on, and its writes to
+/// them fail. Returns whether the call succeeded.
 pub fn drop_journal_streams(systemctl: &Path) -> bool {
     tools::run(systemctl, &DROP_STREAMS, TOOL_BUDGET) == tools::Outcome::Done
 }
 
 /// Discard what journald's sockets and descriptor store hold: stop the socket
 /// units, which closes them with their queues, and drop journald's stored
-/// streams (stopped by now, it no longer reads them). The decoy's start opens
-/// the sockets again as every boot does. Returns the calls that did not
+/// streams (stopped by now, it no longer reads them); then open journald's
+/// own sockets again that were open before, empty, so that PID 1 carries
+/// them into the decoy listening as a plain soft-reboot does, and the
+/// decoy's start does not open them anew (its `Listening on` lines would
+/// tell a way back from a plain soft-reboot). Returns the calls that did not
 /// succeed.
 pub fn empty_journal_sockets(systemctl: &Path) -> Vec<String> {
-    journal_socket_calls()
+    // Without the listing none is opened again: the decoy's start opens them.
+    let active = tools::run_output(systemctl, &active_sockets_call(), TOOL_BUDGET)
+        .map(|listing| listed_sockets(&listing))
+        .unwrap_or_default();
+    journal_socket_calls(&active)
         .into_iter()
         .filter(|args| tools::run(systemctl, args, TOOL_BUDGET) != tools::Outcome::Done)
         .map(|args| args.join(" "))
