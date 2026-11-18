@@ -3,13 +3,16 @@
 
 //! Matching hidden-environment markers in the text of a `.nix` file.
 //!
-//! The scan works on bytes of ASCII-lowercased text, one line at a time, so a
-//! match maps back to a line and to the original spelling by offset. Every
-//! marker counts in comments as well: an examiner reads them, and a
-//! commented-out line that names the hidden volume points at it as plainly as
-//! a live one. The device-mapper name and a filesystem label, often ordinary
-//! words such as `data`, count only where they name the mapping or the
-//! filesystem ([`Pattern::Name`], [`Pattern::Tag`]).
+//! The markers are matched against the ASCII-lowercased bytes of one line at
+//! a time, so a marker matches in any case and a match maps back to the line
+//! by offset. Each line is matched as the file writes it and again with the
+//! escapes of its strings decoded ([`super::escapes`]), where a match maps
+//! back to the bytes that stand for it. Every marker counts in comments as
+//! well: an examiner reads them, and a commented-out line that names the
+//! hidden volume points at it as plainly as a live one. The device-mapper
+//! name and a filesystem label, often ordinary words such as `data`, count
+//! only where they name the mapping or the filesystem ([`Pattern::Name`],
+//! [`Pattern::Tag`]).
 
 use super::scan::{Named, Place, is_identifier_byte};
 use std::ops::Range;
@@ -50,19 +53,21 @@ pub(super) enum Pattern {
     /// filesystem label (`label`) counts as the `label` of a `fileSystems` or
     /// `swapDevices` entry too ([`Named::Label`]).
     Tag { tag: String, value: String },
-    /// A name that stands as a whole part of a path or as a whole string,
-    /// whatever comes before or after it in the path (`@vault` in
-    /// `/btr_pool/@vault`, `subvol=./@vault`, `"@vault"`), or as an attribute
-    /// name the file defines (`subvolume.vault = { };`).
+    /// A name between two bytes that cannot continue a file name, anywhere
+    /// in a line, comments and prose included (`@vault` in
+    /// `/btr_pool/@vault`, `subvol=./@vault`, `"@vault"`, `# the vault`), or
+    /// as an attribute name the file defines (`subvolume.vault = { };`).
     Component(String),
     /// A btrfs `subvolid=` option whose value is the id, where there is one,
     /// read as the kernel reads it (decimal, `0x` hex or `0` octal, `+`
     /// allowed), or whose value cannot be read as a number
-    /// (`subvolid=${id}`).
+    /// (`subvolid=${id}`, see [`Pattern::Unread`]).
     SubvolId(Option<u64>),
-    /// A btrfs `subvol=` option whose value cannot be read: none, or one
-    /// that an interpolation makes (`subvol=${name}`).
-    SubvolUnread,
+    /// The option `<key>=` (`subvol`, `x-mount.subdir`) whose value cannot
+    /// be read: none, one that holds an interpolation (`subvol=${name}`), or
+    /// one that runs to the end of a string that a `+` joins to something
+    /// (`"subvol=@va" + "ult"`).
+    Unread(String),
 }
 
 /// What a line holds beyond its text, from the lines before it.
@@ -73,9 +78,21 @@ pub(super) struct Context {
     /// The arguments of a `cryptsetup` or `systemd-cryptsetup` command that
     /// opens, closes or asks about a mapping ([`Shell`]).
     pub(super) arguments: Vec<Range<usize>>,
-    /// The attribute names the line defines and the strings it holds whole
-    /// in the value of a definition ([`super::scan::Scanner::places`]).
+    /// The attribute names the line defines and the strings it holds in the
+    /// value of a definition ([`super::scan::Scanner::places`]).
     pub(super) places: Vec<Place>,
+    /// The text of each string on the line that a `+` joins to something,
+    /// and whether the `+` comes after it ([`super::scan::Scanner::joined`]).
+    pub(super) joined: Vec<(Range<usize>, bool)>,
+}
+
+impl Context {
+    /// Whether a string that a `+` after it goes on with ends at `end`.
+    fn continued_at(&self, end: usize) -> bool {
+        self.joined
+            .iter()
+            .any(|(string, continued)| *continued && string.end == end)
+    }
 }
 
 impl Pattern {
@@ -96,13 +113,18 @@ impl Pattern {
             }),
             Pattern::Component(name) => component(line, name, context),
             Pattern::SubvolId(id) => option_values(line, "subvolid")
-                .find(|value| read_id(&line[value.clone()]).is_none_or(|read| Some(read) == *id))
-                .map(|value| value.start - "subvolid=".len()..value.end),
-            Pattern::SubvolUnread => option_values(line, "subvol")
                 .find(|value| {
-                    value.is_empty() || line[value.clone()].windows(2).any(|w| w == b"${")
+                    context.continued_at(value.end)
+                        || read_id(&line[value.clone()]).is_none_or(|read| Some(read) == *id)
                 })
-                .map(|value| value.start - "subvol=".len()..value.end),
+                .map(|value| value.start - "subvolid=".len()..value.end),
+            Pattern::Unread(key) => option_values(line, key)
+                .find(|value| {
+                    value.is_empty()
+                        || line[value.clone()].windows(2).any(|w| w == b"${")
+                        || context.continued_at(value.end)
+                })
+                .map(|value| value.start - key.len() - 1..value.end),
         }
     }
 }
@@ -124,8 +146,8 @@ fn component(line: &[u8], name: &str, context: &Context) -> Option<Range<usize>>
 }
 
 /// The values of the option `<key>=` in `line`, each up to the end of the
-/// word or string it is in: a key that ends another word does not count
-/// (`subvol=` is no `xsubvol=`).
+/// word or string it is in, or a blank, a newline or a backslash: a key that
+/// ends another word does not count (`subvol=` is no `xsubvol=`).
 fn option_values<'a>(line: &'a [u8], key: &str) -> impl Iterator<Item = Range<usize>> + 'a {
     let lead = format!("{key}=");
     let mut from = 0;
@@ -138,7 +160,10 @@ fn option_values<'a>(line: &'a [u8], key: &str) -> impl Iterator<Item = Range<us
             + line[start..]
                 .iter()
                 .take_while(|&&b| {
-                    !matches!(b, b'"' | b'\'' | b',' | b' ' | b'\t' | b';' | b']' | b'\\')
+                    !matches!(
+                        b,
+                        b'"' | b'\'' | b',' | b' ' | b'\t' | b'\n' | b'\r' | b';' | b']' | b'\\'
+                    )
                 })
                 .count();
         from = start;

@@ -529,3 +529,6 @@ fn a_place_that_cannot_be_read_is_kept_with_the_accepted_filesystem() {
     let found = scan(&sysfs, Some(&own_luks()), "{ }");
     assert_eq!(found.unread, ["/run/udev/data/b8:18"]);
 }
+
+#[path = "own_escape_tests.rs"]
+mod escapes;

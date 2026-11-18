@@ -27,6 +27,7 @@
 //! lines keep no indentation of their own. A block whose lines are indented
 //! less than its first is not followed. Parentheses are not followed.
 
+use super::escapes::{self, Escape};
 use std::ops::Range;
 
 /// A range of a line that the file defines something at: an attribute name
@@ -42,6 +43,8 @@ pub(super) struct Place {
     pub(super) path: Vec<String>,
     /// An attribute name, not a string.
     pub(super) attribute: bool,
+    /// The string ends on this line: not one the next line goes on with.
+    pub(super) whole: bool,
 }
 
 /// What a range of a line names.
@@ -93,11 +96,63 @@ enum Frame {
     Interpolation,
     /// A string: `''…''` when `indented`, else `"…"`. `opened` is where its
     /// text starts on the line being read and the path of the definition
-    /// whose value holds it, for a string that line opened.
+    /// whose value holds it, for a string that line opened. `joined`: a `+`
+    /// came right before it.
     Str {
         indented: bool,
         opened: Option<(usize, Vec<String>)>,
+        joined: bool,
     },
+}
+
+/// A string that closed on the line being read.
+struct Closed {
+    /// Its text: from where the line opened it, or from the start of the
+    /// line for a string an earlier line opened.
+    range: Range<usize>,
+    /// A `+` came right before it.
+    joined: bool,
+    /// Its place, where the line opened it.
+    place: Option<Place>,
+}
+
+/// A string that a lone `+` joins to something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Joined {
+    /// The line it ends on, counted from 0.
+    pub(super) line: usize,
+    /// Its text on that line.
+    pub(super) text: Range<usize>,
+    /// The `+` comes after it: what it holds goes on past its end. Else the
+    /// `+` comes before it.
+    pub(super) continued: bool,
+}
+
+/// Whether a `+` joins a string to something, followed in code or in a
+/// comment: `"subvol=@va" + "ult"`, `base + "/@vault"`, also over lines.
+#[derive(Debug, Clone, Default)]
+struct Join {
+    /// The byte read last outside strings and blanks was a lone `+`.
+    plus: bool,
+    /// The string that closed last, with nothing but blanks read after it:
+    /// its line and its text.
+    closed: Option<(usize, Range<usize>)>,
+}
+
+impl Join {
+    /// A byte outside strings that is no blank, a lone `+` when `plus`.
+    fn byte(&mut self, plus: bool, joined: &mut Vec<Joined>) {
+        if let Some((line, text)) = self.closed.take()
+            && plus
+        {
+            joined.push(Joined {
+                line,
+                text,
+                continued: true,
+            });
+        }
+        self.plus = plus;
+    }
 }
 
 impl Frame {
@@ -142,6 +197,15 @@ pub(super) struct Scanner {
     in_block_comment: bool,
     /// The places of the line read last ([`Scanner::places`]).
     places: Vec<Place>,
+    /// The escapes in the strings of the line read last
+    /// ([`Scanner::escapes`]).
+    escapes: Vec<Escape>,
+    /// How many lines were read.
+    lines: usize,
+    /// What a `+` joins, in code and in a comment.
+    joins: [Join; 2],
+    /// Each string a `+` joins to something ([`Scanner::joined`]).
+    joined: Vec<Joined>,
 }
 
 impl Scanner {
@@ -152,6 +216,19 @@ impl Scanner {
         std::mem::take(&mut self.places)
     }
 
+    /// The escapes in the strings of the line [`Scanner::line`] read last,
+    /// in the order of the line ([`escapes`]). The text of a quoted
+    /// attribute name is a string too.
+    pub(super) fn escapes(&mut self) -> Vec<Escape> {
+        std::mem::take(&mut self.escapes)
+    }
+
+    /// Each string of the lines read so far that a lone `+` joins to
+    /// something before or after it, also on another line.
+    pub(super) fn joined(&self) -> &[Joined] {
+        &self.joined
+    }
+
     /// The ranges of `line` that name something ([`Named`]). `line` is read
     /// as the file spells it: a keyword and an attribute name that leads to
     /// a mapping are compared with any case, and [`Scanner::places`] keeps
@@ -159,12 +236,16 @@ impl Scanner {
     pub(super) fn line(&mut self, line: &[u8]) -> Vec<(Range<usize>, Named)> {
         let mut names = Vec::new();
         let mut places = Vec::new();
+        let mut escaped = Vec::new();
         let in_string = matches!(self.code.top(), Some(Frame::Str { .. }));
         let first = skip_blanks(line, 0);
         let indent = comment_text(line, first);
         if self.in_block_comment
             || (!in_string && (line[first..].starts_with(b"#") || line[first..].starts_with(b"/*")))
         {
+            if self.comment.is_none() {
+                self.joins[1] = Join::default();
+            }
             let comment = self.comment.get_or_insert_with(|| Comment {
                 stack: self.code.clone(),
                 base: self.code.0.len(),
@@ -182,7 +263,24 @@ impl Scanner {
             if let Some(Frame::Str { indented, .. }) = self.stack(in_comment).top() {
                 let indented = *indented;
                 let (next, closed) = self.stack(in_comment).string(line, i, indented);
-                places.extend(closed);
+                let raw = i..next.min(line.len());
+                if let Some(text) = escapes::decode(&line[raw.clone()], indented) {
+                    escaped.push(Escape { raw, text });
+                }
+                if let Some(closed) = closed {
+                    if closed.joined {
+                        self.joined.push(Joined {
+                            line: self.lines,
+                            text: closed.range.clone(),
+                            continued: false,
+                        });
+                    }
+                    self.joins[usize::from(in_comment)] = Join {
+                        plus: false,
+                        closed: Some((self.lines, closed.range)),
+                    };
+                    places.extend(closed.place);
+                }
                 i = next;
                 continue;
             }
@@ -190,6 +288,7 @@ impl Scanner {
                 let block = line[i] == b'/';
                 self.in_block_comment = block;
                 if self.comment.is_none() {
+                    self.joins[1] = Join::default();
                     self.comment = Some(Comment {
                         stack: self.code.clone(),
                         base: self.code.0.len(),
@@ -219,21 +318,40 @@ impl Scanner {
                     continue;
                 }
                 attribute = false;
+                let defined = places.len();
                 if let Some(next) =
                     self.stack(in_comment)
                         .definition(line, i, indent, &mut names, &mut places)
                 {
+                    for place in &places[defined..] {
+                        if place.range.start > 0 && line[place.range.start - 1] == b'"' {
+                            escaped.extend(quoted_escapes(line, place.range.clone()));
+                        }
+                    }
+                    self.joins[usize::from(in_comment)].byte(false, &mut self.joined);
                     i = next;
                     continue;
                 }
             }
+            let join = usize::from(in_comment);
             if is_token_start(line, i) {
                 let end = token_end(line, i);
                 attribute = self.stack(in_comment).keyword(&line[i..end], indent);
+                let plus = line[i..end].ends_with(b"+") && !line[i..end].ends_with(b"++");
+                self.joins[join].byte(plus, &mut self.joined);
                 i = end;
                 continue;
             }
-            attribute = self.stack(in_comment).punctuation(line, i, indent);
+            let after_plus = self.joins[join].plus;
+            attribute = self
+                .stack(in_comment)
+                .punctuation(line, i, indent, after_plus);
+            if !matches!(line[i], b' ' | b'\t' | b'\r') {
+                let plus = line[i] == b'+'
+                    && line.get(i + 1) != Some(&b'+')
+                    && (i == 0 || line[i - 1] != b'+');
+                self.joins[join].byte(plus, &mut self.joined);
+            }
             i += if line[i..].starts_with(b"${") || line[i..].starts_with(b"''") {
                 2
             } else {
@@ -249,12 +367,16 @@ impl Scanner {
         } else if let Some(comment) = &mut self.comment {
             comment.stack.end_strings(comment.base);
         }
-        // A string the next line goes on with is no place on it.
-        self.code.forget_openings();
+        // A string the next line goes on with is a place on it only up to
+        // the end of the line.
+        places.extend(self.code.forget_openings(line.len()));
         if let Some(comment) = &mut self.comment {
-            comment.stack.forget_openings();
+            places.extend(comment.stack.forget_openings(line.len()));
         }
+        escaped.sort_by_key(|escape| escape.raw.start);
         self.places = places;
+        self.escapes = escaped;
+        self.lines += 1;
         names
     }
 
@@ -322,8 +444,8 @@ impl Stack {
 
     /// One step inside the string that holds `i`: past an escape, into an
     /// interpolation, or out of the string. Returns where to go on, and the
-    /// place of a string this line opened that ends here.
-    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> (usize, Option<Place>) {
+    /// string that ends here.
+    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> (usize, Option<Closed>) {
         let rest = &line[i..];
         if rest.starts_with(b"$$") {
             return (i + 2, None);
@@ -350,34 +472,48 @@ impl Stack {
         (i + 1, None)
     }
 
-    /// Close the string on top, which ends at `end`: its place, where this
-    /// line opened it.
-    fn close_string(&mut self, end: usize) -> Option<Place> {
-        let (Frame::Str { opened, .. }, _) = self.0.pop()? else {
+    /// Close the string on top, which ends at `end`.
+    fn close_string(&mut self, end: usize) -> Option<Closed> {
+        let (Frame::Str { opened, joined, .. }, _) = self.0.pop()? else {
             return None;
         };
-        let (start, path) = opened?;
-        Some(Place {
+        let start = opened.as_ref().map_or(0, |(start, _)| *start);
+        Some(Closed {
             range: start..end,
-            path,
-            attribute: false,
+            joined,
+            place: opened.map(|(start, path)| Place {
+                range: start..end,
+                path,
+                attribute: false,
+                whole: true,
+            }),
         })
     }
 
-    /// Forget where the open strings started: the next line goes on with
-    /// them.
-    fn forget_openings(&mut self) {
+    /// Forget where the open strings started, at the end of a line that is
+    /// `end` long: the next line goes on with them. Returns the place of
+    /// each one this line opened, up to the end of the line.
+    fn forget_openings(&mut self, end: usize) -> Vec<Place> {
+        let mut places = Vec::new();
         for (frame, _) in &mut self.0 {
-            if let Frame::Str { opened, .. } = frame {
-                *opened = None;
+            if let Frame::Str { opened, .. } = frame
+                && let Some((start, path)) = opened.take()
+            {
+                places.push(Place {
+                    range: start..end,
+                    path,
+                    attribute: false,
+                    whole: false,
+                });
             }
         }
+        places
     }
 
     /// The byte at `i` outside a string and a token: a bracket, a string's
-    /// opening, a `;` or anything else. Returns whether an attribute may
-    /// start after it.
-    fn punctuation(&mut self, line: &[u8], i: usize, indent: usize) -> bool {
+    /// opening (`joined` when a `+` came right before it), a `;` or anything
+    /// else. Returns whether an attribute may start after it.
+    fn punctuation(&mut self, line: &[u8], i: usize, indent: usize, joined: bool) -> bool {
         let rest = &line[i..];
         if rest.starts_with(b"${") {
             self.0.push((Frame::Interpolation, indent));
@@ -389,6 +525,7 @@ impl Stack {
                 Frame::Str {
                     indented: true,
                     opened,
+                    joined,
                 },
                 indent,
             ));
@@ -401,6 +538,7 @@ impl Stack {
                     Frame::Str {
                         indented: false,
                         opened,
+                        joined,
                     },
                     indent,
                 ));
@@ -550,6 +688,7 @@ impl Stack {
                 range,
                 path: full[..=offset + index].to_vec(),
                 attribute: true,
+                whole: true,
             });
         }
         let value = skip_blanks(line, next + 1);
@@ -632,15 +771,45 @@ fn value_names(full: &[String], in_list: bool) -> Option<Named> {
     }
 }
 
-/// The text of a `"…"` string that starts at `at`, when it holds no escape.
+/// The text of a `"…"` string that starts at `at` and ends on its line,
+/// escapes as the file spells them.
 fn quoted(line: &[u8], at: usize) -> Option<Range<usize>> {
     if line.get(at) != Some(&b'"') {
         return None;
     }
-    let len = line[at + 1..]
-        .iter()
-        .position(|&b| b == b'"' || b == b'\\')?;
-    (line[at + 1 + len] == b'"').then_some(at + 1..at + 1 + len)
+    Some(at + 1..string_end(line, at + 1)?)
+}
+
+/// The closing quote of the `"…"` string whose text starts at `from`, past
+/// its escapes.
+fn string_end(line: &[u8], from: usize) -> Option<usize> {
+    let mut at = from;
+    while at < line.len() {
+        match line[at] {
+            b'"' => return Some(at),
+            b'\\' => at += 2,
+            _ => at += 1,
+        }
+    }
+    None
+}
+
+/// The escapes in `range`, the text of a quoted attribute name.
+fn quoted_escapes(line: &[u8], range: Range<usize>) -> Vec<Escape> {
+    let mut found = Vec::new();
+    let mut at = range.start;
+    while at < range.end {
+        if line[at] == b'\\' {
+            let raw = at..(at + 2).min(range.end);
+            if let Some(text) = escapes::decode(&line[raw.clone()], false) {
+                found.push(Escape { raw, text });
+            }
+            at += 2;
+        } else {
+            at += 1;
+        }
+    }
+    found
 }
 
 /// One component of an attribute path being read: its text and its range.
@@ -670,7 +839,7 @@ fn attribute_path(line: &[u8], start: usize) -> Option<(Vec<Component>, usize)> 
 /// without quotes, and where it ends.
 fn component(line: &[u8], start: usize) -> Option<(Component, usize)> {
     if line.get(start) == Some(&b'"') {
-        let close = start + 1 + line[start + 1..].iter().position(|&b| b == b'"')?;
+        let close = string_end(line, start + 1)?;
         let range = start + 1..close;
         return Some(((line[range.clone()].to_vec(), range), close + 1));
     }

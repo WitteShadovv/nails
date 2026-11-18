@@ -220,14 +220,14 @@ fn places_carry_the_path_of_their_definition() {
     assert!(found.contains(&(2, "/".to_string(), "fileSystems./".to_string(), true)));
 }
 
-/// A string that goes on over several lines is no place, and one inside an
-/// interpolation or a `let` binding is no place of the definition around
-/// it: the interpolation's string has no path, the binding's its own.
+/// A string that goes on over several lines is a place only on the line
+/// that opens it, up to the end of that line, and not a whole one; one
+/// inside an interpolation or a `let` binding is no place of the definition
+/// around it: the interpolation's string has no path, the binding's its own.
 #[test]
 fn a_string_over_lines_or_in_an_interpolation_is_no_place_of_the_definition() {
-    let found = places(
-        "{\n  x.device = ''\n    /dev/vda2\n  '';\n  y.device = \"${\"/dev/vda2\"}\";\n  z = let d = \"/dev/vda2\"; in d;\n}",
-    );
+    let text = "{\n  x.device = ''\n    /dev/vda2\n  '';\n  y.device = \"${\"/dev/vda2\"}\";\n  z = let d = \"/dev/vda2\"; in d;\n}";
+    let found = places(text);
     let strings: Vec<(usize, String, String)> = found
         .into_iter()
         .filter(|(_, _, _, attribute)| !attribute)
@@ -236,9 +236,64 @@ fn a_string_over_lines_or_in_an_interpolation_is_no_place_of_the_definition() {
     assert_eq!(
         strings,
         [
+            (2, String::new(), "x.device".to_string()),
             (5, "/dev/vda2".to_string(), String::new()),
             (5, "${\"/dev/vda2\"}".to_string(), "y.device".to_string()),
             (6, "/dev/vda2".to_string(), "d".to_string()),
         ]
     );
+    let mut scanner = Scanner::default();
+    let whole: Vec<Vec<bool>> = text
+        .split('\n')
+        .map(|line| {
+            scanner.line(line.as_bytes());
+            scanner
+                .places()
+                .iter()
+                .filter(|place| !place.attribute)
+                .map(|place| place.whole)
+                .collect()
+        })
+        .collect();
+    assert_eq!(whole[1], [false]);
+    assert_eq!(whole[4], [true, true]);
+}
+
+/// A lone `+` before or after a string joins it, also over a line break
+/// and in a comment; `++` and a `+` inside a word or a string do not.
+#[test]
+fn a_plus_joins_the_strings_next_to_it() {
+    let joined = |text: &str| {
+        let mut scanner = Scanner::default();
+        let lines: Vec<&str> = text.split('\n').collect();
+        for line in &lines {
+            scanner.line(line.as_bytes());
+        }
+        scanner
+            .joined()
+            .iter()
+            .map(|joined| {
+                (
+                    joined.line,
+                    lines[joined.line][joined.text.clone()].to_string(),
+                    joined.continued,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        joined("x = \"a\" + \"b\";"),
+        [(0, "a".into(), true), (0, "b".into(), false)]
+    );
+    assert_eq!(joined("x = (\"a\"\n  + b);"), [(0, "a".to_string(), true)]);
+    assert_eq!(joined("x = p+\"b\";"), [(0, "b".to_string(), false)]);
+    assert_eq!(joined("# x = \"a\" + b;"), [(0, "a".to_string(), true)]);
+    for text in [
+        "x = [ \"a\" ] ++ [ \"b\" ];",
+        "x = \"a+\" \"+b\";",
+        "x = \"a\"; # + b",
+        "x = c++ \"b\";",
+    ] {
+        assert_eq!(joined(text), [], "{text}");
+    }
 }

@@ -32,9 +32,10 @@ const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 /// and `/home`: in the `device` or `label` of a `fileSystems` entry for `/`
 /// or a system folder, and in a `boot.initrd.luks.devices` entry's name or
 /// `device` ([`verify_base_config_clean_allowing`]). Such a name anywhere
-/// else, the root's mount point, its own folder and subvolume by their
-/// names, every other device's names, a place that cannot be read, and
-/// every name without the flag still refuse.
+/// else, the root's mount point, its own folder and subvolume by the names
+/// the scan reads, a value the scan cannot read where one could name them,
+/// every other device's names, a place that cannot be read, and every name
+/// without the flag still refuse.
 #[derive(Debug, Clone, Default)]
 pub struct SuspiciousNailsReferenceCheck {
     hidden_volume_root: PathBuf,
