@@ -6,6 +6,7 @@
 use super::*;
 use crate::session::fstab::parse_fstab;
 use nails_teardown::mountinfo::parse_mountinfo;
+use nails_teardown::whole_root::plan::{MaskCause, RequiredMask};
 
 const HIDDEN: &str = "/mnt/data";
 
