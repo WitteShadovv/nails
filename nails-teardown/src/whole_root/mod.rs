@@ -38,10 +38,10 @@
 //! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
 //!   volume (a refused entry) or in the runtime directory (a refused way
 //!   back) so `status` can say so;
-//! - [`tail`]: the hidden session's last processes but udevd's, journald's
-//!   sockets and the hidden filesystem's unmount line, ended, emptied and
-//!   quieted before the kmsg cursor, and the empty `/run/nextroot` the switch
-//!   leaves;
+//! - [`tail`]: the hidden session's processes that PID 1 would kill at the
+//!   switch but udevd's, journald's sockets and the hidden filesystem's
+//!   unmount line, ended, emptied and quieted before the kmsg cursor, and
+//!   the empty `/run/nextroot` the switch leaves;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in), with
 //!   [`guard_policy`] (what the loaded SELinux policy lets the guard do);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;

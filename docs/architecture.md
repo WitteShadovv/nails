@@ -268,8 +268,9 @@ An activation moves through these layers; each names its modules and crates:
   back, scrubs `/run`, puts those records back and, once the hidden units have
   stopped, gives the decoy's `utab` lines back to the mounts the way back
   restored, waits, bounded, until PID 1 has taken down the units of the
-  mounts the scrub detached, ends the session's last processes but udevd's,
-  which it leaves to PID 1, quiets an ext4 hidden volume's unmount line, last
+  mounts the scrub detached, ends every process of the session that PID 1
+  would kill at the switch but udevd's, which it leaves to PID 1, quiets an
+  ext4 hidden volume's unmount line, last
   empties journald's sockets in place and writes the kmsg cursor
   (`whole_root::tail`). libmount joins a
   `utab` line to the

@@ -1130,8 +1130,8 @@ of this changelog for that version becomes the release notes word for word, and
   unit after the cursor: the step now waits, for about two seconds at most, until PID 1 has taken
   those units down. The line still follows the cursor where PID 1 has not by then, where
   `systemctl` gives no answer or is missing, and for a mount point whose unit the wait cannot name
-  (a path that is not valid UTF-8, or a unit name of 256 characters or more, which PID 1 shortens
-  with a hash). It leaves udevd running, as before, for the events of the network restore, so
+  (a unit name of 256 characters or more, which PID 1 shortens with a hash). It leaves udevd
+  running, as before, for the events of the network restore, so
   where the soft-reboot leaves udevd running
   (as with systemd 257 and 255 on Debian 13 and Ubuntu 24.04) PID 1 still ends udevd and its
   workers after the cursor with the generic lines a plain soft-reboot logs. journald's sockets,
