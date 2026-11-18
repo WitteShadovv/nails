@@ -295,11 +295,10 @@ class ControlTest(unittest.TestCase):
         ):
             ring.append(Record(last.seq + n, last.usec + n, text))
         found = self.judge(ring).findings
-        # The audit socket, which the way back leaves closed, aside.
-        self.assertEqual(len(found), 3, found)
+        self.assertEqual(len(found), 4, found)
         self.assertEqual(
             [f.split(":")[0] for f in found],
-            ["the decoy's start opened journald's socket anew"] * 2
+            ["the decoy's start opened journald's socket anew"] * 3
             + ["the decoy's start opened udevd's socket anew"],
         )
         # One the hidden start opened anew after the entry, as the decoy's own
@@ -314,8 +313,9 @@ class ControlTest(unittest.TestCase):
             Record(1402, 50000200, "systemd[1]: Listening on udev Control Socket."),
         ]
         found = self.judge(entry + ring).findings
-        self.assertEqual(len(found), 1, found)
+        self.assertEqual(len(found), 2, found)
         self.assertIn("(/dev/log)", found[0])
+        self.assertIn("Journal Audit Socket", found[1])
 
     def test_udevd_s_kernel_socket_opened_anew_by_the_decoy_is_found(self) -> None:
         # Stopped before the restores' events, udevd leaves PID 1 to fail its

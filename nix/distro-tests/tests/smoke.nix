@@ -1010,12 +1010,17 @@ distroVm.buildVmTest {
 
 
     def journald_sockets():
-        # When journald's sockets were made, as the decoy shows it: the
-        # socket file's change time and the unit's start. Printed, not
-        # judged: the way back makes them anew (journal-socket-carry).
+        # Which journald sockets the decoy has, as it shows them: the socket
+        # files' inodes and change times and the units' starts. Printed, not
+        # judged: before systemd 258 PID 1 itself closes one that receives
+        # anything once journald has stopped for a soft-reboot, and the
+        # Fedora gate judges them against the cold boot's.
         return vm.succeed(
-            "stat -c 'socket file %z' /run/systemd/journal/socket; "
-            "systemctl show -p ActiveEnterTimestamp systemd-journald.socket"
+            "stat -c 'socket file %n %i %z' /run/systemd/journal/socket "
+            "/run/systemd/journal/dev-log /run/systemd/journal/stdout || true; "
+            "systemctl show -p Id -p ActiveState -p ActiveEnterTimestamp "
+            "systemd-journald.socket systemd-journald-dev-log.socket "
+            "systemd-journald-audit.socket || true"
         ).strip()
 
 
@@ -1023,8 +1028,7 @@ distroVm.buildVmTest {
         # After the way back: the decoy's journal holds no record of the
         # hidden session past the kmsg cursor, nor anything the hidden root
         # sent journald's sockets after its journald stopped; the decoy's
-        # start opened neither journald's socket nor its /dev/log socket
-        # anew, nor udevd's sockets; the plants ran, and what the lingering
+        # start opened none of journald's sockets anew, nor udevd's sockets; the plants ran, and what the lingering
         # unit's stop wrote to /run and udevd's record of the session's link
         # are gone. The kernel's
         # lines of a device-mapper volume's teardown are the residue the

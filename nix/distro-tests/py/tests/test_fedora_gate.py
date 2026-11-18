@@ -30,21 +30,35 @@ def quiet(call: Any, *args: Any) -> Any:
         return call(*args)
 
 
-class SocketLabelTest(unittest.TestCase):
-    def test_only_a_service_s_send_to_journald_s_socket_waits(self) -> None:
-        def avc(signature: str, source: str = "other") -> dict[str, Any]:
-            return {"signature": signature, "source": source}
+class SocketIdentityTest(unittest.TestCase):
+    BOOT = (
+        "socket /run/systemd/journal/dev-log inode=11 label=u:r:kernel_t:s0\n"
+        "socket /run/systemd/journal/socket inode=12 label=u:r:kernel_t:s0\n"
+        "socket audit inode=13 label=u:r:kernel_t:s0\n"
+        "\n"
+        "unit systemd-journald.socket active since=1000\n"
+    )
 
-        oomd = "kernel {sendto} systemd-oomd systemd_oomd_t syslogd_t unix_dgram_socket"
-        self.assertTrue(fg.sends_to_journald(avc(oomd)))
-        for other in (
-            avc(oomd, "nails"),
-            avc("kernel {write} x x_t syslogd_t unix_dgram_socket"),
-            avc("kernel {sendto} x x_t kernel_t unix_dgram_socket"),
-            avc("kernel {sendto} x x_t syslogd_t unix_stream_socket"),
-            avc(""),
+    def test_the_boot_s_sockets_are_the_same(self) -> None:
+        boot = fg.socket_identity(self.BOOT)
+        self.assertEqual(len(boot), 4)
+        self.assertTrue(fg.same_sockets(boot, fg.socket_identity(self.BOOT)))
+
+    def test_a_socket_made_anew_differs(self) -> None:
+        boot = fg.socket_identity(self.BOOT)
+        for change in (
+            ("inode=12", "inode=99"),
+            ("kernel_t:s0\nsocket audit", "syslogd_t:s0\nsocket audit"),
+            ("since=1000", "since=2000"),
+            ("socket audit inode=13 label=u:r:kernel_t:s0\n", ""),
         ):
-            self.assertFalse(fg.sends_to_journald(other), other)
+            now = fg.socket_identity(self.BOOT.replace(*change))
+            self.assertFalse(fg.same_sockets(boot, now), change)
+
+    def test_without_the_native_socket_nothing_is_judged_the_same(self) -> None:
+        self.assertFalse(fg.same_sockets([], []))
+        unit = ["unit systemd-journald.socket active since=1"]
+        self.assertFalse(fg.same_sockets(unit, unit))
 
 
 class PrepareTest(unittest.TestCase):
@@ -374,8 +388,7 @@ class CarriedTest(unittest.TestCase):
             kmsg(21, listening.format("systemd-journald-dev-log.socket", "Log")),
             kmsg(22, listening.format("systemd-oomd.socket", "OOM Killer Socket")),
         ]
-        # The audit socket, which the way back leaves closed, aside.
-        self.assertEqual(len(fg.reopened_sockets(log, 15)), 1)
+        self.assertEqual(len(fg.reopened_sockets(log, 15)), 2)
         self.assertEqual(fg.reopened_sockets(log, 30), [])
 
     def test_the_late_writer_logs_through_each_socket(self) -> None:
