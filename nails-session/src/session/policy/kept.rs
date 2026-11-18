@@ -35,6 +35,11 @@ pub struct KeptOff {
     /// one in reads it as a decoy disk the session keeps off by that mask
     /// alone ([`super::super::mount_units`]).
     pub noauto_masks: Vec<String>,
+    /// The units masked because what describes them disagrees, where only a
+    /// skip of which NAILS reads that a boot target may require it took part
+    /// ([`Origin::Needed`] with `may`): warned of, but not among
+    /// [`required_masks`](Self::required_masks).
+    pub may_conflicts: Vec<String>,
 }
 
 impl KeptOff {
@@ -108,7 +113,9 @@ fn device_of(fstab: &[FstabEntry], unit: &str) -> Option<Option<PathBuf>> {
 /// free to start. Two skips of the same unit become one, pulling in what
 /// either pulls in; when they wait for different devices the unit is masked.
 /// A unit a boot target requires that ends up masked is recorded with why
-/// ([`KeptOff::required_masks`]).
+/// ([`KeptOff::required_masks`]), where NAILS reads that a target requires
+/// it; where it only reads that one may, the unit is warned of
+/// ([`KeptOff::may_conflicts`]).
 ///
 /// The mask of a `noauto` line that nothing NAILS reads pulls in
 /// ([`Decision::is_noauto_mask`]) is the one exception: a skip of the same
@@ -133,10 +140,13 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
         };
         into.extend(decision.masked_units().iter().cloned());
     }
-    let mut skips: Vec<Skip> = decisions
+    // Each skip with whether NAILS reads that a boot target requires it.
+    let mut skips: Vec<(Skip, bool)> = decisions
         .iter()
-        .filter_map(Decision::skip)
-        .cloned()
+        .filter_map(|decision| match decision {
+            Decision::Skip { skip, may, .. } => Some((skip.clone(), !may)),
+            _ => None,
+        })
         .collect();
     for entry in fstab
         .iter()
@@ -144,11 +154,12 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     {
         let automount = automount_unit(&entry.file);
         if required_by(entry).is_some() {
-            skips.push(Skip {
+            let skip = Skip {
                 units: vec![automount],
                 pulled: Vec::new(),
                 device: None,
-            });
+            };
+            skips.push((skip, true));
         } else {
             masks.push(automount);
         }
@@ -157,18 +168,25 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     for (units, cause, device) in decisions.iter().filter_map(required_masked) {
         kept.record_masked(units, cause, device);
     }
-    let mut merged: Vec<Skip> = Vec::new();
-    for skip in skips {
-        match merged.iter_mut().find(|other| other.units == skip.units) {
-            Some(other) if other.device == skip.device => {
-                for unit in skip.pulled {
-                    if !other.pulled.contains(&unit) {
-                        other.pulled.push(unit);
+    let mut merged: Vec<(Skip, bool)> = Vec::new();
+    for (skip, sure) in skips {
+        match merged
+            .iter_mut()
+            .find(|(other, _)| other.units == skip.units)
+        {
+            Some((other, other_sure)) => {
+                *other_sure |= sure;
+                if other.device == skip.device {
+                    for unit in skip.pulled {
+                        if !other.pulled.contains(&unit) {
+                            other.pulled.push(unit);
+                        }
                     }
+                } else {
+                    masks.extend(skip.units);
                 }
             }
-            Some(_) => masks.extend(skip.units),
-            None => merged.push(skip),
+            None => merged.push((skip, sure)),
         }
     }
     for unit in masks {
@@ -180,7 +198,10 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
         if kept.masks.contains(&unit) {
             continue;
         }
-        let skip = merged.iter_mut().find(|skip| skip.units.contains(&unit));
+        let skip = merged
+            .iter_mut()
+            .map(|(skip, _)| skip)
+            .find(|skip| skip.units.contains(&unit));
         match (skip, device_of(fstab, &unit)) {
             (Some(skip), Some(device)) if skip.device == device => {
                 let lines = fstab
@@ -200,11 +221,17 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
             }
         }
     }
-    for skip in merged {
-        if skip.units.iter().any(|unit| kept.masks.contains(unit)) {
+    for (skip, sure) in merged {
+        if !skip.units.iter().any(|unit| kept.masks.contains(unit)) {
+            kept.skips.push(skip);
+        } else if sure {
             kept.record_masked(&skip.units, MaskCause::ConflictingLines, None);
         } else {
-            kept.skips.push(skip);
+            for unit in skip.units {
+                if !kept.may_conflicts.contains(&unit) {
+                    kept.may_conflicts.push(unit);
+                }
+            }
         }
     }
     kept

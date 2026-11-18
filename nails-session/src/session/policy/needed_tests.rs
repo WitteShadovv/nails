@@ -25,3 +25,29 @@ fn a_pull_is_named_as_the_fstab_generator_names_it() {
         assert_eq!(pulled_unit(value), unit, "{value}");
     }
 }
+
+/// systemd 260.5's and 261.3's fstab generators wrote `Requires=data.mount`
+/// for `x-systemd.requires=/data,comment=a\,b` and none for
+/// `comment=a\,x-systemd.requires=/data`, which they read as one option: an
+/// option before the first with a backslash names the mount as it reads, one
+/// after it only may.
+#[test]
+fn an_option_after_a_backslash_names_a_mount_only_may() {
+    let lines = crate::session::fstab::parse_fstab(
+        "/dev/vdb1 /data ext4 noauto 0 0\n\
+         tmpfs /t1 tmpfs x-systemd.requires=/data,comment=a\\,b 0 0\n\
+         tmpfs /t1 tmpfs comment=a\\,x-systemd.requires=/data 0 0\n",
+    );
+    assert_eq!(
+        need(&lines[1], &lines[0]),
+        Some(Need::Requires),
+        "{:?}",
+        lines[1]
+    );
+    assert_eq!(
+        need(&lines[2], &lines[0]),
+        Some(Need::Unread),
+        "{:?}",
+        lines[2]
+    );
+}
