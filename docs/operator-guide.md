@@ -316,13 +316,21 @@ Keep all of it `root`-owned on the hidden volume.
      mounts nothing.
    - a `noauto` entry of a local filesystem that is not mounted now is
      masked, with its automount, whatever pulls it in: a unit outside the
-     fstab that requires its mount (a mount unit with `Requires=` on it that a
-     boot target links, say) would have the hidden systemd mount the disk
-     read-write, and cannot start in the hidden session instead, as it
-     requires the mount by name. Where a boot
-     target requires that unit, the target is not reached; NAILS warns of
-     that where it reads the pull (an entry that needs the mount, below, and a
-     skipped unit whose pulls reach it), not for other units. Each option is
+     fstab that pulls in its mount (a mount unit with `Requires=` on it that a
+     boot target wants, say) would have the hidden systemd mount the disk
+     read-write. Masked, the disk is mounted for none of them: a unit that
+     requires the mount by name (`Requires=`) cannot start in the hidden
+     session, and systemd 260.5 started one that requires it by a path
+     (`RequiresMountsFor=`, a mount point below it) without the mount.
+     Where NAILS reads that a boot target requires the mount through a unit
+     the boot starts (an entry that needs it, below, or a mount unit linked
+     in a target's `.requires` directory), the entry is kept off as one the boot
+     mounts: skipped where its device is there, masked with a warning where
+     it is not. Where NAILS does not read the pull, a unit that requires the
+     mount by name does not start, and a target that requires that unit is not
+     reached, with no warning. The
+     `noauto` entries of the fstab a hidden NixOS generation brings get the
+     same mask, as NAILS cannot tell their disks from the decoy's. Each option is
      read by its name as systemd's fstab generator reads it:
      `noauto,auto=1` is mounted at boot and `noauto,x-systemd.automount=0`
      on access, and both are kept off as above. A `noauto` entry with an
