@@ -441,7 +441,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         mitigation: "Mount the decoy root noatime, which leaves the links' access times alone too, run check as root, start NAILS from a shell that is root already, and run nails recover after an interrupted activation.",
         doc_anchor: "operator-guide.md#what-check-touches",
         e2e: E2e::None(
-            "asserted by the access-time scenario under nix/distro-tests (a Debian 13 decoy mounted relatime, and a Fedora 44 one with SELinux enforcing), run on a KVM host outside the NixOS e2e suite: it lists these links and fails on any other read of the decoy disk by check, activation and the way back, for an operator account named as sudo names it, that a plain soft-reboot does not make, though it may not see a read of /etc/selinux/config, which it does not age",
+            "asserted by the access-time scenario under nix/distro-tests (a Debian 13 decoy mounted relatime, and Fedora 44 and 45 ones with SELinux enforcing), run on a KVM host outside the NixOS e2e suite: it lists these links and fails on any other read of the decoy disk by check, activation and the way back, for an operator account named as sudo names it, that a plain soft-reboot does not make, though it may not see a read of /etc/selinux/config, which it does not age",
         ),
         residual: true,
         conclusion: None,

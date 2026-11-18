@@ -1370,7 +1370,8 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
     are. Run `check` with `sudo`.
 
   The access-time scenario of the distribution tests checks this on a Debian
-  13 decoy mounted `relatime`, and on a Fedora 44 one with SELinux enforcing:
+  13 decoy mounted `relatime`, and on Fedora 44 and 45 ones with SELinux
+  enforcing:
   it ages every entry of the decoy disk but apt's
   configuration and `/etc/selinux/config`, whose change times NAILS judges,
   runs `check` and two sessions with their ways back for an operator account

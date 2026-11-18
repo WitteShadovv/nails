@@ -1080,8 +1080,8 @@ btmp as they were, its wtmp without a record on the login's terminal), with
 the same logins on the decoy as the positive control.
 ### The access-time scenarios
 
-`access-times.nix` runs `tests/access-times.nix` on Debian 13 and on Fedora 44,
-booted with SELinux enforcing, with the release binary, as one host driver per
+`access-times.nix` runs `tests/access-times.nix` on Debian 13 and on Fedora 44
+and 45, booted with SELinux enforcing, with the release binary, as one host driver per
 image (`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
 and a plain soft-reboot does not, on a root mounted `relatime`: before each
 phase it sets the access time of every entry of the decoy disk's filesystems two
