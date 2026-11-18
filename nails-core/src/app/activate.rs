@@ -347,8 +347,12 @@ pub fn prepare(
         super::engine::build_nixos_manager(config, state_path, options.overlay_only, env);
     manager.set_verbosity(verbosity);
 
-    if manager.session_view().is_hidden() {
-        return Prepared::AlreadyActive;
+    // Without the mount table neither side can be told: refused before
+    // anything is written, as a gate that cannot be evaluated is.
+    match manager.session_view() {
+        Ok(view) if view.is_hidden() => return Prepared::AlreadyActive,
+        Ok(_) => {}
+        Err(error) => return Prepared::AttachError(error),
     }
 
     // The platform gate: a host NAILS refuses is declined here, before the state

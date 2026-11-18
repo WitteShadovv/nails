@@ -101,6 +101,24 @@ fn a_btrfs_subvolume_with_a_comma_in_its_path_is_refused() {
     assert!(text.contains("/@a,b"), "{text}");
 }
 
+/// A subvolume whose name holds a byte that is not valid UTF-8: the mount
+/// table is read (it failed the read before), the subvolume is recognised by
+/// its exact bytes, and it is refused, since the option text the way back
+/// hands to mount(2) cannot name it.
+#[test]
+fn a_btrfs_subvolume_whose_name_is_not_utf8_is_refused_by_name() {
+    let table: &[u8] =
+        b"1 0 0:30 /@a\xff / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@a\xff\n";
+    let error = decoy_root_of(&parse_mountinfo(table), Path::new("/")).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("not valid UTF-8"), "{text}");
+    // Another subvolume named in subvol= is no subvolume root at all.
+    let other: &[u8] =
+        b"1 0 0:30 /@a\xff / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@a\xfe\n";
+    let error = decoy_root_of(&parse_mountinfo(other), Path::new("/")).unwrap_err();
+    assert!(error.to_string().contains("bind"), "{error}");
+}
+
 /// A minimal `EntryInputs` for the helpers that do not build a system:
 /// no builder, no operator, the persona at its default, and a host whose facts
 /// report no SELinux.

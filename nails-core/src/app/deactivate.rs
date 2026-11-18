@@ -52,6 +52,10 @@ pub enum Prepared {
     /// Carries why the plan cannot be read. Only a power-off ends such a
     /// session: a plain emergency finds no plan either, and does nothing.
     WayBackUnknown(String),
+    /// The mount table could not be read, so whether this is a hidden
+    /// session cannot be told: refused before anything is asked or done.
+    /// Carries why it could not be read.
+    MountTableUnread(String),
     /// In a hidden session: ready to confirm, lock and leave.
     Ready(Box<ReadyDeactivation>),
 }
@@ -185,7 +189,7 @@ impl LockedDeactivation {
     /// caller that shows a person what comes asks first, so that a refusal
     /// comes before it.
     pub fn may_leave(&self, to: LeaveTo) -> Result<(), NailsError> {
-        let view = self.ready.manager.session_view();
+        let view = self.ready.manager.session_view()?;
         let host = RealTargetHost::for_plan(match &view {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
@@ -202,7 +206,7 @@ impl LockedDeactivation {
     /// stops the terminal; a machine-readable result waits for the outcome.
     pub fn leave(&mut self, to: LeaveTo) -> Result<LeaveReport, NailsError> {
         let manager = &mut self.ready.manager;
-        let view = manager.session_view();
+        let view = manager.session_view()?;
         let host = RealTargetHost::for_plan(match &view {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
@@ -219,8 +223,10 @@ pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
     let state_path = config.state_file_path.clone();
     let manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    let view = manager.session_view();
-    prepared(manager, view)
+    match manager.session_view() {
+        Ok(view) => prepared(manager, view),
+        Err(error) => Prepared::MountTableUnread(error.to_string()),
+    }
 }
 
 /// What a deactivation can do where the probe found the machine (`view`):
@@ -631,6 +637,7 @@ mod tests {
         ) {
             Prepared::WayBackUnknown(reason) => assert_eq!(reason, why),
             Prepared::NotHidden => panic!("refused as not hidden"),
+            Prepared::MountTableUnread(_) => panic!("refused for the mount table"),
             Prepared::Ready(_) => panic!("handed out a deactivation without a way back"),
         }
     }

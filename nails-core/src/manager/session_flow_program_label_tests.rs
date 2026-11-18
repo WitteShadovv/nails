@@ -68,7 +68,7 @@ fn the_copy_takes_the_label_only_where_selinux_may_run_and_no_unit_changes() {
                     root: decoy.path().to_path_buf(),
                     run: run.path().to_path_buf(),
                 },
-                mounts: Some(parse_mountinfo(DECOY_TABLE)),
+                mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
             };
             let mut m = manager(hidden.path());
             m.config.backend_watch.enabled = true;
@@ -149,7 +149,7 @@ fn an_entry_whose_policy_keeps_the_steps_confined_is_refused_before_anything_is_
                     root: decoy.path().to_path_buf(),
                     run: run.path().to_path_buf(),
                 },
-                mounts: Some(parse_mountinfo(DECOY_TABLE)),
+                mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
             };
             let mut m = manager(hidden.path());
             m.set_host_profile(selinux_kernel());
@@ -235,7 +235,7 @@ fn a_labelled_entry_is_refused_and_undone_after_the_reload_and_at_the_arm() {
                     root: decoy.path().to_path_buf(),
                     run: run.path().to_path_buf(),
                 },
-                mounts: Some(parse_mountinfo(DECOY_TABLE)),
+                mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
             };
             let mut m = manager(hidden.path());
             m.set_host_profile(selinux_kernel());

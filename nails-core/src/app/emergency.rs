@@ -106,6 +106,7 @@ fn side_name(side: Side) -> &'static str {
         Side::Hidden => "hidden",
         Side::Decoy => "decoy",
         Side::None => "none",
+        Side::Unknown => "unknown",
     }
 }
 
@@ -193,6 +194,7 @@ mod tests {
             runtime_dir: dir.path().join("run/overlay-runtime"),
             cgroup_root: dir.path().join("cgroup"),
             protected_pids: Vec::new(),
+            mountinfo: std::path::PathBuf::from(nails_teardown::mountinfo::SELF_MOUNTINFO),
             act: false,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };

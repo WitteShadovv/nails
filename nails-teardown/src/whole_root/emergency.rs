@@ -46,11 +46,17 @@
 //! it), it powers off (or reboots, as asked) at once, past PID 1's queue,
 //! where that soft-reboot could otherwise run first.
 //!
+//! Where the mount table cannot be read, which side this is cannot be told:
+//! with a session plan, it powers off (or reboots, as asked) at once, past
+//! PID 1's queue, as a decoy-side emergency does where the entry's
+//! soft-reboot may still come. That ends a hidden session and an interrupted
+//! activation alike, and nothing of either reaches the decoy.
+//!
 //! Every phase is timed. Nothing here reads the configuration, the state file
 //! or the hidden volume, and nothing logs; the caller prints and logs the
 //! report afterwards, if it still can.
 
-use crate::mountinfo::read_mountinfo;
+use crate::mountinfo::{SELF_MOUNTINFO, read_mountinfo_at};
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
@@ -95,6 +101,11 @@ pub enum Side {
     Decoy,
     /// No session plan.
     None,
+    /// A session plan, but a mount table that could not be read, so which
+    /// side this is cannot be told: it powers off (or reboots, as asked) at
+    /// once, past PID 1's queue ([`force`]), which ends a hidden session as
+    /// it ends an interrupted activation.
+    Unknown,
 }
 
 /// What the host lets the hot path do. Tests turn `act` off: the plan's state
@@ -111,6 +122,8 @@ pub struct Host {
     pub cgroup_root: PathBuf,
     /// Further pids never to kill.
     pub protected_pids: Vec<u32>,
+    /// The mount table that tells the side ([`SELF_MOUNTINFO`]).
+    pub mountinfo: PathBuf,
     /// Whether to act on the host at all.
     pub act: bool,
     /// What gives the RAM copy of the binary the label the plan records
@@ -128,6 +141,7 @@ impl Host {
             runtime_dir: PathBuf::from(RUNTIME_DIR),
             cgroup_root: PathBuf::from(crate::cgroup::CGROUP_ROOT),
             protected_pids: Vec::new(),
+            mountinfo: PathBuf::from(SELF_MOUNTINFO),
             act: true,
             selinux: &selinux::KERNEL,
         }
@@ -198,16 +212,34 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     if host.act {
         tools::survive_session_stop();
     }
-    let entries = read_mountinfo().unwrap_or_default();
-    let side = match &plan {
-        Some(p) if ret::in_hidden_root(&entries, p) => Side::Hidden,
-        Some(_) => Side::Decoy,
-        None => Side::None,
+    let entries = read_mountinfo_at(&host.mountinfo);
+    let side = match (&plan, &entries) {
+        (None, _) => Side::None,
+        (Some(_), Err(_)) => Side::Unknown,
+        (Some(p), Ok(entries)) if ret::in_hidden_root(entries, p) => Side::Hidden,
+        (Some(_), Ok(_)) => Side::Decoy,
     };
     let mut report = HotReport::new(side, requested);
     match (side, plan) {
         (Side::Hidden, Some(mut plan)) => hidden(&mut plan, host, &mut report),
         (Side::Decoy, Some(plan)) => decoy_side(&plan, host, requested, &mut report),
+        (Side::Unknown, Some(plan)) => {
+            let error = entries.err().map(|e| e.to_string()).unwrap_or_default();
+            let finish = match requested {
+                Finish::Return => Finish::Poweroff,
+                asked => asked,
+            };
+            let what = if finish == Finish::Reboot {
+                "rebooting"
+            } else {
+                "powering off"
+            };
+            report.fallback = Some(format!(
+                "the mount table could not be read ({error}), so whether a hidden session runs \
+                 cannot be told; {what} at once"
+            ));
+            force(&plan, host, finish, &mut report);
+        }
         _ => {
             if requested != Finish::Return {
                 dispatch_without_plan(host, requested, &mut report);

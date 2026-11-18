@@ -27,8 +27,10 @@
 //! engine at `<root>/nails`, so that is the engine a page names when the
 //! window was not told one.
 
+use std::ffi::OsStr;
 use std::fs::File;
 use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -169,23 +171,35 @@ fn shell_word(word: &str) -> String {
 /// Decide how the window reaches the helper: `engine` is the engine a menu
 /// entry named with `--engine`, if any, `launcher` the socket the launcher
 /// handed the window, if any, `program` the window's own program and
-/// `mountinfo` this process's mount table.
+/// `mountinfo` this process's mount table, byte for byte, or why it could not
+/// be read.
 ///
 /// A named engine is the menu entry's way in, which never reads its standard
-/// input as the launcher's socket; the launcher names none.
+/// input as the launcher's socket; the launcher names none. Without the mount
+/// table a named engine is refused, and the refusal says that the table could
+/// not be read.
 #[must_use]
 pub fn decide(
     engine: Option<PathBuf>,
     launcher: Option<UnixStream>,
     program: &Path,
-    mountinfo: Option<&str>,
+    mountinfo: Result<&[u8], String>,
 ) -> Start {
     if let Some(engine) = engine {
+        let mountinfo = match mountinfo {
+            Ok(mountinfo) => mountinfo,
+            Err(why) => {
+                return Start::Refuse(format!(
+                    "The window could not read the mount table ({why}), so it cannot tell that \
+                     it runs in a hidden session. It opens from a terminal: {}",
+                    gui_line(Some(&engine))
+                ));
+            }
+        };
         let hidden = engine.is_absolute()
-            && match (engine.parent(), mountinfo) {
-                (Some(root), Some(mountinfo)) => root_is_hidden_overlay(mountinfo, root),
-                _ => false,
-            };
+            && engine
+                .parent()
+                .is_some_and(|root| root_is_hidden_overlay(mountinfo, root));
         if hidden {
             return Start::Pkexec { engine };
         }
@@ -230,41 +244,45 @@ pub fn take_launcher_socket() -> Option<UnixStream> {
 }
 
 /// Whether `/` is the overlay of a hidden session whose upper lies under
-/// `root`, read from `mountinfo` (the text of `/proc/self/mountinfo`). The
-/// last mount on `/` is the one in view. Anything unexpected reads as no.
+/// `root`, read from `mountinfo` (`/proc/self/mountinfo`, byte for byte: a
+/// path in it may hold any byte, valid UTF-8 or not). The last mount on `/`
+/// is the one in view. Anything unexpected reads as no.
 #[must_use]
-pub fn root_is_hidden_overlay(mountinfo: &str, root: &Path) -> bool {
+pub fn root_is_hidden_overlay(mountinfo: &(impl AsRef<[u8]> + ?Sized), root: &Path) -> bool {
     let Some(entry) = mountinfo
-        .lines()
+        .as_ref()
+        .split(|&b| b == b'\n')
         .filter_map(MountLine::parse)
-        .rfind(|entry| entry.mount_point == "/")
+        .rfind(|entry| entry.mount_point == b"/")
     else {
         return false;
     };
-    if entry.fstype != "overlay" {
+    if entry.fstype != b"overlay" {
         return false;
     }
     entry
         .super_options
-        .split(',')
-        .filter_map(|option| option.strip_prefix("upperdir="))
+        .split(|&b| b == b',')
+        .filter_map(|option| option.strip_prefix(b"upperdir="))
         .map(unescape_octal)
-        .any(|upper| upper.starts_with('/') && Path::new(&upper).starts_with(root))
+        .any(|upper| {
+            upper.starts_with(b"/") && Path::new(OsStr::from_bytes(&upper)).starts_with(root)
+        })
 }
 
 /// The fields of one mountinfo line the window reads.
 struct MountLine<'a> {
-    mount_point: String,
-    fstype: &'a str,
-    super_options: &'a str,
+    mount_point: Vec<u8>,
+    fstype: &'a [u8],
+    super_options: &'a [u8],
 }
 
 impl<'a> MountLine<'a> {
     /// `id parent dev root mount-point options [optional...] - fstype source
     /// super-options`, or `None` for a line of another shape.
-    fn parse(line: &'a str) -> Option<Self> {
-        let fields: Vec<&str> = line.split(' ').collect();
-        let separator = fields.iter().position(|&field| field == "-")?;
+    fn parse(line: &'a [u8]) -> Option<Self> {
+        let fields: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
+        let separator = fields.iter().position(|&field| field == b"-")?;
         if separator < 6 || fields.len() < separator + 4 {
             return None;
         }
@@ -276,9 +294,10 @@ impl<'a> MountLine<'a> {
     }
 }
 
-/// Undo the kernel's `\ooo` octal escapes of a mountinfo field.
-fn unescape_octal(field: &str) -> String {
-    let bytes = field.as_bytes();
+/// Undo the kernel's `\ooo` octal escapes of a mountinfo field, giving the
+/// bytes they stand for.
+fn unescape_octal(field: &[u8]) -> Vec<u8> {
+    let bytes = field;
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
@@ -300,7 +319,7 @@ fn unescape_octal(field: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 /// Start `engine helper --stdio` through `pkexec` (the one [`find_pkexec`]

@@ -462,6 +462,9 @@ fn guard_device(node: &std::path::Path) {
     if !plan.read_only_disks {
         return;
     }
+    // A mount table that cannot be read shows none of the session's own
+    // mounts: only what the plan names stays writable, and the device is set
+    // read-only unless the plan names it, the stricter end.
     let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
     let _ = disk_guard::guard(
         node,

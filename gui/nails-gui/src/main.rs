@@ -101,7 +101,8 @@ fn main() -> ExitCode {
     };
 
     let program = std::env::current_exe().unwrap_or_default();
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").ok();
+    // Byte for byte: a mount whose path is not valid UTF-8 is a mount too.
+    let mountinfo = std::fs::read("/proc/self/mountinfo").map_err(|e| e.to_string());
     // The menu entry names its engine and never hands over a socket; only
     // without one is standard input the launcher's.
     let launcher = if engine.is_none() {
@@ -109,7 +110,12 @@ fn main() -> ExitCode {
     } else {
         None
     };
-    let start = launch::decide(engine, launcher, &program, mountinfo.as_deref());
+    let start = launch::decide(
+        engine,
+        launcher,
+        &program,
+        mountinfo.as_deref().map_err(Clone::clone),
+    );
     let (connect, engine) = match start {
         Start::Launcher { stream, engine } => (Connect::Stream(stream), engine),
         Start::Pkexec { engine } => {
@@ -140,7 +146,7 @@ fn main() -> ExitCode {
     // The window's own reading, which needs no helper: in a hidden session
     // its Emergency control shows from the start.
     let in_hidden_session = match (&engine, mountinfo.as_deref()) {
-        (Some(engine), Some(mountinfo)) => engine
+        (Some(engine), Ok(mountinfo)) => engine
             .parent()
             .is_some_and(|root| launch::root_is_hidden_overlay(mountinfo, root)),
         _ => false,

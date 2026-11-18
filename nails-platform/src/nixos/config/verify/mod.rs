@@ -25,10 +25,12 @@ use crate::artifacts::{ARTIFACTS, ArtifactKind};
 use crate::error::Result;
 use crate::filesystem::Filesystem;
 use matching::references_in;
-use nails_base::filesystem::parse_mountinfo;
+use nails_base::filesystem::mountinfo::escaped_text;
+use nails_base::filesystem::{MountEntry, parse_mountinfo};
 use nails_base::fstab::escape_path;
 use nails_base::hidden_root::separation::RootPlace;
 use nix_text::Pattern;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 /// Base `/etc/nixos` directory scanned for hidden-environment traces.
@@ -411,13 +413,15 @@ fn markers<F: Filesystem>(
 
     // Only an absolute device path is a device marker: a pseudo source such as
     // `tmpfs` names no device.
-    let mountinfo = match fs.read_file_content(Path::new(SELF_MOUNTINFO)) {
-        Ok(mountinfo) => mountinfo,
-        Err(error) if error.nothing_there() => String::new(),
+    // Byte for byte: a mount whose path is not valid UTF-8 no longer fails
+    // the read, and one that cannot be read still fails the check.
+    let entries = match fs.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
+        Ok(mountinfo) => parse_mountinfo(&mountinfo),
+        Err(error) if error.nothing_there() => Vec::new(),
         Err(error) => return Err(error),
     };
-    let sources = resolve_backing_sources(&mountinfo, hidden_volume_root);
-    let below = storage::below(fs, &parse_mountinfo(&mountinfo), hidden_volume_root);
+    let sources = resolve_backing_sources(&entries, hidden_volume_root);
+    let below = storage::below(fs, &entries, hidden_volume_root);
     unread.extend(below.unread.iter().cloned());
     let mut names: Vec<String> = Vec::new();
     let from_sources = sources
@@ -537,98 +541,18 @@ fn unit(path: &str, suffix: &str) -> String {
     format!("{}.{suffix}", escape_path(Path::new(path))).to_ascii_lowercase()
 }
 
-/// Resolves the backing source(s) that the mount table `mountinfo` (the text
-/// of `/proc/self/mountinfo`) reports for `hidden_volume_root`,
-/// ASCII-lowercased. Returns an empty list when the mount table is unavailable
-/// or has no matching entry (path-only matching then applies).
-fn resolve_backing_sources(mountinfo: &str, hidden_volume_root: &Path) -> Vec<String> {
-    let mut sources = Vec::new();
-    for line in mountinfo.lines() {
-        // mountinfo: <pre> " - " <fstype> <source> <super_opts>
-        // <pre> fields: mount_id parent_id major:minor root mount_point opts [optional...]
-        let Some((pre, post)) = line.split_once(" - ") else {
-            continue;
-        };
-
-        let mut pre_fields = pre.split(' ');
-        // Field 5 (index 4) is the mount point; it may carry octal escapes.
-        let Some(mount_point) = pre_fields.nth(4) else {
-            continue;
-        };
-        if Path::new(&octal_unescape(mount_point)) != hidden_volume_root {
-            continue;
-        }
-
-        // Post-separator fields: fstype, source, super_opts.
-        let mut post_fields = post.split(' ');
-        let Some(source) = post_fields.nth(1) else {
-            continue;
-        };
-        sources.push(octal_unescape(source).to_ascii_lowercase());
-    }
-
-    sources
-}
-
-/// Decodes the octal escapes (`\040` space, `\011` tab, `\012` newline,
-/// `\134` backslash, and any `\ooo`) that the kernel writes into mountinfo
-/// fields. Non-escape bytes pass through unchanged.
-fn octal_unescape(field: &str) -> String {
-    let bytes = field.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0usize;
-
-    while i < bytes.len() {
-        if bytes[i] == b'\\'
-            && i + 3 < bytes.len()
-            && matches!(bytes[i + 1], b'0'..=b'7')
-            && matches!(bytes[i + 2], b'0'..=b'7')
-            && matches!(bytes[i + 3], b'0'..=b'7')
-        {
-            // Compute in a wider type: a leading octal digit of 4-7 would
-            // overflow `u8` (7 * 64 = 448) and panic in debug builds.
-            let code = (u16::from(bytes[i + 1] - b'0') << 6)
-                | (u16::from(bytes[i + 2] - b'0') << 3)
-                | u16::from(bytes[i + 3] - b'0');
-            out.push(code as u8);
-            i += 4;
-        } else {
-            out.push(bytes[i]);
-            i += 1;
-        }
-    }
-
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-#[cfg(test)]
-mod octal_decode_tests {
-    use super::octal_unescape;
-
-    #[test]
-    fn decodes_kernel_escapes_and_passes_through_plain_bytes() {
-        assert_eq!(
-            octal_unescape("/mnt/hidden\\040volume"),
-            "/mnt/hidden volume"
-        );
-        assert_eq!(octal_unescape("a\\011b"), "a\tb");
-        assert_eq!(octal_unescape("a\\134b"), "a\\b");
-        assert_eq!(octal_unescape("/dev/mapper/vault"), "/dev/mapper/vault");
-    }
-
-    #[test]
-    fn decodes_high_octal_value_without_overflow() {
-        // A leading octal digit of 4-7 exceeds a single-byte product; the
-        // decoder must widen the arithmetic instead of overflowing.
-        assert_eq!(octal_unescape("\\101"), "A");
-        assert_eq!(octal_unescape("\\176"), "~");
-    }
-
-    #[test]
-    fn leaves_incomplete_escapes_untouched() {
-        assert_eq!(octal_unescape("\\04"), "\\04");
-        assert_eq!(octal_unescape("\\09x"), "\\09x");
-    }
+/// Resolves the backing source(s) that the mount table `entries` reports for
+/// `hidden_volume_root`, ASCII-lowercased. Returns an empty list when the
+/// mount table has no matching entry (path-only matching then applies).
+fn resolve_backing_sources(entries: &[MountEntry], hidden_volume_root: &Path) -> Vec<String> {
+    // The shared parser keeps the mount table's paths byte for byte; a
+    // source that is not valid UTF-8 is matched in the kernel's escaped form
+    // ([`escaped_text`]), never in one with a byte replaced.
+    entries
+        .iter()
+        .filter(|entry| entry.mount_point == hidden_volume_root)
+        .map(|entry| escaped_text(entry.source.as_os_str().as_bytes()).to_ascii_lowercase())
+        .collect()
 }
 
 #[cfg(test)]

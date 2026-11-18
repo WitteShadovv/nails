@@ -85,11 +85,16 @@ fn namespaces_match(self_ns: NamespaceId, init_ns: NamespaceId) -> bool {
 /// ```
 ///
 /// Any mount whose mount point is `/` and whose optional fields include a token
-/// starting with `shared:` means the root is shared-propagation.
-pub(crate) fn root_has_shared_propagation(mountinfo: &str) -> bool {
-    for line in mountinfo.lines() {
-        let tokens: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
-        let Some(sep) = tokens.iter().position(|&t| t == "-") else {
+/// starting with `shared:` means the root is shared-propagation. The table is
+/// read as bytes, so a line whose fields are not valid UTF-8 is read as any
+/// other.
+pub(crate) fn root_has_shared_propagation(mountinfo: &(impl AsRef<[u8]> + ?Sized)) -> bool {
+    for line in mountinfo.as_ref().split(|&b| b == b'\n') {
+        let tokens: Vec<&[u8]> = line
+            .split(|&b| b == b' ')
+            .filter(|t| !t.is_empty())
+            .collect();
+        let Some(sep) = tokens.iter().position(|&t| t == b"-") else {
             continue;
         };
         // Below the separator there must be at least id..opts (indices 0..=5).
@@ -97,10 +102,10 @@ pub(crate) fn root_has_shared_propagation(mountinfo: &str) -> bool {
             continue;
         }
         // The mount point is a fixed position; `/` is never octal-escaped.
-        if tokens[4] != "/" {
+        if tokens[4] != b"/" {
             continue;
         }
-        if tokens[6..sep].iter().any(|t| t.starts_with("shared:")) {
+        if tokens[6..sep].iter().any(|t| t.starts_with(b"shared:")) {
             return true;
         }
     }
@@ -164,7 +169,7 @@ impl<F: Filesystem> PreFlightCheck<F> for MountNamespaceCheck {
         }
 
         // Fail-closed: without the mount table we cannot confirm propagation.
-        let mountinfo = match std::fs::read_to_string(MOUNTINFO) {
+        let mountinfo = match std::fs::read(MOUNTINFO) {
             Ok(content) => content,
             Err(e) => {
                 return Ok(CheckResult::fail(format!(
@@ -271,6 +276,18 @@ mod tests {
         );
         // The one well-formed shared `/` line still decides the result.
         assert!(root_has_shared_propagation(mountinfo));
+    }
+
+    /// A mount whose fields are not valid UTF-8 failed the read before, and
+    /// the check refused: the table is read as bytes now.
+    #[test]
+    fn a_line_that_is_not_utf8_does_not_hide_the_root() {
+        let mountinfo: &[u8] = b"23 28 0:21 / / rw,relatime shared:2 - ext4 /dev/sda1 rw\n\
+            30 23 0:30 / /run/a\xff rw shared:3 - tmpfs t\xfe rw,size=1\xfd\n";
+        assert!(root_has_shared_propagation(mountinfo));
+        assert!(!root_has_shared_propagation(
+            b"23 28 0:21 / / rw - ext4 /dev/\xff rw\n"
+        ));
     }
 
     #[test]

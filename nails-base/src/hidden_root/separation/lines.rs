@@ -11,7 +11,7 @@
 use super::paths::{as_written, is_claimed};
 use super::plain::{fuse_line, source};
 use super::{DeviceMap, Scene, Sharing};
-use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
+use crate::filesystem::mountinfo::{MountEntry, top_mount_at, unescape_octal_path};
 use crate::fstab::FstabEntry;
 use crate::hidden_root::mount_holding;
 use std::path::{Component, Path, PathBuf};
@@ -19,12 +19,20 @@ use std::path::{Component, Path, PathBuf};
 /// How a mount shows its filesystem: its root inside the filesystem tells a
 /// bind of a folder from the filesystem itself, and on btrfs a subvolume
 /// (`subvol=` names the mount's root) from a bind.
+///
+/// `subvol=` is decoded byte for byte before it is compared, as the mount
+/// root is: the kernel writes a space, a comma or a backslash of it as an
+/// octal escape, and NAILS keeps a byte that is not valid UTF-8 as one.
 pub fn sharing(mount: &MountEntry) -> Sharing {
-    let root = mount.root.to_string_lossy();
-    if root == "/" {
+    if mount.root == Path::new("/") {
         return Sharing::Filesystem;
     }
-    if mount.fstype == "btrfs" && mount_option(mount, "subvol") == Some(root.as_ref()) {
+    if mount.fstype == "btrfs"
+        && mount_option(mount, "subvol")
+            .map(unescape_octal_path)
+            .as_ref()
+            == Some(&mount.root)
+    {
         Sharing::Subvolume
     } else {
         Sharing::Bind

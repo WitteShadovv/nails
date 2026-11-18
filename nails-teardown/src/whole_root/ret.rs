@@ -89,9 +89,12 @@ impl std::error::Error for ReturnError {}
 /// into it, and check it ([`complete_decoy_root`]). The plan's record of the
 /// decoy's mounts gets the ID each one has now, which the transition gives
 /// their `utab` lines; the caller writes the plan. On failure nothing is left
-/// mounted there.
+/// mounted there. A mount table that cannot be read fails it before
+/// anything is mounted: what is at `nextroot` already could not be told.
 pub fn mount_decoy_root(plan: &mut Plan, nextroot: &Path, run: &Path) -> Result<(), ReturnError> {
-    if read_mountinfo().is_ok_and(|e| nextroot::is_mount_point(&e, nextroot)) {
+    let live = read_mountinfo()
+        .map_err(|e| ReturnError::Mount(format!("could not read the mount table: {e}")))?;
+    if nextroot::is_mount_point(&live, nextroot) {
         nextroot::detach_tree(nextroot);
     }
     let mounted = std::fs::create_dir_all(nextroot)

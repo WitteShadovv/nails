@@ -109,8 +109,12 @@ pub fn record(node: &Path) -> io::Result<LoopRecord> {
 /// does not answer, as for a caller that may not open the node, when the
 /// driver shows no path for the file or one that runs through an automount
 /// point, a FUSE filesystem or a network filesystem, which is not asked
-/// (the record is not read then), and when no mount the table shows is found
-/// to hold the file.
+/// (the record is not read then), when no mount the table shows is found
+/// to hold the file, and when the mount table cannot be read. A `None` makes
+/// [`Plan::is_hidden_storage`](crate::whole_root::plan::Plan::is_hidden_storage)
+/// count the mount as no storage of the session's, the stricter end: the
+/// watcher alerts on it, the read-only guard sets it read-only and the way
+/// back unmounts it.
 pub fn backing_filesystem(mount: &MountEntry) -> Option<String> {
     let (node, number) = loop_node(mount)?;
     let mounts = crate::mountinfo::read_mountinfo().ok()?;

@@ -10,8 +10,9 @@
 //! the mount queries of both filesystems apply.
 
 pub use nails_teardown::mountinfo::{
-    MountEntry, OverlayOpts, parse_mountinfo, parse_overlay_opts, root_is_hidden_overlay,
-    top_mount_at, unescape_octal,
+    MountEntry, OverlayOpts, escaped_text, parse_mountinfo, parse_overlay_opts, path_from_bytes,
+    root_is_hidden_overlay, top_mount_at, unescape_octal, unescape_octal_bytes,
+    unescape_octal_path,
 };
 
 use crate::{IoResultExt, NailsError, Result};
@@ -37,12 +38,13 @@ pub fn read_mountinfo() -> Result<Vec<MountEntry>> {
 }
 
 /// Escape a path for use inside an overlay mount option value (see
-/// [`nails_teardown::mountinfo::escape_overlay_path`]). A path holding a newline
-/// cannot be represented in a mount option and is refused.
+/// [`nails_teardown::mountinfo::escape_overlay_path`]). A path holding a newline,
+/// or one that is not valid UTF-8, cannot be represented in a mount option and
+/// is refused.
 pub fn escape_overlay_path(path: &Path) -> Result<String> {
     nails_teardown::mountinfo::escape_overlay_path(path).ok_or_else(|| {
         NailsError::OverlayError(format!(
-            "overlay path contains a newline and cannot be mounted: {}",
+            "overlay path contains a newline or is not valid UTF-8 and cannot be mounted: {}",
             path.display()
         ))
     })

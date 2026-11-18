@@ -184,7 +184,7 @@ fn machine(dir: &Path, table: &str) -> Machine {
     std::fs::create_dir_all(&paths.run).unwrap();
     Machine {
         paths,
-        mounts: Some(parse_mountinfo(table)),
+        mounts: Some(Ok(parse_mountinfo(table))),
     }
 }
 
@@ -520,6 +520,49 @@ fn leaving_is_refused_outside_the_hidden_session() {
         "{error}"
     );
     assert!(target.started.borrow().is_empty());
+}
+
+/// A mount table that cannot be read leaves the side untold, where an empty
+/// table would show a hidden session as the decoy: leave, recover and
+/// enter each refuse before they write or remove anything, and the session
+/// record stays as it is.
+#[test]
+fn a_mount_table_that_cannot_be_read_refuses_leave_recover_and_enter() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let mut machine = machine(dir.path(), DECOY_TABLE);
+    machine.mounts = Some(Err(std::io::ErrorKind::PermissionDenied));
+    let leftover = plan(&hidden);
+    write_plan(&machine, &leftover);
+    let mut m = manager(&hidden);
+
+    let target = FakeTarget::default();
+    let error = m
+        .leave_session_on(&machine, LeaveTo::Decoy, &target)
+        .unwrap_err();
+    assert!(error.to_string().contains("mountinfo"), "{error}");
+    assert!(target.started.borrow().is_empty());
+
+    let host = FakeEntryHost::default();
+    let error = m.recover_session_on(&machine, &host).unwrap_err();
+    assert!(matches!(error, RecoverError::Failed(_)), "{error:?}");
+    assert!(machine.paths.plan().exists(), "nothing is rolled back");
+    assert_eq!(host.reloads.get(), 0);
+
+    let options = EnterOptions {
+        binary: PathBuf::from("/proc/self/exe"),
+        ..EnterOptions::default()
+    };
+    assert!(
+        m.enter_session_no_preflight_on(&machine, &options, &host)
+            .is_err()
+    );
+    assert!(
+        recorded(&hidden).state.is_active(),
+        "the record is untouched"
+    );
 }
 
 #[test]
@@ -1282,7 +1325,7 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let mut m = manager(hidden.path());
         m.set_host_profile(FakePlatform::fhs().host_profile());
@@ -1440,7 +1483,7 @@ fn an_entry_lists_the_package_drift_among_its_warnings() {
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let mut m = manager(hidden.path());
         m.set_host_profile(FakePlatform::fhs().host_profile());
@@ -1490,7 +1533,7 @@ fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let mut m = manager(hidden.path());
         m.set_host_profile(FakePlatform::fhs().host_profile());
@@ -1568,7 +1611,7 @@ fn an_entry_that_needs_a_label_the_decoy_lacks_is_refused_and_undone() {
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let options = EnterOptions {
             binary: PathBuf::from("/proc/self/exe"),
@@ -1648,7 +1691,7 @@ fn an_entry_on_a_host_configured_for_selinux_without_selinuxfs_goes_on_and_says_
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let mut m = manager(hidden.path());
         let mut profile = FakePlatform::fhs().host_profile();
@@ -1699,7 +1742,7 @@ fn an_entry_on_a_host_whose_facts_report_no_selinux_writes_no_label() {
                 root: decoy.path().to_path_buf(),
                 run: run.path().to_path_buf(),
             },
-            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+            mounts: Some(Ok(parse_mountinfo(DECOY_TABLE))),
         };
         let mut m = manager(hidden.path());
         let profile = FakePlatform::fhs().host_profile();

@@ -347,23 +347,24 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     let data = if mount.root == Path::new("/") {
         None
     } else if mount.fstype == "btrfs"
-        && mount_subvol(mount).is_some_and(|subvol| Path::new(&subvol) == mount.root)
+        && mount_subvol(mount).is_some_and(|subvol| subvol == mount.root)
     {
         // A btrfs mount whose root is exactly its `subvol=` is a subvolume: the
         // way back mounts it again with that `subvol=`. A mount root that is a
         // deeper path (a bind of a plain folder inside the subvolume) has no
         // `subvol=` of its own and cannot be mounted again that way, so it is
         // refused like any other bind below.
-        if mount.root.to_string_lossy().contains(',') {
-            // mount(2) splits its options at every comma, so the way back
-            // could not name this subvolume.
+        // mount(2) splits its options at every comma, and the option text it
+        // takes cannot hold a name that is not valid UTF-8 unchanged, so the
+        // way back could not name such a subvolume.
+        let Some(subvol) = mount.root.to_str().filter(|subvol| !subvol.contains(',')) else {
             return refuse(format!(
-                "the decoy root's btrfs subvolume {} has a comma in its path, which the way \
-                 back cannot pass to mount(2) to mount it again",
+                "the decoy root's btrfs subvolume {} has a comma or a byte that is not valid \
+                 UTF-8 in its path, which the way back cannot pass to mount(2) to mount it again",
                 mount.root.display()
             ));
-        }
-        Some(format!("subvol={}", mount.root.display()))
+        };
+        Some(format!("subvol={subvol}"))
     } else {
         return refuse(format!(
             "the decoy root is a bind of {} on {}",
@@ -383,13 +384,13 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
 /// table, where the kernel writes a space, tab, newline, comma or backslash in
 /// it as an octal escape (`\040`); the mount root it is compared with is
 /// decoded already.
-fn mount_subvol(mount: &MountEntry) -> Option<String> {
+fn mount_subvol(mount: &MountEntry) -> Option<PathBuf> {
     mount
         .super_opts
         .split(',')
         .chain(mount.mount_opts.split(','))
         .find_map(|opt| opt.strip_prefix("subvol="))
-        .map(nails_teardown::mountinfo::unescape_octal)
+        .map(nails_teardown::mountinfo::unescape_octal_path)
 }
 
 fn io(path: &Path, e: std::io::Error) -> NailsError {
@@ -491,8 +492,10 @@ fn write_runtime(
     let saved_utab = std::fs::read(paths.run.join(utab::UTAB)).unwrap_or_default();
     // Read after the copy, so every mount it names by ID is in it: the way
     // back finds each one again where it was (`utab::restored_lines`).
-    let mountinfo = std::fs::read_to_string(SELF_MOUNTINFO).unwrap_or_default();
-    let named = utab::named_mounts(&saved_utab, &mountinfo).into_bytes();
+    // Byte for byte, and never taken for empty: without these lines the way
+    // back could not give the decoy's utab lines back, so the entry stops.
+    let mountinfo = std::fs::read(SELF_MOUNTINFO).map_err(|e| io(Path::new(SELF_MOUNTINFO), e))?;
+    let named = utab::named_mounts(&saved_utab, &mountinfo);
     for (name, bytes) in [
         (SNAPSHOT_NAME, snapshot.to_text()),
         (UTAB_NAME, saved_utab),

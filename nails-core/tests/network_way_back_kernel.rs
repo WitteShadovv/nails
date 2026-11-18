@@ -542,6 +542,7 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
             kmsg: run.join("no-kmsg"),
             systemctl: Some(systemctl),
             now: nails_teardown::whole_root::plan::unix_now(),
+            mounts_unread: None,
             mounts: parse_mountinfo(&format!(
                 "40 1 0:40 / {} rw - overlay overlay rw\n",
                 nextroot.display()

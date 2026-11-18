@@ -194,8 +194,9 @@ impl From<NailsError> for RecoverError {
 /// mount table in production; the tests give a scratch tree and a fixed table.
 struct Machine {
     paths: Paths,
-    /// The mount table, or `None` to read the live one.
-    mounts: Option<Vec<MountEntry>>,
+    /// The mount table (or the kind of error reading it gave), or `None` to
+    /// read the live one.
+    mounts: Option<std::result::Result<Vec<MountEntry>, std::io::ErrorKind>>,
 }
 
 impl Machine {
@@ -208,7 +209,8 @@ impl Machine {
 
     fn mounts(&self) -> std::io::Result<Vec<MountEntry>> {
         match &self.mounts {
-            Some(mounts) => Ok(mounts.clone()),
+            Some(Ok(mounts)) => Ok(mounts.clone()),
+            Some(Err(kind)) => Err(std::io::Error::from(*kind)),
             None => read_mountinfo(),
         }
     }
@@ -264,13 +266,25 @@ fn cancellable<T>(step: impl FnOnce() -> Result<T>) -> Result<T> {
 
 impl<F: Filesystem> NailsManager<F> {
     /// Where the machine is right now.
-    pub fn session_view(&self) -> SessionView {
+    ///
+    /// # Errors
+    ///
+    /// The mount table cannot be read: without it this side cannot be told
+    /// from the other, and an empty table would show the hidden session as
+    /// the decoy.
+    pub fn session_view(&self) -> Result<SessionView> {
         self.session_view_on(&Machine::system())
     }
 
-    fn session_view_on(&self, machine: &Machine) -> SessionView {
-        let mounts = machine.mounts().unwrap_or_default();
-        crate::session::probe::probe_with(&machine.paths, &self.config.hidden_volume_root, &mounts)
+    fn session_view_on(&self, machine: &Machine) -> Result<SessionView> {
+        let mounts = machine
+            .mounts()
+            .map_err(|e| NailsError::io(nails_teardown::mountinfo::SELF_MOUNTINFO, e))?;
+        Ok(crate::session::probe::probe_with(
+            &machine.paths,
+            &self.config.hidden_volume_root,
+            &mounts,
+        ))
     }
 
     fn require_supported_host(&self, machine: &Machine) -> Result<bool> {
@@ -379,7 +393,7 @@ impl<F: Filesystem> NailsManager<F> {
         host: &dyn EntryHost,
         run_preflight: bool,
     ) -> Result<EnterOutcome> {
-        if self.session_view_on(machine).is_hidden() {
+        if self.session_view_on(machine)?.is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
         crate::cancel::checkpoint()?;
@@ -619,7 +633,7 @@ impl<F: Filesystem> NailsManager<F> {
         to: LeaveTo,
         host: &dyn TargetHost,
     ) -> Result<crate::session::LeaveReport> {
-        let mut plan = match self.session_view_on(machine) {
+        let mut plan = match self.session_view_on(machine)? {
             SessionView::Hidden(plan) => *plan,
             SessionView::HiddenWithoutPlan(why) => {
                 return Err(NailsError::InvalidState(format!(
@@ -678,7 +692,10 @@ impl<F: Filesystem> NailsManager<F> {
         machine: &Machine,
         host: &dyn EntryHost,
     ) -> std::result::Result<SessionRecovery, RecoverError> {
-        match self.session_view_on(machine) {
+        match self
+            .session_view_on(machine)
+            .map_err(RecoverError::Failed)?
+        {
             // The live facts say no session is active, so the record follows
             // them: one left active by a session that ended without updating
             // it, and one that cannot be read or trusted (corrupt, failed its
