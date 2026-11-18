@@ -45,15 +45,16 @@ name a planted process or mark, or the hidden filesystem, and no audit record
 the hidden root sent may be in the decoy's journal by any transport. The
 kernel's lines of a device-mapper teardown (:data:`DM_TEARDOWN`) are judged
 apart: they are the residue a hidden volume on device-mapper leaves. After
-the decoy's first line its service manager must not open journald's socket
-or its ``/dev/log`` socket anew (:data:`REOPENED`), nor udevd's kernel or
-control socket (:data:`UDEV_REOPENED`): a plain soft-reboot carries them
-listening, and their ``Listening on`` lines would tell a way back from it,
-unless the decoy's own shutdown had closed one already at the entry, which
-the hidden start then opened anew as well (PID 1 before systemd 258 fails a
-journald socket that receives anything once journald has stopped for a
-soft-reboot). A network link the session leaves up (:func:`plant_link`),
-which the way back deletes, must leave no record in udevd's database.
+the decoy's first line its service manager must not open journald's socket,
+its ``/dev/log`` socket or its audit socket anew (:data:`REOPENED`), nor
+udevd's kernel or control socket (:data:`UDEV_REOPENED`): a plain
+soft-reboot carries them listening, and their ``Listening on`` lines would
+tell a way back from it, unless the decoy's own shutdown had closed one
+already at the entry, which the hidden start then opened anew as well (PID 1
+before systemd 258 fails a journald socket that receives anything once
+journald has stopped for a soft-reboot). A network link the session leaves
+up (:func:`plant_link`), which the way back deletes, must leave no record in
+udevd's database.
 
 :func:`nextroot_left` reads what the switch left at ``/run/nextroot``.
 """
@@ -150,19 +151,21 @@ SOCKET_FAILED = {
     "native": re.compile(r"systemd\[1\]: systemd-journald\.socket: Failed with result"),
 }
 
-#: A service manager opening journald's socket or its ``/dev/log`` socket,
-#: by unit name and description, or by its description alone as NixOS logs
-#: it. The way back leaves journald's audit socket closed, which the decoy's
-#: start opens anew where the kernel's audit is on.
+#: A service manager opening journald's socket, its ``/dev/log`` socket or
+#: its audit socket, by unit name and description, or by its description
+#: alone as NixOS logs it.
 REOPENED = re.compile(
     r"systemd\[1\]: Listening on "
-    r"(systemd-journald(-dev-log)?\.socket - )?Journal Sockets?(\.| \(/dev/log\))"
+    r"(systemd-journald(-dev-log|-audit)?\.socket - )?"
+    r"Journal (Sockets?(\.| \(/dev/log\))|Audit Socket\.)"
 )
 
 
 def reopened_socket(text: str) -> str:
     """Which of journald's sockets a :data:`REOPENED` line opens."""
-    return "dev-log" if "dev-log" in text or "/dev/log" in text else "journald"
+    if "dev-log" in text or "/dev/log" in text:
+        return "dev-log"
+    return "audit" if "Audit" in text else "journald"
 
 
 #: A service manager opening udevd's kernel or control socket, by unit name

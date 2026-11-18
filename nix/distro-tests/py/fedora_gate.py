@@ -407,15 +407,31 @@ DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
 SCAN_WARNINGS_EXIT = 9
-# What a check depends on that the build does not have yet. The way back
-# opens journald's sockets again, and the new native socket carries
-# journald's label (syslogd_t): a confined service of the decoy that sends to
-# it from then on logs a denial the boot's socket did not give it (residue
-# catalog row journal-socket-carry).
-NEEDS_SOCKET_LABEL = (
-    "journald's sockets opened again at the way back with a label the decoy's "
-    "services may send to, as to those of the boot"
-)
+# Each of journald's sockets PID 1 holds, with its socket inode and the
+# label of the socket itself (the inode behind PID 1's descriptor), and the
+# state and start time of journald's socket units: a plain soft-reboot keeps
+# the boot's, and so must a way back. The audit socket is the netlink socket
+# of the kernel's audit that takes its records (protocol 9, a group set).
+JOURNAL_SOCKETS = r"""
+for f in /proc/1/fd/*; do
+  l=$(readlink "$f") || continue
+  case "$l" in socket:\[*\]) ;; *) continue ;; esac
+  i=${l#socket:[}; i=${i%]}
+  p=$(awk -v i="$i" '$7 == i { print $8 }' /proc/1/net/unix)
+  case "$p" in
+    /run/systemd/journal/*|/run/systemd/journal.*/*) ;;
+    *) p=$(awk -v i="$i" \
+         'NR > 1 && $2 == 9 && $4 != "00000000" && $NF == i { print "audit" }' \
+         /proc/1/net/netlink 2>/dev/null)
+       [ -n "$p" ] || continue ;;
+  esac
+  echo "socket $p inode=$i label=$(stat -L -c %C "$f" 2>/dev/null)"
+done | sort
+for u in systemd-journald systemd-journald-dev-log systemd-journald-audit; do
+  echo "unit $u.socket $(systemctl show -P ActiveState "$u.socket")" \
+    "since=$(systemctl show -P ActiveEnterTimestampMonotonic "$u.socket")"
+done
+"""
 TUNED_DROPIN = "[Service]\nExecStart=\nExecStart=/usr/sbin/tuned -P\n"
 # What PID 1 logs when the policy of the root it starts in is not loaded, and
 # when a policy is.
@@ -630,17 +646,17 @@ def stopped_after(
     return seen[then] > seen[first]
 
 
-#: The decoy's service manager opening journald's socket or its /dev/log
-#: socket (the way back leaves the audit socket closed).
+#: The decoy's service manager opening journald's socket, its /dev/log
+#: socket or its audit socket.
 _REOPENED = re.compile(
-    r"systemd\[1\]: Listening on systemd-journald(-dev-log)?\.socket\b"
+    r"systemd\[1\]: Listening on systemd-journald(-dev-log|-audit)?\.socket\b"
 )
 
 
 def reopened_sockets(records: Iterable[Mapping[str, Any]], after: int) -> list[str]:
     """The kernel log's lines, past record ``after``, of a service manager
-    opening journald's socket or its /dev/log socket: a plain soft-reboot
-    carries them listening, and the decoy's start logs neither."""
+    opening one of journald's sockets: a plain soft-reboot carries them
+    listening, and the decoy's start logs none."""
     return [
         str(record["msg"])
         for record in sorted(records, key=lambda r: int(r["seq"]))
@@ -648,18 +664,18 @@ def reopened_sockets(records: Iterable[Mapping[str, Any]], after: int) -> list[s
     ]
 
 
-def sends_to_journald(avc: Mapping[str, Any]) -> bool:
-    """Whether the denial ``avc`` is a datagram sent to a socket of
-    journald's (``{sendto}`` on a ``syslogd_t`` ``unix_dgram_socket``) by a
-    process that is not NAILS's: what a decoy service does where the way back
-    made journald's sockets anew (:data:`NEEDS_SOCKET_LABEL`)."""
-    parts = str(avc.get("signature", "")).split()
+def socket_identity(listing: str) -> list[str]:
+    """The lines of a :data:`JOURNAL_SOCKETS` listing, without blanks."""
+    return [line.strip() for line in listing.splitlines() if line.strip()]
+
+
+def same_sockets(boot: Sequence[str], now: Sequence[str]) -> bool:
+    """Whether ``now`` names the very sockets ``boot`` did, with the same
+    labels and units' start times: journald's native socket found and every
+    line equal."""
     return (
-        avc.get("source") != "nails"
-        and len(parts) >= 6
-        and parts[1] == "{sendto}"
-        and parts[-2] == "syslogd_t"
-        and parts[-1] == "unix_dgram_socket"
+        any(line.startswith("socket /run/systemd/journal/socket ") for line in boot)
+        and list(boot) == list(now)
     )
 
 
@@ -937,6 +953,8 @@ class Gate:
         # unit and by the wtmp line each wrote.
         self.cold_units: dict[str, int] = {}
         self.cold_lines: dict[str, int] = {}
+        # journald's sockets at the cold boot (:data:`JOURNAL_SOCKETS`).
+        self.cold_sockets: list[str] = []
         # The zram devices, their swap and units at that cold boot.
         self.cold_zram = ""
         # The process number each session pushed the counter to.
@@ -2421,10 +2439,17 @@ class Gate:
             seen,
         )
         self.carried(n, state, found, records)
+        sockets = socket_identity(self.fact(f"journal-sockets-{n}", JOURNAL_SOCKETS))
+        self.check(
+            f"way back {n}: journald's sockets are those of the cold boot, with "
+            "their labels and their units' start times",
+            same_sockets(self.cold_sockets, sockets),
+            {"coldBoot": self.cold_sockets, "now": sockets},
+        )
         reopened = reopened_sockets(records, end) if isinstance(end, int) else None
         self.check(
-            f"way back {n}: the decoy's start opened neither journald's socket "
-            "nor its /dev/log socket anew, as after a plain soft-reboot",
+            f"way back {n}: the decoy's start opened none of journald's sockets "
+            "anew, as after a plain soft-reboot",
             reopened == [],
             reopened if reopened is not None else {"not judged": {"stepEnd": end}},
         )
@@ -2998,9 +3023,6 @@ class Gate:
                     f"no new denial from {where} on",
                     not new,
                     [f"{a['signature']} ({a['why']}, {a['log']} log)" for a in new],
-                    NEEDS_SOCKET_LABEL
-                    if new and all(sends_to_journald(a) for a in new)
-                    else "",
                 )
                 if label is None:
                     continue
@@ -3111,6 +3133,9 @@ class Gate:
         self.mark("prep-cold")
         self.cold_units = self.getty_numbers("cold")
         self.cold_lines = getty_logins(self.records_capture("cold").wtmp)
+        self.cold_sockets = socket_identity(
+            self.fact("journal-sockets-cold", JOURNAL_SOCKETS)
+        )
         self.fact("pids-cold", PID_LISTING)
         self.cold_zram = self.fact("zram-cold", ZRAM_STATE)
         self.where = "decoy before the first entry"
