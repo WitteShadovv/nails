@@ -24,10 +24,11 @@
 #      the line and what to do. The hidden systemd leaves the disk unmounted,
 #      and the session restores the link, as the warning says.
 #   3. With `[session_mounts] read_only = true`: the disk is read-only at the
-#      block layer from the hidden boot on, a disk hot-plugged during the
-#      session is made read-only by the udev rule alone (the watcher, the
-#      fallback, is stopped first), a mount comes up read-only and every write
-#      fails, and the decoy root and the hidden backend stay writable. The
+#      block layer once the session's watcher has started (its first sweep),
+#      a disk hot-plugged during the session is made read-only by the udev
+#      rule alone (the watcher, the fallback, is stopped first), a mount comes
+#      up read-only and every write fails, and the decoy root and the hidden
+#      backend stay writable. The
 #      third disk, mounted read-only below the hidden root and set writable
 #      again by hand, is set read-only again by the watcher's sweep. After the
 #      way back every disk is writable again, the second disk is byte for byte
@@ -206,7 +207,7 @@ in
         machine.succeed(f"mkdir -p /mnt/inner && mount {INNER} /mnt/inner")
         machine.succeed("grep -Fx session-1 /mnt/inner/hidden-1 && umount /mnt/inner")
 
-    with subtest("with the opt-in, unused disks are read-only from the hidden boot on"):
+    with subtest("with the opt-in, unused disks are read-only once the watcher runs"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         write_config(True)
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
