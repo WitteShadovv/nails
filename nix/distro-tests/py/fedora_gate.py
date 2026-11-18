@@ -160,6 +160,9 @@ RUN_FIND = (
     "-o -path /run/udev/links -o -path /run/udev/watch -o -path /run/credentials "
     "-o -path /run/nextroot \\) -prune -o -printf '%y %p\\n'"
 )
+# The link PID 1 keeps in /run for each unit it runs, named after the unit,
+# whose target is that run's invocation ID.
+INVOCATION_LINK = "/run/systemd/units/invocation:"
 # Where a session's udev rules and runtime units go, which the way back must
 # leave as the decoy had them.
 RUN_UNIT_TREES = ("/run/udev/rules.d", "/run/systemd/system")
@@ -1083,20 +1086,87 @@ def run_residue(
     after: set[str],
     controls: Iterable[tuple[set[str], set[str]]],
     pieces: Iterable[str] = (),
+    own: Iterable[str] = (),
 ) -> list[str]:
     """What a way back left in /run: the entries after it that /run did not
     hold right before the entry, but those of a shape that a plain
     soft-reboot also added (``controls``, each its /run before and after),
-    and the reconcile step's ``pieces`` that stayed, with what they hold and
-    the folders that hold them, which a check of their own judges."""
+    the reconcile step's ``pieces`` that stayed, with what they hold and
+    the folders that hold them, which a check of their own judges, and the
+    invocation links of the decoy's own runs after the switch (``own``,
+    :func:`decoy_invocations`)."""
+    mine = set(own)
     shapes: set[str] = set()
     for was, now in controls:
         shapes |= {run_shape(entry) for entry in now - was}
     return sorted(
         entry
         for entry in after - before
-        if run_shape(entry) not in shapes and not of_pieces(entry, pieces)
+        if run_shape(entry) not in shapes
+        and not of_pieces(entry, pieces)
+        and entry not in mine
     )
+
+
+def invocation_reading(entries: Iterable[str]) -> str:
+    """The guest command that reads, for each invocation link among
+    ``entries`` (``<type> <path>``), its target and the unit's invocation ID,
+    last start and unit file as the decoy's PID 1 reports them."""
+    units = sorted(
+        entry[len("l " + INVOCATION_LINK) :]
+        for entry in entries
+        if entry.startswith("l " + INVOCATION_LINK)
+    )
+    return "".join(
+        f"u={shlex.quote(unit)}; echo \"unit=$u "
+        f'link=$(readlink {shlex.quote(INVOCATION_LINK + unit)}) '
+        'id=$(systemctl show -P InvocationID "$u") '
+        'start=$(systemctl show -P InactiveExitTimestamp --timestamp=unix "$u") '
+        'file=$(systemctl show -P FragmentPath "$u")"; '
+        for unit in units
+    )
+
+
+def after_switch(start: float, switch: float | None) -> bool:
+    """Whether a run whose start PID 1 reports as ``start`` began after the
+    switch whose last step ended at ``switch`` (``switchUs`` of
+    :meth:`Gate.carried`, in seconds), and so is a run of the decoy's PID 1,
+    not of the hidden root's. PID 1 gives a start to the second, cut down, and
+    the switch's time comes from a marker's clock: a run counts only from
+    :data:`TIMER_SLACK` after the switch. On these images the decoy's start
+    runs its first units two seconds or more after the switch. Without the
+    switch's time, no run counts."""
+    return switch is not None and start >= switch + TIMER_SLACK
+
+
+def decoy_invocations(text: str, switch: float | None) -> set[str]:
+    """The invocation links of :func:`invocation_reading`'s output that are
+    the decoy's own: each leads to the invocation ID the decoy's PID 1 gives
+    its unit now, that run started after the switch (:func:`after_switch`),
+    and the unit is none of NAILS's (:data:`NAILS_UNITS`) and has its unit
+    file outside /run. A link that leads elsewhere, to a run the hidden root's
+    PID 1 started before the switch, to a run of NAILS's own unit, or of a unit
+    whose file the session could have written in /run or that has none, is
+    not."""
+    own = set()
+    for line in text.splitlines():
+        fields = dict(_TIMER_FIELD.findall(line))
+        unit, link, ident = fields.get("unit"), fields.get("link"), fields.get("id")
+        start = _unix_time(fields.get("start", ""))
+        path = fields.get("file", "")
+        if (
+            unit
+            and not unit.startswith(NAILS_UNITS)
+            and ident
+            and re.fullmatch(r"[0-9a-f]{32}", ident)
+            and link == ident
+            and start is not None
+            and after_switch(start, switch)
+            and path.startswith("/")
+            and not path.startswith("/run/")
+        ):
+            own.add(f"l {INVOCATION_LINK}{unit}")
+    return own
 
 
 def of_pieces(entry: str, pieces: Iterable[str]) -> bool:
@@ -1212,6 +1282,9 @@ class Gate:
         # step's pieces that stayed after each way back.
         self.runs: dict[str, tuple[set[str], set[str]]] = {}
         self.pieces: dict[int, list[str]] = {}
+        # What the decoy's PID 1 reported of each invocation link that was new
+        # after a way back (:func:`invocation_reading`), by its label.
+        self.run_invocations: dict[str, str] = {}
         # The failed units a plain soft-reboot left, which a way back may leave
         # too, with why.
         self.allowed_failed: dict[str, str] = dict(SOFT_REBOOT_FAILURES)
@@ -2772,7 +2845,16 @@ class Gate:
         # its own, and the decoy disk's changes before the harness writes
         # anything.
         self.wait_reconcile()
-        self.runs[f"way-back-{n}"] = (state["run"], self.run_listing(f"after-{n}"))
+        run_after = self.run_listing(f"after-{n}")
+        self.runs[f"way-back-{n}"] = (state["run"], run_after)
+        # Right away, while the units it names still run: the invocation
+        # links /run did not hold before the entry, against the decoy's
+        # PID 1. judge_run reads them against the switch's time.
+        new_links = invocation_reading(run_after - state["run"])
+        if new_links:
+            self.run_invocations[f"way-back-{n}"] = self.fact(
+                f"invocations-after-{n}", new_links
+            )
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
         self.decoy_timers(f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]))
@@ -3214,19 +3296,35 @@ class Gate:
                 },
             )
 
+    def switch_of(self, n: int) -> float | None:
+        """The guest's wall clock, in seconds, when the last step of way back
+        ``n``'s switch ended (``switchUs`` of :meth:`carried`), or None."""
+        carried = self.facts.get(f"carried-{n}")
+        switch = carried.get("switchUs") if isinstance(carried, dict) else None
+        return switch / 1_000_000 if isinstance(switch, int) else None
+
     def judge_run(self) -> None:
         """/run after each way back holds, at every depth, only what it held
-        right before the entry and entries of a shape that a plain soft-reboot
-        also adds: a journal stream, a session or a unit file of the decoy's
-        own start (:func:`run_residue`)."""
+        right before the entry, entries of a shape that a plain soft-reboot
+        also adds (a journal stream, a session or a unit file of the decoy's
+        own start), and the invocation links of runs the decoy's PID 1 started
+        after the switch, of units not NAILS's with their files outside /run
+        (:func:`decoy_invocations`, :func:`run_residue`)."""
         self.where = "/run"
         controls = [pair for label, pair in self.runs.items() if "control" in label]
         for label, (before, after) in self.runs.items():
             if not label.startswith("way-back-"):
                 continue
             n = int(label.rsplit("-", 1)[-1])
-            residue = run_residue(before, after, controls, self.pieces.get(n, []))
+            own = decoy_invocations(
+                self.run_invocations.get(label, ""), self.switch_of(n)
+            )
+            residue = run_residue(before, after, controls, self.pieces.get(n, []), own)
             self.facts[f"run-residue-{label}"] = residue
+            self.facts[f"run-own-{label}"] = {
+                "switch": self.switch_of(n),
+                "own": sorted(own),
+            }
             # As the unit check after the way back: without the RAM copy's
             # label the emergency leaves the session's wants links.
             self.check(
