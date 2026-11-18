@@ -11,7 +11,7 @@
 //! words such as `data`, count only where they name the mapping or the
 //! filesystem ([`Pattern::Name`], [`Pattern::Tag`]).
 
-use super::scan::{Named, is_identifier_byte};
+use super::scan::{Named, Place, is_identifier_byte};
 use std::ops::Range;
 
 /// How a marker is matched in a line.
@@ -50,6 +50,19 @@ pub(super) enum Pattern {
     /// filesystem label (`label`) counts as the `label` of a `fileSystems` or
     /// `swapDevices` entry too ([`Named::Label`]).
     Tag { tag: String, value: String },
+    /// A name that stands as a whole part of a path or as a whole string,
+    /// whatever comes before or after it in the path (`@vault` in
+    /// `/btr_pool/@vault`, `subvol=./@vault`, `"@vault"`), or as an attribute
+    /// name the file defines (`subvolume.vault = { };`).
+    Component(String),
+    /// A btrfs `subvolid=` option whose value is the id, where there is one,
+    /// read as the kernel reads it (decimal, `0x` hex or `0` octal, `+`
+    /// allowed), or whose value cannot be read as a number
+    /// (`subvolid=${id}`).
+    SubvolId(Option<u64>),
+    /// A btrfs `subvol=` option whose value cannot be read: none, or one
+    /// that an interpolation makes (`subvol=${name}`).
+    SubvolUnread,
 }
 
 /// What a line holds beyond its text, from the lines before it.
@@ -60,6 +73,9 @@ pub(super) struct Context {
     /// The arguments of a `cryptsetup` or `systemd-cryptsetup` command that
     /// opens, closes or asks about a mapping ([`Shell`]).
     pub(super) arguments: Vec<Range<usize>>,
+    /// The attribute names the line defines and the strings it holds whole
+    /// in the value of a definition ([`super::scan::Scanner::places`]).
+    pub(super) places: Vec<Place>,
 }
 
 impl Pattern {
@@ -78,8 +94,76 @@ impl Pattern {
                     None
                 }
             }),
+            Pattern::Component(name) => component(line, name, context),
+            Pattern::SubvolId(id) => option_values(line, "subvolid")
+                .find(|value| read_id(&line[value.clone()]).is_none_or(|read| Some(read) == *id))
+                .map(|value| value.start - "subvolid=".len()..value.end),
+            Pattern::SubvolUnread => option_values(line, "subvol")
+                .find(|value| {
+                    value.is_empty() || line[value.clone()].windows(2).any(|w| w == b"${")
+                })
+                .map(|value| value.start - "subvol=".len()..value.end),
         }
     }
+}
+
+/// Where `name` stands in `line` as a whole part of a path or a whole
+/// string, or as an attribute name the line defines ([`Pattern::Component`]).
+fn component(line: &[u8], name: &str, context: &Context) -> Option<Range<usize>> {
+    find_where(line, name, |before, after| {
+        !continues_file_name(before) && !continues_file_name(after)
+    })
+    .or_else(|| {
+        context
+            .places
+            .iter()
+            .filter(|place| place.attribute)
+            .find(|place| line[place.range.clone()].eq_ignore_ascii_case(name.as_bytes()))
+            .map(|place| place.range.clone())
+    })
+}
+
+/// The values of the option `<key>=` in `line`, each up to the end of the
+/// word or string it is in: a key that ends another word does not count
+/// (`subvol=` is no `xsubvol=`).
+fn option_values<'a>(line: &'a [u8], key: &str) -> impl Iterator<Item = Range<usize>> + 'a {
+    let lead = format!("{key}=");
+    let mut from = 0;
+    std::iter::from_fn(move || {
+        let found = find_where(&line[from..], &lead, |before, _| {
+            !before.is_some_and(is_identifier_byte)
+        })?;
+        let start = from + found.end;
+        let end = start
+            + line[start..]
+                .iter()
+                .take_while(|&&b| {
+                    !matches!(b, b'"' | b'\'' | b',' | b' ' | b'\t' | b';' | b']' | b'\\')
+                })
+                .count();
+        from = start;
+        Some(start..end)
+    })
+}
+
+/// The number `value` gives as the kernel reads a `u64` mount option
+/// (`kstrtoull` with base 0): a `+` first or not, then `0x` and hex digits,
+/// `0` and octal digits, or decimal digits. `None` for anything else.
+fn read_id(value: &[u8]) -> Option<u64> {
+    let digits = value.strip_prefix(b"+").unwrap_or(value);
+    let text = std::str::from_utf8(digits).ok()?;
+    let (radix, digits) =
+        if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
+            (16, hex)
+        } else if text.len() > 1 && text.starts_with('0') {
+            (8, &text[1..])
+        } else {
+            (10, text)
+        };
+    if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+        return None;
+    }
+    u64::from_str_radix(digits, radix).ok()
 }
 
 /// Where `line` names the mapping `name`, in comments as well as in code:
@@ -283,9 +367,9 @@ fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
 }
 
 /// Where `path`, read in `line` from `start`, ends: each `/` after its first
-/// byte stands for a run of slashes, as the kernel reads a path
-/// (`/mnt//data` is `/mnt/data`). `path` holds no run of its own. `None`
-/// when `path` is not there.
+/// byte stands for a run of slashes and `.` parts, as the kernel reads a
+/// path (`/mnt//data` and `/mnt/./data` are `/mnt/data`). `path` holds no
+/// run and no `.` part of its own. `None` when `path` is not there.
 fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
     let mut at = start;
     for (index, &byte) in path.iter().enumerate() {
@@ -294,7 +378,16 @@ fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
         }
         at += 1;
         if index > 0 && byte == b'/' {
-            at += line[at..].iter().take_while(|&&b| b == b'/').count();
+            loop {
+                let rest = &line[at..];
+                if rest.first() == Some(&b'/') {
+                    at += 1;
+                } else if rest.starts_with(b"./") {
+                    at += 2;
+                } else {
+                    break;
+                }
+            }
         }
     }
     (!path.is_empty()).then_some(at)

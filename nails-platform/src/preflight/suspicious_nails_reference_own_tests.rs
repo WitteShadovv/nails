@@ -343,21 +343,24 @@ fn a_stock_btrfs_install_with_the_root_in_a_subvolume_passes_with_the_flag() {
     );
 }
 
+/// Each name of the install's device, as the device or label of an entry
+/// for a system folder beside the stock ones, passes with the flag and fails
+/// without it.
 #[test]
-fn with_the_flag_every_name_of_the_installs_device_passes() {
+fn with_the_flag_every_name_of_the_installs_device_passes_in_an_entry_for_a_system_folder() {
     for line in [
-        "fileSystems.\"/data\".device = \"/dev/vda2\";",
-        "fileSystems.\"/data\".device = \"/dev/disk/by-label/nixos\";",
-        "fileSystems.\"/data\".label = \"nixos\";",
-        "# LABEL=nixos",
-        "# UUID=4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f",
-        "fileSystems.\"/data\".device = \"/dev/disk/by-partuuid/8e7d6c5b-4a39-4281-a0b1-c2d3e4f5a6b7\";",
-        "# PARTUUID=8e7d6c5b-4a39-4281-a0b1-c2d3e4f5a6b7",
-        "fileSystems.\"/data\".device = \"/dev/disk/by-partlabel/primary\";",
-        "# PARTLABEL=primary",
-        "fileSystems.\"/data\".device = \"/dev/disk/by-path/pci-0000:00:04.0-part2\";",
-        "boot.resumeDevice = \"/dev/block/252:2\";",
-        "services.udev.extraRules = ''KERNEL==\"vda2\", OPTIONS+=\"watch\"'';",
+        "fileSystems.\"/srv\".device = \"/dev/vda2\";",
+        "fileSystems.\"/srv\".device = \"/dev/disk/by-label/nixos\";",
+        "fileSystems.\"/srv\".label = \"nixos\";",
+        "fileSystems.\"/srv\".device = \"LABEL=nixos\";",
+        "fileSystems.\"/srv\".device = \"UUID=4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f\";",
+        "fileSystems.\"/srv\".device = \"/dev/disk/by-partuuid/8e7d6c5b-4a39-4281-a0b1-c2d3e4f5a6b7\";",
+        "fileSystems.\"/srv\".device = \"PARTUUID=8e7d6c5b-4a39-4281-a0b1-c2d3e4f5a6b7\";",
+        "fileSystems.\"/srv\".device = \"/dev/disk/by-partlabel/primary\";",
+        "fileSystems.\"/srv\".device = \"PARTLABEL=primary\";",
+        "fileSystems.\"/srv\".device = \"/dev/disk/by-path/pci-0000:00:04.0-part2\";",
+        "fileSystems.\"/var/lib/docker\".device = \"/dev/block/252:2\";",
+        "fileSystems.\"/.snapshots\" = { device = \"/dev/vda2\"; options = [ \"subvol=@snapshots\" ]; };",
     ] {
         let content = format!("{{\n  {line}\n}}\n");
         let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
@@ -375,31 +378,117 @@ fn with_the_flag_every_name_of_the_installs_device_passes() {
     }
 }
 
+/// The install's device named anywhere but in the decoy's own entries for
+/// its own mounts still fails with the flag: an entry for a folder that is
+/// no system folder (the filesystem's top mounted for a backup tool, say),
+/// the resume device, a udev rule, a comment, a deduplicating service.
+#[test]
+fn with_the_flag_the_installs_device_elsewhere_still_refuses() {
+    for (line, text) in [
+        (
+            "fileSystems.\"/btr_pool\" = { device = \"/dev/disk/by-uuid/4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f\"; fsType = \"btrfs\"; options = [ \"subvolid=5\" ]; };",
+            "/dev/disk/by-uuid/4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f",
+        ),
+        (
+            "fileSystems.\"/data\".device = \"/dev/disk/by-label/nixos\";",
+            "/dev/disk/by-label/nixos",
+        ),
+        (
+            "boot.resumeDevice = \"/dev/block/252:2\";",
+            "/dev/block/252:2",
+        ),
+        (
+            "services.udev.extraRules = ''KERNEL==\"vda2\", OPTIONS+=\"watch\"'';",
+            "vda2",
+        ),
+        ("# LABEL=nixos", "nixos"),
+        (
+            "services.beesd.filesystems.root.spec = \"UUID=4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f\";",
+            "4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f",
+        ),
+    ] {
+        let content = format!("{{\n  {line}\n}}\n");
+        let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
+        let result = machine.check(Allow::DecoyStorage);
+        assert!(result.is_fail(), "{line}: {result:?}");
+        assert!(
+            result
+                .message()
+                .contains(&format!("/etc/nixos/extra.nix, line 2: '{text}'")),
+            "{line}: {result:?}"
+        );
+    }
+}
+
+/// With the flag, the root's mount point, its subvolume however a line
+/// reaches it, by `subvol=` in any spelling, by `subvolid=` in any base, or
+/// through a mount of the filesystem's top that only the configuration
+/// makes, a backup tool's settings for it, and NAILS still fail.
 #[test]
 fn with_the_flag_the_roots_own_names_still_refuse() {
-    for (line, text, kind) in [
-        ("x = /mnt/vault;", "/mnt/vault", ReferenceKind::MountPoint),
+    const DEVICE: &str = "/dev/disk/by-uuid/4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f";
+    let top = format!(
+        "fileSystems.\"/btr_pool\" = {{ device = \"{DEVICE}\"; fsType = \"btrfs\"; options = [ \"subvolid=5\" ]; }};"
+    );
+    let cases = [
+        ("x = /mnt/vault;".to_string(), "/mnt/vault", ReferenceKind::MountPoint),
         (
-            "fileSystems.\"/data\".options = [ \"subvol=@vault\" ];",
+            "fileSystems.\"/data\".options = [ \"subvol=@vault\" ];".to_string(),
             "@vault",
             ReferenceKind::RootPlace,
         ),
         (
-            "fileSystems.\"/data\".options = [ \"subvolid=258\" ];",
-            "258",
+            "fileSystems.\"/home\".options = [ \"subvol=//@vault\" ];".to_string(),
+            "@vault",
             ReferenceKind::RootPlace,
         ),
         (
-            "fileSystems.\"/mnt/vault\".device = \"/dev/disk/by-uuid/4b1c9e2d-7f3a-4e8b-9c1d-2a3b4c5d6e7f\";",
+            format!("fileSystems.\"/srv\" = {{ device = \"{DEVICE}\"; options = [ \"subvol=./@vault\" ]; }};"),
+            "@vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            format!("fileSystems.\"/srv\" = {{ device = \"{DEVICE}\"; options = [ \"subvol=@home/../@vault\" ]; }};"),
+            "@vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "fileSystems.\"/data\".options = [ \"subvolid=258\" ];".to_string(),
+            "subvolid=258",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            format!("fileSystems.\"/srv\" = {{ device = \"{DEVICE}\"; options = [ \"subvolid=0x102\" ]; }};"),
+            "subvolid=0x102",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            format!("{top} fileSystems.\"/data\" = {{ device = \"/btr_pool/@vault\"; options = [ \"bind\" ]; }};"),
+            "@vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "fileSystems.\"/data\" = { device = \"/btr_pool/@vault\"; options = [ \"bind\" ]; };".to_string(),
+            "@vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "services.btrbk.instances.daily.settings.volume.\"/btr_pool\".subvolume.\"@vault\" = { };".to_string(),
+            "@vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            format!("fileSystems.\"/mnt/vault\".device = \"{DEVICE}\";"),
             "/mnt/vault",
             ReferenceKind::MountPoint,
         ),
         (
-            "services.nails.enable = true;",
+            "services.nails.enable = true;".to_string(),
             "nails",
             ReferenceKind::ToolName,
         ),
-    ] {
+    ];
+    for (line, text, kind) in cases {
         let content = format!("{{\n  {line}\n}}\n");
         let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
         let result = machine.check(Allow::DecoyStorage);
@@ -412,6 +501,21 @@ fn with_the_flag_the_roots_own_names_still_refuse() {
             "{line}: {result:?}"
         );
     }
+    // The top mounted by a line of its own and the subvolume reached
+    // through it on the next: the first fails as an entry for a folder that
+    // is no system folder, the second by the subvolume's name.
+    let content = format!(
+        "{{\n  {top}\n  services.btrbk.instances.daily.settings.volume.\"/btr_pool\".subvolume.\"@vault\" = {{ }};\n}}\n"
+    );
+    let machine = btrfs_install(&[("/etc/nixos/extra.nix", &content)]);
+    let result = machine.check(Allow::DecoyStorage);
+    assert!(
+        result
+            .message()
+            .contains(&format!("/etc/nixos/extra.nix, line 2: '{DEVICE}'"))
+            && result.message().contains("One more line does too."),
+        "{result:?}"
+    );
 }
 
 /// A place that may name the storage and cannot be read, a device of the
@@ -503,16 +607,49 @@ fn a_stock_ext4_install_with_the_root_in_a_folder_of_slash_passes_with_the_flag(
                 .to_string()
         )
     );
-    // The folder the root is, as / shows it, still refuses.
+    // The folder the root is, as / shows it, however it is spelled, and
+    // through a mount of the filesystem's top that only the configuration
+    // makes, still refuses.
+    for (line, text) in [
+        (
+            "services.syncthing.dataDir = \"/home/alice/vault\";",
+            "/home/alice/vault",
+        ),
+        (
+            "fileSystems.\"/data\" = { device = \"/home/alice/./vault\"; options = [ \"bind\" ]; };",
+            "/home/alice/./vault",
+        ),
+        (
+            "fileSystems.\"/data\" = { device = \"/mnt/rootfs/home/alice/vault\"; options = [ \"bind\" ]; };",
+            "vault",
+        ),
+    ] {
+        machine.nixos(&[(
+            "/etc/nixos/configuration.nix",
+            &format!("{{\n  {line}\n}}\n"),
+        )]);
+        let result = machine.check(Allow::DecoyStorage);
+        assert!(
+            result.message().contains(&format!(
+                "line 2: '{text}' ({})",
+                ReferenceKind::RootPlace.reason()
+            )),
+            "{line}: {result:?}"
+        );
+    }
+    // The filesystem's top mounted again by a line of its own fails by its
+    // device: /mnt/rootfs is no system folder.
     machine.nixos(&[(
         "/etc/nixos/configuration.nix",
-        "{ services.syncthing.dataDir = \"/home/alice/vault\"; }",
+        &format!(
+            "{{\n  fileSystems.\"/mnt/rootfs\" = {{ device = \"/dev/disk/by-uuid/{ROOT_UUID}\"; fsType = \"ext4\"; }};\n}}\n"
+        ),
     )]);
     let result = machine.check(Allow::DecoyStorage);
     assert!(
         result.message().contains(&format!(
-            "'/home/alice/vault' ({})",
-            ReferenceKind::RootPlace.reason()
+            "line 2: '/dev/disk/by-uuid/{ROOT_UUID}' ({})",
+            ReferenceKind::Storage.reason()
         )),
         "{result:?}"
     );
@@ -533,4 +670,38 @@ fn with_the_flag_a_root_that_is_no_folder_or_subvolume_of_the_decoys_filesystem_
             .contains(&format!("'/dev/disk/by-uuid/{ROOT_UUID}'")),
         "{result:?}"
     );
+}
+
+/// With the flag, the attach gate looks the hidden root up through the
+/// automount guard: a root behind an automount point that nothing is
+/// mounted on is never looked up, so the check mounts nothing there, and
+/// nothing is let be.
+#[test]
+fn with_the_flag_a_root_behind_an_automount_point_is_never_looked_up() {
+    let fs = MockFilesystem::new();
+    let file = Path::new("/etc/nixos/configuration.nix");
+    fs.mock_set_file_content(
+        file.to_str().unwrap(),
+        "{ fileSystems.\"/\".device = \"/dev/vda1\"; }",
+    );
+    fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+    let mountinfo = "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n\
+                     30 1 0:50 / /srv rw,relatime - autofs systemd-1 \
+                     rw,fd=50,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=100\n";
+    fs.mock_set_mount_table(mountinfo);
+    fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
+    for allow in [Allow::Nothing, Allow::DecoyStorage] {
+        fs.mock_clear_lookups();
+        let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/srv/vault"))
+            .allowing(allow)
+            .run(&fs)
+            .unwrap();
+        let behind: Vec<PathBuf> = fs
+            .mock_lookups()
+            .into_iter()
+            .filter(|path| path.starts_with("/srv"))
+            .collect();
+        assert!(behind.is_empty(), "{allow:?}: {behind:?}");
+        assert!(result.is_pass(), "{allow:?}: {result:?}");
+    }
 }

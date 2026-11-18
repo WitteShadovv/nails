@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The scan with the filesystem that `--allow-decoy-storage` accepted the
-//! hidden root on: the names of that filesystem's devices are let be, each
-//! only where sysfs shows the device by the kernel name and the device number
-//! the judge read, and everything else still counts.
+//! hidden root on: the names of that filesystem's devices are let be in the
+//! decoy's own entries for its own mounts, each only where sysfs shows the
+//! device by the kernel name and the device number the judge read, and
+//! everything else still counts.
 //!
 //! The layout is the documented one, read here as the decoy's own encrypted
 //! filesystem: `data`, a LUKS2 mapping (dm-0, 254:0) on the partition sdb2
@@ -14,12 +15,13 @@ use super::*;
 use crate::nixos::config::{BaseConfigScan, ReferenceKind, verify_base_config_clean_allowing};
 use nails_base::hidden_root::separation::{OwnDevice, OwnFilesystem, Sharing};
 
-/// The filesystem the flag accepted a folder root on, on `devices`, by
-/// kernel name and device number.
+/// The filesystem the flag accepted a folder root at `/mnt/data` on, on
+/// `devices`, by kernel name and device number.
 fn own_on(devices: &[(&str, &str)]) -> OwnFilesystem {
     OwnFilesystem {
         how: Sharing::Bind,
         at: PathBuf::from("/"),
+        root: PathBuf::from("/mnt/data"),
         devices: devices
             .iter()
             .map(|(name, dev)| OwnDevice {
@@ -28,7 +30,8 @@ fn own_on(devices: &[(&str, &str)]) -> OwnFilesystem {
             })
             .collect(),
         folders: Vec::new(),
-        subvolume: None,
+        inside: PathBuf::from("/srv/hidden-root"),
+        btrfs: false,
         subvolid: None,
     }
 }
@@ -60,66 +63,189 @@ fn shown(found: &[crate::nixos::config::BaseConfigReference]) -> Vec<(usize, &st
         .collect()
 }
 
-/// Each name of the mapping and of the partition, in each form the scan
-/// reads: refused without the filesystem the flag accepted, let be with it.
-const NAMES: &[&str] = &[
-    // The mapping: its device path, its udev links, its mapper links, the
-    // filesystem's uuid and label as a link, a tag and a `label`, its kernel
-    // name as a device node, a word and a `/dev/block` link, its unit.
-    "fileSystems.\"/\".device = \"/dev/mapper/data\";",
-    "fileSystems.\"/\".device = \"/dev/disk/by-id/dm-name-data\";",
-    "fileSystems.\"/\".device = \"/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data\";",
-    "fileSystems.\"/\".device = \"/dev/disk/by-uuid/0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b\";",
-    "# UUID=0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
-    "fileSystems.\"/\".device = \"/dev/disk/by-label/secrets\";",
-    "# LABEL=secrets",
-    "fileSystems.\"/\".label = \"secrets\";",
-    "boot.resumeDevice = \"/dev/dm-0\";",
-    "boot.resumeDevice = \"/dev/block/254:0\";",
-    "services.udev.extraRules = ''KERNEL==\"dm-0\", OPTIONS+=\"watch\"'';",
-    "systemd.services.x.after = [ \"dev-mapper-data.device\" ];",
-    // Its mapping as a NixOS LUKS entry names it, opened from the partition
-    // by the LUKS header's uuid.
-    "boot.initrd.luks.devices.\"data\".allowDiscards = true;",
-    "boot.initrd.luks.device = \"/dev/disk/by-uuid/7d2c9e14-e8a1-4b3c-9f6b-0e1a2d3c4b5a\";",
-    // The partition: its device path, PARTUUID and PARTLABEL as links and
-    // tags, its other udev links, its label as a link and a tag, its kernel
-    // name as a word and its `/dev/block` link.
-    "boot.initrd.luks.device = \"/dev/sdb2\";",
-    "boot.initrd.luks.device = \"/dev/disk/by-partuuid/4f1b0a7d-02\";",
-    "# PARTUUID=4f1b0a7d-02",
-    "boot.initrd.luks.device = \"/dev/disk/by-partlabel/vault\";",
-    "# PARTLABEL=vault",
-    "boot.initrd.luks.device = \"/dev/disk/by-id/ata-QEMU_HARDDISK_QM00002-part2\";",
-    "boot.initrd.luks.device = \"/dev/disk/by-path/pci-0000:00:17.0-ata-2-part2\";",
-    "boot.initrd.luks.device = \"/dev/disk/by-diskseq/2-part2\";",
-    "boot.initrd.luks.device = \"/dev/disk/by-label/My\\\\x20Vault\";",
-    "# LABEL=\"My Vault\"",
-    "services.udev.extraRules = ''KERNEL==\"sdb2\", OPTIONS+=\"watch\"'';",
-    "boot.resumeDevice = \"/dev/block/8:18\";",
+/// Each name of the mapping and of the partition below it, in each form the
+/// scan reads that a device string can hold: the mapping's device path, its
+/// mapper and dm-uuid links, the filesystem's uuid and label as links and
+/// tags, its kernel name as a device node and a `/dev/block` link; the
+/// partition's device path, the LUKS header's uuid, its PARTUUID and
+/// PARTLABEL as links and tags, its other udev links, its label as a link,
+/// and its `/dev/block` link.
+const DEVICE_NAMES: &[&str] = &[
+    "/dev/mapper/data",
+    "/dev/disk/by-id/dm-name-data",
+    "/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
+    "/dev/disk/by-uuid/0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
+    "UUID=0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
+    "/dev/disk/by-label/secrets",
+    "LABEL=secrets",
+    "/dev/dm-0",
+    "/dev/block/254:0",
+    "/dev/sdb2",
+    "/dev/disk/by-uuid/7d2c9e14-e8a1-4b3c-9f6b-0e1a2d3c4b5a",
+    "/dev/disk/by-partuuid/4f1b0a7d-02",
+    "PARTUUID=4f1b0a7d-02",
+    "/dev/disk/by-partlabel/vault",
+    "PARTLABEL=vault",
+    "/dev/disk/by-id/ata-QEMU_HARDDISK_QM00002-part2",
+    "/dev/disk/by-path/pci-0000:00:17.0-ata-2-part2",
+    "/dev/disk/by-diskseq/2-part2",
+    "/dev/disk/by-label/My\\\\x20Vault",
+    "/dev/block/8:18",
 ];
 
+/// Each name, as the `device` of a `fileSystems` entry for `/` and for
+/// system folders, written as a path and as nested sets, and as the
+/// `device` of a `boot.initrd.luks.devices` entry: refused without the
+/// filesystem the flag accepted, let be with it.
 #[test]
-fn every_name_of_the_accepted_filesystems_devices_is_let_be() {
+fn every_name_of_the_accepted_filesystems_devices_is_let_be_in_the_decoys_own_entries() {
     let own = own_luks();
-    for name in NAMES {
-        let content = format!("{{\n  {name}\n}}\n");
+    for name in DEVICE_NAMES {
+        for line in [
+            format!("fileSystems.\"/\".device = \"{name}\";"),
+            format!("fileSystems.\"/home\".device = \"{name}\";"),
+            format!("fileSystems.\"/var/log\".device = \"{name}\";"),
+            format!("fileSystems.\"/.snapshots\" = {{ device = \"{name}\"; }};"),
+            format!("fileSystems = {{ \"/nix\" = {{ device = lib.mkForce \"{name}\"; }}; }};"),
+            format!("config.fileSystems.\"/srv\".device = \"{name}\";"),
+            format!("boot.initrd.luks.devices.\"cryptroot\".device = \"{name}\";"),
+            format!("boot.initrd.luks.devices = {{ cryptroot = {{ device = \"{name}\"; }}; }};"),
+        ] {
+            let content = format!("{{\n  {line}\n}}\n");
+            let sysfs = with_udev(luks_on_a_partition());
+            let without = scan(&sysfs, None, &content);
+            assert_eq!(without.references.len(), 1, "{line}: {without:?}");
+            assert!(without.let_be.is_empty(), "{line}");
+            let with = scan(&sysfs, Some(&own), &content);
+            assert!(with.references.is_empty(), "{line}: {:?}", with.references);
+            assert_eq!(
+                shown(&with.let_be),
+                [(
+                    2,
+                    without.references[0].text.as_str(),
+                    without.references[0].kind
+                )],
+                "{line}"
+            );
+            assert!(with.unread.is_empty(), "{line}: {:?}", with.unread);
+        }
+    }
+}
+
+/// The label as a `fileSystems` entry's `label`, the mapping's name as the
+/// name of a `boot.initrd.luks.devices` entry (NixOS names it after the
+/// LUKS header's uuid), and the layout `nixos-generate-config` writes over
+/// several lines are let be as well.
+#[test]
+fn the_label_the_luks_entry_and_a_generated_entry_are_let_be() {
+    let own = own_luks();
+    for content in [
+        "{\n  fileSystems.\"/\".label = \"secrets\";\n}\n",
+        "{\n  boot.initrd.luks.devices.\"data\".allowDiscards = true;\n}\n",
+        "{\n  boot.initrd.luks.devices.data.keyFile = \"/crypto_keyfile.bin\";\n}\n",
+        "{\n  fileSystems.\"/\" =\n    { device = \"/dev/mapper/data\";\n      fsType = \"ext4\";\n    };\n}\n",
+        "{\n  # fileSystems.\"/home\".device = \"/dev/sdb2\";\n}\n",
+    ] {
         let sysfs = with_udev(luks_on_a_partition());
-        let without = scan(&sysfs, None, &content);
-        assert_eq!(without.references.len(), 1, "{name}: {without:?}");
-        assert!(without.let_be.is_empty(), "{name}");
-        let with = scan(&sysfs, Some(&own), &content);
-        assert!(with.references.is_empty(), "{name}: {:?}", with.references);
-        assert_eq!(
-            shown(&with.let_be),
-            [(
-                2,
-                without.references[0].text.as_str(),
-                without.references[0].kind
-            )],
-            "{name}"
+        let without = scan(&sysfs, None, content);
+        assert_eq!(without.references.len(), 1, "{content}: {without:?}");
+        let with = scan(&sysfs, Some(&own), content);
+        assert!(
+            with.references.is_empty(),
+            "{content}: {:?}",
+            with.references
         );
-        assert!(with.unread.is_empty(), "{name}: {:?}", with.unread);
+        assert_eq!(with.let_be.len(), 1, "{content}: {with:?}");
+    }
+}
+
+/// A name of a device of the accepted filesystem anywhere else than the
+/// decoy's own entries for its own mounts still counts: in the entry for a
+/// folder that is no system folder, the hidden root's own among them, in an
+/// entry's options, in a `let` binding, a service's settings, a udev rule,
+/// a unit's dependencies, a comment outside such an entry, an attribute
+/// written in another case than Nix reads, and beside an own entry on the
+/// same line.
+#[test]
+fn a_name_of_the_accepted_filesystem_elsewhere_still_counts() {
+    let own = own_luks();
+    for (line, text, kind) in [
+        (
+            "fileSystems.\"/btr_pool\".device = \"/dev/mapper/data\";",
+            "/dev/mapper/data",
+            ReferenceKind::Device,
+        ),
+        (
+            "fileSystems.\"/HOME\".device = \"/dev/mapper/data\";",
+            "/dev/mapper/data",
+            ReferenceKind::Device,
+        ),
+        (
+            "fileSystems.\"/home/../srv/x\".device = \"/dev/sdb2\";",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "filesystems.\"/\".device = \"/dev/mapper/data\";",
+            "/dev/mapper/data",
+            ReferenceKind::Device,
+        ),
+        (
+            "fileSystems.\"/\".options = [ \"x-systemd.requires=/dev/sdb2\" ];",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "fileSystems.\"/\".encrypted.blkDev = \"/dev/sdb2\";",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "boot.resumeDevice = \"/dev/dm-0\";",
+            "/dev/dm-0",
+            ReferenceKind::Storage,
+        ),
+        (
+            "services.beesd.filesystems.root.spec = \"UUID=0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b\";",
+            "0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
+            ReferenceKind::Storage,
+        ),
+        (
+            "services.udev.extraRules = ''KERNEL==\"sdb2\", OPTIONS+=\"watch\"'';",
+            "sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "systemd.services.x.after = [ \"dev-mapper-data.device\" ];",
+            "dev-mapper-data.device",
+            ReferenceKind::DeviceUnit,
+        ),
+        (
+            "# UUID=0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
+            "0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b",
+            ReferenceKind::Storage,
+        ),
+        (
+            "x = let disk = \"/dev/sdb2\"; in disk;",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "fileSystems.\"/\".device = \"/dev/mapper/data\"; boot.resumeDevice = \"/dev/sdb2\";",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+        (
+            "boot.initrd.luks.devices.\"data\".header = \"/dev/sdb2\";",
+            "/dev/sdb2",
+            ReferenceKind::Storage,
+        ),
+    ] {
+        let content = format!("{{\n  {line}\n}}\n");
+        let sysfs = with_udev(luks_on_a_partition());
+        let found = scan(&sysfs, Some(&own), &content);
+        assert_eq!(shown(&found.references), [(2, text, kind)], "{line}");
+        assert!(found.let_be.is_empty(), "{line}: {:?}", found.let_be);
     }
 }
 
@@ -158,7 +284,7 @@ fn a_layer_with_another_number_or_name_than_the_judge_read_keeps_its_names() {
             &sysfs,
             Some(&own),
             "{\n  fileSystems.\"/\".device = \"/dev/mapper/data\";\n  \
-             boot.resumeDevice = \"/dev/sdb2\";\n}\n",
+             fileSystems.\"/home\".device = \"/dev/sdb2\";\n}\n",
         );
         assert_eq!(
             shown(&found.references),
@@ -176,7 +302,7 @@ fn a_layer_with_another_number_or_name_than_the_judge_read_keeps_its_names() {
     let found = scan(
         &sysfs,
         Some(&own_on(&[("sdb2", "8:18")])),
-        "{ x = \"/dev/disk/by-uuid/0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b\"; }\n",
+        "{ fileSystems.\"/\".device = \"/dev/disk/by-uuid/0b6e2a51-93c4-4d7e-8f1a-2c3d4e5f6a7b\"; }\n",
     );
     assert_eq!(found.references.len(), 1, "{found:?}");
 }
@@ -190,6 +316,11 @@ fn the_root_nails_and_its_text_still_count_with_the_accepted_filesystem() {
     let own = own_luks();
     for (content, text, kind) in [
         ("{ x = /mnt/data; }", "/mnt/data", ReferenceKind::MountPoint),
+        (
+            "{ x = /mnt/./data; }",
+            "/mnt/./data",
+            ReferenceKind::MountPoint,
+        ),
         (
             "{ systemd.services.x.after = [ \"mnt-data.mount\" ]; }",
             "mnt-data.mount",
@@ -212,33 +343,91 @@ fn the_root_nails_and_its_text_still_count_with_the_accepted_filesystem() {
     }
 }
 
-/// The root's own folder, as another mount of the filesystem shows it, and
-/// its btrfs subvolume, by `subvol=` and `subvolid=`, count with the
-/// filesystem the flag accepted; a folder or subvolume whose name only
-/// starts alike does not.
+/// The root's own place counts with the filesystem the flag accepted: its
+/// folder as another mount of the filesystem shows it, its btrfs
+/// subvolume's name wherever it stands whole in a path or a string, however
+/// a `subvol=` spells the path to it, its id in any base `subvolid=` is read
+/// in, and a `subvol=` or `subvolid=` value the scan cannot read. A name
+/// that only starts or ends alike, another id, and another subvolume do
+/// not.
 #[test]
 fn the_roots_own_folder_and_subvolume_count() {
     let sysfs = with_udev(luks_on_a_partition());
     let own = OwnFilesystem {
+        how: Sharing::Subvolume,
         folders: vec![PathBuf::from("/srv/Vault")],
-        subvolume: Some("@vault".to_string()),
-        subvolid: Some("258".to_string()),
+        inside: PathBuf::from("/@vault"),
+        btrfs: true,
+        subvolid: Some(258),
         ..own_luks()
     };
     for (content, text) in [
         ("{ services.x.dataDir = \"/srv/Vault/db\"; }", "/srv/Vault"),
         ("{ x = /srv//Vault; }", "/srv//Vault"),
+        ("{ x = \"/srv/./Vault\"; }", "/srv/./Vault"),
         (
             "{ fileSystems.\"/x\".options = [ \"subvol=@vault\" ]; }",
             "@vault",
         ),
         (
             "{ fileSystems.\"/x\".options = [ \"subvol=/@vault/inner\" ]; }",
-            "/@vault",
+            "@vault",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvol=//@vault\" ]; }",
+            "@vault",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvol=./@vault\" ]; }",
+            "@vault",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvol=@home/../@vault\" ]; }",
+            "@vault",
+        ),
+        (
+            "{ fileSystems.\"/home\".options = [ \"compress=zstd,subvol=@vault/.\" ]; }",
+            "@vault",
+        ),
+        (
+            "{ fileSystems.\"/data\" = { device = \"/btr_pool/@vault\"; options = [ \"bind\" ]; }; }",
+            "@vault",
+        ),
+        (
+            "{ services.btrbk.instances.daily.settings.volume.\"/btr_pool\".subvolume.\"@vault\" = { }; }",
+            "@vault",
         ),
         (
             "{ fileSystems.\"/x\".options = [ \"subvolid=258\" ]; }",
-            "258",
+            "subvolid=258",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvolid=0x102\" ]; }",
+            "subvolid=0x102",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvolid=0402\" ]; }",
+            "subvolid=0402",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvolid=+258\" ]; }",
+            "subvolid=+258",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvolid=${toString id}\" ]; }",
+            "subvolid=${toString",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvolid=\" ]; }",
+            "subvolid=",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ \"subvol=${name}\" ]; }",
+            "subvol=${name}",
+        ),
+        (
+            "{ fileSystems.\"/x\".options = [ (\"subvol=\" + name) ]; }",
+            "subvol=",
         ),
     ] {
         let found = scan(&sysfs, Some(&own), content);
@@ -251,15 +440,81 @@ fn the_roots_own_folder_and_subvolume_count() {
     for content in [
         "{ services.x.dataDir = \"/srv/Vaults\"; }",
         "{ fileSystems.\"/x\".options = [ \"subvol=@vaults\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvol=@vault-old\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvol=old@vault\" ]; }",
         "{ fileSystems.\"/x\".options = [ \"subvolid=2580\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvolid=0x1020\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvolid=257\" ]; }",
         "{ fileSystems.\"/\".options = [ \"subvol=@\" ]; }",
+        "{ fileSystems.\"/home\".options = [ \"subvol=/@home\" ]; }",
     ] {
         let found = scan(&sysfs, Some(&own), content);
         assert!(found.references.is_empty(), "{content}: {found:?}");
     }
-    // Without the flag nothing of it is known, and the folder passes.
-    let found = scan(&sysfs, None, "{ x = \"/srv/Vault/db\"; }");
-    assert!(found.references.is_empty(), "{found:?}");
+    // Without the flag nothing of it is known, and none of it counts.
+    for content in [
+        "{ x = \"/srv/Vault/db\"; }",
+        "{ fileSystems.\"/x\".options = [ \"subvol=@vault\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvolid=258\" ]; }",
+    ] {
+        let found = scan(&sysfs, None, content);
+        assert!(found.references.is_empty(), "{content}: {found:?}");
+    }
+}
+
+/// A folder root's own name counts wherever it stands whole in a path or a
+/// string, through any mount of the filesystem, and as an attribute name the
+/// file defines; on a filesystem that is not btrfs, `subvol=` and
+/// `subvolid=` mean nothing and do not count.
+#[test]
+fn a_folder_roots_own_name_counts_as_a_part_of_a_path_a_string_or_an_attribute() {
+    let sysfs = with_udev(luks_on_a_partition());
+    let own = OwnFilesystem {
+        inside: PathBuf::from("/home/alice/vault"),
+        folders: vec![PathBuf::from("/home/alice/vault")],
+        ..own_luks()
+    };
+    for (content, text, kind) in [
+        (
+            "{ fileSystems.\"/data\" = { device = \"/mnt/rootfs/home/alice/vault\"; options = [ \"bind\" ]; }; }",
+            "vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "{ fileSystems.\"/data\".device = \"/home/alice/./vault\"; }",
+            "/home/alice/./vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "{ fileSystems.\"/data\".device = \"/home/bob/../alice/vault\"; }",
+            "vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "{ fileSystems.\"/data\".options = [ \"X-mount.subdir=home/alice/vault\" ]; }",
+            "vault",
+            ReferenceKind::RootPlace,
+        ),
+        (
+            "{ services.syncthing.folders.vault = { }; }",
+            "vault",
+            ReferenceKind::RootPlace,
+        ),
+        ("{ x = \"vault\"; }", "vault", ReferenceKind::RootPlace),
+    ] {
+        let found = scan(&sysfs, Some(&own), content);
+        assert_eq!(shown(&found.references), [(1, text, kind)], "{content}");
+    }
+    for content in [
+        "{ environment.systemPackages = [ pkgs.vault ]; }",
+        "{ x = \"/etc/vault.conf\"; }",
+        "{ x = \"/srv/vaults\"; }",
+        "{ fileSystems.\"/x\".options = [ \"subvolid=${toString id}\" ]; }",
+        "{ fileSystems.\"/x\".options = [ \"subvol=${name}\" ]; }",
+    ] {
+        let found = scan(&sysfs, Some(&own), content);
+        assert!(found.references.is_empty(), "{content}: {found:?}");
+    }
 }
 
 /// A place that may give a name of the storage and cannot be read keeps

@@ -15,6 +15,7 @@ fn found(pattern: &Pattern, text: &str) -> Option<String> {
         let context = Context {
             names: scanner.line(line.as_bytes()),
             arguments: shell.line(line.as_bytes()),
+            places: scanner.places(),
         };
         if hit.is_none()
             && let Some(range) = pattern.find(line.as_bytes(), &context)
@@ -69,7 +70,8 @@ fn a_path_ends_at_a_component_boundary() {
 /// separate its parts; the text reported is the path as written. A path
 /// that only begins at a doubled slash inside another one is that other
 /// path (`/srv//mnt/data` is `/srv/mnt/data`), and a unit name keeps the
-/// rule it had: a `/` before it is no part of its name.
+/// rule it had: a `/` before it is no part of its name. A `.` part counts
+/// as the kernel reads it.
 #[test]
 fn a_path_counts_however_many_slashes_part_it() {
     let path = Pattern::Path("/mnt/data".into());
@@ -80,6 +82,7 @@ fn a_path_counts_however_many_slashes_part_it() {
         ("x = \"///mnt//data//nixos\";", "/mnt//data"),
         ("url = \"git+file:///mnt//data/nixos\";", "/mnt//data"),
         ("# mount it at /MNT//DATA first", "/mnt//data"),
+        ("x = \"/mnt/./data\";", "/mnt/./data"),
     ] {
         assert_eq!(found(&path, hit).as_deref(), Some(text), "{hit}");
     }
@@ -90,7 +93,6 @@ fn a_path_counts_however_many_slashes_part_it() {
         "x = \"/srv//mnt/data\";",
         "x = \"/srv///mnt//data\";",
         "x = \"srv//mnt/data\";",
-        "x = \"/mnt/./data\";",
     ] {
         assert_eq!(found(&path, miss), None, "{miss}");
     }
@@ -354,4 +356,93 @@ fn a_label_counts_as_a_tag_or_a_filesystem_s_label() {
         found(&partlabel, "fileSystems.\"/srv\".label = \"vault\";"),
         None
     );
+}
+
+/// A name stands as a component where it is a whole part of a path or a
+/// whole string, whatever comes before it, or an attribute name the line
+/// defines; never as part of a longer name or a dotted reference.
+#[test]
+fn a_component_stands_whole_in_a_path_a_string_or_a_defined_attribute() {
+    let name = Pattern::Component("@vault".into());
+    for hit in [
+        "options = [ \"subvol=@vault\" ];",
+        "options = [ \"subvol=//@vault\" ];",
+        "options = [ \"subvol=./@vault/.\" ];",
+        "options = [ \"subvol=@home/../@vault\" ];",
+        "device = \"/btr_pool/@vault/inner\";",
+        "subvolume.\"@vault\" = { };",
+    ] {
+        assert_eq!(found(&name, hit).as_deref(), Some("@vault"), "{hit}");
+    }
+    for miss in [
+        "x = \"@vaults\";",
+        "x = \"old@vault\";",
+        "x = \"@vault-1\";",
+    ] {
+        assert_eq!(found(&name, miss), None, "{miss}");
+    }
+    let name = Pattern::Component("vault".into());
+    assert_eq!(
+        found(&name, "services.btrbk.subvolume.vault = { };").as_deref(),
+        Some("vault")
+    );
+    for miss in [
+        "environment.systemPackages = [ pkgs.vault ];",
+        "x = \"/etc/vault.conf\";",
+    ] {
+        assert_eq!(found(&name, miss), None, "{miss}");
+    }
+}
+
+/// `subvolid=` names the id in every base the kernel reads it in, and one
+/// whose value cannot be read counts whatever the id; `subvol=` counts when
+/// its value cannot be read.
+#[test]
+fn a_subvolume_id_is_read_as_the_kernel_reads_it() {
+    let id = Pattern::SubvolId(Some(258));
+    for hit in [
+        "subvolid=258",
+        "subvolid=0x102",
+        "subvolid=0X102",
+        "subvolid=0402",
+        "subvolid=+258",
+        "\"compress=zstd,subvolid=258\"",
+        "\"subvolid=${toString id}\"",
+        "\"subvolid=\"",
+        "\"subvolid=258x\"",
+    ] {
+        assert!(found(&id, hit).is_some(), "{hit}");
+    }
+    for miss in [
+        "subvolid=2580",
+        "subvolid=257",
+        "subvolid=0x1020",
+        "xsubvolid=258",
+        "subvol=258",
+    ] {
+        assert_eq!(found(&id, miss), None, "{miss}");
+    }
+    let none = Pattern::SubvolId(None);
+    assert_eq!(found(&none, "subvolid=258"), None);
+    assert!(found(&none, "subvolid=${id}").is_some());
+    let unread = Pattern::SubvolUnread;
+    for hit in ["\"subvol=${name}\"", "(\"subvol=\" + name)", "subvol=;"] {
+        assert!(found(&unread, hit).is_some(), "{hit}");
+    }
+    for miss in ["\"subvol=@\"", "\"subvolid=\"", "\"subvol=/\""] {
+        assert_eq!(found(&unread, miss), None, "{miss}");
+    }
+}
+
+/// A path read with `.` parts in it, as the kernel resolves them.
+#[test]
+fn a_path_matches_through_dot_parts() {
+    let path = Pattern::Path("/home/alice/vault".into());
+    for hit in [
+        "x = \"/home/alice/./vault\";",
+        "x = \"/home/./alice/.//vault/db\";",
+    ] {
+        assert!(found(&path, hit).is_some(), "{hit}");
+    }
+    assert_eq!(found(&path, "x = \"/home/alice/../vault\";"), None);
 }

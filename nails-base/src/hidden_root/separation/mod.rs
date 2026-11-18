@@ -197,7 +197,7 @@ mod reads;
 #[cfg(test)]
 mod tests;
 
-pub use collect::{Collected, collect, judge_storage};
+pub use collect::{Collected, collect, judge_storage, judge_storage_owning};
 pub use judge::{claimed_devices, judge, shown_fstype};
 pub use known::unread_fstab_options;
 pub use lines::{decoys_own_mount, sharing};

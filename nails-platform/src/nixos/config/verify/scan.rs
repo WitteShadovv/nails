@@ -29,6 +29,21 @@
 
 use std::ops::Range;
 
+/// A range of a line that the file defines something at: an attribute name
+/// being defined, or the text of a string in the value of a definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Place {
+    /// The range, without quotes.
+    pub(super) range: Range<usize>,
+    /// For an attribute name, the attribute path it ends
+    /// (`boot.initrd.luks.devices."root"` for `"root"`); for a string, the
+    /// path of the definition whose value holds it
+    /// (`fileSystems."/".device`), as the file spells it.
+    pub(super) path: Vec<String>,
+    /// An attribute name, not a string.
+    pub(super) attribute: bool,
+}
+
 /// What a range of a line names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Named {
@@ -76,9 +91,12 @@ enum Frame {
     },
     /// An interpolation, `${ … }`.
     Interpolation,
-    /// A string: `''…''` when `indented`, else `"…"`.
+    /// A string: `''…''` when `indented`, else `"…"`. `opened` is where its
+    /// text starts on the line being read and the path of the definition
+    /// whose value holds it, for a string that line opened.
     Str {
         indented: bool,
+        opened: Option<(usize, Vec<String>)>,
     },
 }
 
@@ -122,12 +140,24 @@ pub(super) struct Scanner {
     comment: Option<Comment>,
     /// Inside a `/* … */` comment.
     in_block_comment: bool,
+    /// The places of the line read last ([`Scanner::places`]).
+    places: Vec<Place>,
 }
 
 impl Scanner {
-    /// The ranges of `line` that name something ([`Named`]).
+    /// The places of the line [`Scanner::line`] read last: each attribute
+    /// name it defines and each string it holds whole in the value of a
+    /// definition ([`Place`]).
+    pub(super) fn places(&mut self) -> Vec<Place> {
+        std::mem::take(&mut self.places)
+    }
+
+    /// The ranges of `line` that name something ([`Named`]). `line` is read
+    /// as the file spells it: an attribute name is compared with any case,
+    /// and [`Scanner::places`] keeps its spelling.
     pub(super) fn line(&mut self, line: &[u8]) -> Vec<(Range<usize>, Named)> {
         let mut names = Vec::new();
+        let mut places = Vec::new();
         let in_string = matches!(self.code.top(), Some(Frame::Str { .. }));
         let first = skip_blanks(line, 0);
         let indent = comment_text(line, first);
@@ -148,9 +178,11 @@ impl Scanner {
         let mut attribute = self.stack(in_comment).expects_attribute();
         let mut i = 0;
         while i < line.len() {
-            if let Some(Frame::Str { indented }) = self.stack(in_comment).top() {
+            if let Some(Frame::Str { indented, .. }) = self.stack(in_comment).top() {
                 let indented = *indented;
-                i = self.stack(in_comment).string(line, i, indented);
+                let (next, closed) = self.stack(in_comment).string(line, i, indented);
+                places.extend(closed);
+                i = next;
                 continue;
             }
             if !in_comment && (line[i] == b'#' || line[i..].starts_with(b"/*")) {
@@ -186,9 +218,9 @@ impl Scanner {
                     continue;
                 }
                 attribute = false;
-                if let Some(next) = self
-                    .stack(in_comment)
-                    .definition(line, i, indent, &mut names)
+                if let Some(next) =
+                    self.stack(in_comment)
+                        .definition(line, i, indent, &mut names, &mut places)
                 {
                     i = next;
                     continue;
@@ -216,6 +248,12 @@ impl Scanner {
         } else if let Some(comment) = &mut self.comment {
             comment.stack.end_strings(comment.base);
         }
+        // A string the next line goes on with is no place on it.
+        self.code.forget_openings();
+        if let Some(comment) = &mut self.comment {
+            comment.stack.forget_openings();
+        }
+        self.places = places;
         names
     }
 
@@ -282,33 +320,57 @@ impl Stack {
     }
 
     /// One step inside the string that holds `i`: past an escape, into an
-    /// interpolation, or out of the string. Returns where to go on.
-    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> usize {
+    /// interpolation, or out of the string. Returns where to go on, and the
+    /// place of a string this line opened that ends here.
+    fn string(&mut self, line: &[u8], i: usize, indented: bool) -> (usize, Option<Place>) {
         let rest = &line[i..];
         if rest.starts_with(b"$$") {
-            return i + 2;
+            return (i + 2, None);
         }
         if rest.starts_with(b"${") {
             self.0.push((Frame::Interpolation, usize::MAX));
-            return i + 2;
+            return (i + 2, None);
         }
         if indented {
             if rest.starts_with(b"'''") || rest.starts_with(b"''$") {
-                return i + 3;
+                return (i + 3, None);
             }
             if rest.starts_with(b"''\\") {
-                return i + 4;
+                return (i + 4, None);
             }
             if rest.starts_with(b"''") {
-                self.0.pop();
-                return i + 2;
+                return (i + 2, self.close_string(i));
             }
         } else if rest[0] == b'\\' {
-            return i + 2;
+            return (i + 2, None);
         } else if rest[0] == b'"' {
-            self.0.pop();
+            return (i + 1, self.close_string(i));
         }
-        i + 1
+        (i + 1, None)
+    }
+
+    /// Close the string on top, which ends at `end`: its place, where this
+    /// line opened it.
+    fn close_string(&mut self, end: usize) -> Option<Place> {
+        let (Frame::Str { opened, .. }, _) = self.0.pop()? else {
+            return None;
+        };
+        let (start, path) = opened?;
+        Some(Place {
+            range: start..end,
+            path,
+            attribute: false,
+        })
+    }
+
+    /// Forget where the open strings started: the next line goes on with
+    /// them.
+    fn forget_openings(&mut self) {
+        for (frame, _) in &mut self.0 {
+            if let Frame::Str { opened, .. } = frame {
+                *opened = None;
+            }
+        }
     }
 
     /// The byte at `i` outside a string and a token: a bracket, a string's
@@ -321,11 +383,27 @@ impl Stack {
             return false;
         }
         if rest.starts_with(b"''") {
-            self.0.push((Frame::Str { indented: true }, indent));
+            let opened = Some((i + 2, self.block_path()));
+            self.0.push((
+                Frame::Str {
+                    indented: true,
+                    opened,
+                },
+                indent,
+            ));
             return false;
         }
         match rest[0] {
-            b'"' => self.0.push((Frame::Str { indented: false }, indent)),
+            b'"' => {
+                let opened = Some((i + 1, self.block_path()));
+                self.0.push((
+                    Frame::Str {
+                        indented: false,
+                        opened,
+                    },
+                    indent,
+                ));
+            }
             b'{' => {
                 let attrs = Attrs {
                     path: self.block_path(),
@@ -432,6 +510,7 @@ impl Stack {
         start: usize,
         indent: usize,
         names: &mut Vec<(Range<usize>, Named)>,
+        places: &mut Vec<Place>,
     ) -> Option<usize> {
         let attrs = self.attrs_mut()?;
         // The old list form's elements are no entries: `name` names one.
@@ -456,8 +535,13 @@ impl Stack {
         );
         for (index, (_, range)) in components.into_iter().enumerate() {
             if entries && names_entry(&full[..offset + index]) {
-                names.push((range, Named::Mapping));
+                names.push((range.clone(), Named::Mapping));
             }
+            places.push(Place {
+                range,
+                path: full[..=offset + index].to_vec(),
+                attribute: true,
+            });
         }
         let value = skip_blanks(line, next + 1);
         if let Some(named) = value_names(&full, attrs.in_list)
@@ -508,8 +592,10 @@ fn inherit(
 /// `clevis.devices`, which names a mapping.
 fn names_entry(path: &[String]) -> bool {
     path.len() >= 2
-        && path[path.len() - 1] == "devices"
-        && matches!(path[path.len() - 2].as_str(), "luks" | "clevis")
+        && path[path.len() - 1].eq_ignore_ascii_case("devices")
+        && ["luks", "clevis"]
+            .iter()
+            .any(|name| path[path.len() - 2].eq_ignore_ascii_case(name))
 }
 
 /// What the string value of the definition at `full` names, if anything:
@@ -518,22 +604,22 @@ fn names_entry(path: &[String]) -> bool {
 /// filesystem label.
 fn value_names(full: &[String], in_list: bool) -> Option<Named> {
     let (last, parent) = full.split_last()?;
-    match last.as_str() {
-        "label" if parent.last().is_some_and(|p| p == "encrypted") => Some(Named::Mapping),
-        "label"
-            if parent
-                .iter()
-                .any(|c| c == "filesystems" || c == "swapdevices") =>
-        {
-            Some(Named::Label)
-        }
-        "name"
-            if (in_list && names_entry(parent))
-                || parent.split_last().is_some_and(|(_, up)| names_entry(up)) =>
-        {
-            Some(Named::Mapping)
-        }
-        _ => None,
+    let is = |text: &str, word: &str| text.eq_ignore_ascii_case(word);
+    if is(last, "label") && parent.last().is_some_and(|p| is(p, "encrypted")) {
+        Some(Named::Mapping)
+    } else if is(last, "label")
+        && parent
+            .iter()
+            .any(|c| is(c, "filesystems") || is(c, "swapdevices"))
+    {
+        Some(Named::Label)
+    } else if is(last, "name")
+        && ((in_list && names_entry(parent))
+            || parent.split_last().is_some_and(|(_, up)| names_entry(up)))
+    {
+        Some(Named::Mapping)
+    } else {
+        None
     }
 }
 

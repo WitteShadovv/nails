@@ -169,3 +169,76 @@ fn ordinary_definitions_name_nothing() {
         assert_eq!(names(text), [], "{text}");
     }
 }
+
+/// Every place of `text`, read as the file spells it, as (line, text,
+/// path joined by `.`, attribute).
+fn places(text: &str) -> Vec<(usize, String, String, bool)> {
+    let mut scanner = Scanner::default();
+    let mut found = Vec::new();
+    for (index, line) in text.split('\n').enumerate() {
+        scanner.line(line.as_bytes());
+        for place in scanner.places() {
+            found.push((
+                index + 1,
+                line[place.range].to_string(),
+                place.path.join("."),
+                place.attribute,
+            ));
+        }
+    }
+    found
+}
+
+/// Each attribute name a definition makes, with the path it ends, and each
+/// string the value of a definition holds whole on its line, with the
+/// definition's path: in nested sets, after a function call, in a list, in
+/// a comment, and with the case the file gives them.
+#[test]
+fn places_carry_the_path_of_their_definition() {
+    let text = "{\n  fileSystems.\"/\" =\n    { device = \"/dev/vda2\";\n      options = [ \"subvol=@\" ];\n    };\n  boot.initrd.luks.devices.root.device = lib.mkForce \"/dev/sda2\";\n  # fileSystems.\"/home\".label = \"nixos\";\n}";
+    let found = places(text);
+    let strings: Vec<(usize, &str, &str)> = found
+        .iter()
+        .filter(|(_, _, _, attribute)| !attribute)
+        .map(|(line, text, path, _)| (*line, text.as_str(), path.as_str()))
+        .collect();
+    assert_eq!(
+        strings,
+        [
+            (3, "/dev/vda2", "fileSystems./.device"),
+            (4, "subvol=@", "fileSystems./.options"),
+            (6, "/dev/sda2", "boot.initrd.luks.devices.root.device"),
+            (7, "nixos", "fileSystems./home.label"),
+        ]
+    );
+    assert!(found.contains(&(
+        6,
+        "root".to_string(),
+        "boot.initrd.luks.devices.root".to_string(),
+        true
+    )));
+    assert!(found.contains(&(2, "/".to_string(), "fileSystems./".to_string(), true)));
+}
+
+/// A string that goes on over several lines is no place, and one inside an
+/// interpolation or a `let` binding is no place of the definition around
+/// it: the interpolation's string has no path, the binding's its own.
+#[test]
+fn a_string_over_lines_or_in_an_interpolation_is_no_place_of_the_definition() {
+    let found = places(
+        "{\n  x.device = ''\n    /dev/vda2\n  '';\n  y.device = \"${\"/dev/vda2\"}\";\n  z = let d = \"/dev/vda2\"; in d;\n}",
+    );
+    let strings: Vec<(usize, String, String)> = found
+        .into_iter()
+        .filter(|(_, _, _, attribute)| !attribute)
+        .map(|(line, text, path, _)| (line, text, path))
+        .collect();
+    assert_eq!(
+        strings,
+        [
+            (5, "/dev/vda2".to_string(), String::new()),
+            (5, "${\"/dev/vda2\"}".to_string(), "y.device".to_string()),
+            (6, "/dev/vda2".to_string(), "d".to_string()),
+        ]
+    );
+}

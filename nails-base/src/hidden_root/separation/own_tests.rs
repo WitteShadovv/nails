@@ -25,9 +25,11 @@ fn a_bind_of_a_folder_of_slash_lies_on_the_device_of_slash() {
         OwnFilesystem {
             how: Sharing::Bind,
             at: PathBuf::from("/"),
+            root: PathBuf::from("/mnt"),
             devices: vec![device("sda1", "8:1")],
             folders: vec![PathBuf::from("/srv/x")],
-            subvolume: None,
+            inside: PathBuf::from("/srv/x"),
+            btrfs: false,
             subvolid: None,
         }
     );
@@ -56,10 +58,12 @@ fn a_subvolume_beside_home_lies_on_the_device_of_home_and_is_named_by_its_path_a
         OwnFilesystem {
             how: Sharing::Subvolume,
             at: PathBuf::from("/home"),
+            root: PathBuf::from("/mnt"),
             devices: vec![device("sda2", "8:2")],
             folders: Vec::new(),
-            subvolume: Some("vault".to_string()),
-            subvolid: Some("300".to_string()),
+            inside: PathBuf::from("/vault"),
+            btrfs: true,
+            subvolid: Some(300),
         }
     );
     // The filesystem's top mounted elsewhere shows the subvolume as a
@@ -96,7 +100,9 @@ fn a_bind_of_a_folder_of_a_btrfs_root_subvolume_is_named_by_its_folder_and_path(
     assert_eq!(own.at, Path::new("/"));
     assert_eq!(own.devices, [device("vda2", "253:2")]);
     assert_eq!(own.folders, [PathBuf::from("/srv/x")]);
-    assert_eq!(own.subvolume.as_deref(), Some("@/srv/x"));
+    assert_eq!(own.inside, Path::new("/@/srv/x"));
+    assert_eq!(own.name(), "x");
+    assert!(own.btrfs);
     // A bind has no subvolume id of its own: the id the mount shows is
     // that of the subvolume / shows, the decoy's own.
     assert_eq!(own.subvolid, None);
@@ -164,5 +170,33 @@ fn no_filesystem_is_the_roots_own_unless_the_decoy_mounts_another_part_of_it_at_
     // No device of it known by its number: nothing to tell its names by.
     let mut world = plain_decoy("5 1 8:1 /srv/x /mnt rw - ext4 /dev/sda1 rw\n");
     world.devices.by_dev.clear();
+    assert_eq!(world.own("/mnt"), None);
+}
+
+/// A subvolume whose id the mount table gives as no number could be named
+/// by it unseen: nothing is the decoy's own.
+#[test]
+fn a_subvolume_whose_id_cannot_be_read_is_no_filesystem_of_the_decoys_own() {
+    let world = World::new(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         2 1 0:40 /home /home rw - btrfs /dev/sda2 rw,subvolid=257,subvol=/home\n\
+         5 1 0:40 /vault /mnt rw - btrfs /dev/sda2 rw,subvol=/vault\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .part("sda2", "8:2", "sda")
+    .btrfs(&["sda2"])
+    .fstab("/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home btrfs subvol=/home 0 0\n");
+    assert!(
+        matches!(
+            world.verdict("/mnt"),
+            Verdict::OnDecoyFilesystem {
+                how: Sharing::Subvolume,
+                ..
+            }
+        ),
+        "{:?}",
+        world.verdict("/mnt")
+    );
     assert_eq!(world.own("/mnt"), None);
 }
