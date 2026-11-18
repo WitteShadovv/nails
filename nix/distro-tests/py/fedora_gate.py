@@ -47,14 +47,13 @@ QEMU process:
    left in ``/run``, at any depth; ``utab`` given back, a line of a bind mount
    the decoy made among it; ``/run/initramfs`` unchanged; the attached disk
    writable again; none of the session's files on the decoy; the SELinux
-   booleans as they were; no failed unit but one a soft-reboot is known to
-   leave; the zram devices, their swap and zram-generator's units as at the
-   cold boot, with the session's marker on none of them; the login and boot
-   records as a power cycle leaves them, with no
-   record of the hidden logins and the consoles' units numbered as at the
-   cold boot;
-   the rehearsal's scan, which names the compressing btrfs root as not
-   checked;
+   booleans as they were; no failed unit but one the first plain soft-reboot
+   left failed, a zram setup unit never; the zram devices, their swap and
+   zram-generator's units as at the cold boot, with the session's marker on
+   none of them; the login and boot records as a power cycle leaves them,
+   with no record of the hidden logins and the consoles' units numbered as at
+   the cold boot; the rehearsal's scan, which names the compressing btrfs
+   root as not checked;
 6. a package the decoy removes after a hidden session changed its own copy of
    the package database: check warns of it with its fix;
 7. a second session, as a user through sudo with the fresh-home persona and
@@ -1173,9 +1172,10 @@ class Gate:
     def judge_failed(self, where: str, label: str) -> list[str]:
         """The failed units of the root the gate is in: none of NAILS's, none
         the hidden root masks, and no other but one a soft-reboot is known to
-        leave failed (:data:`SOFT_REBOOT_FAILURES`) or the first plain
-        soft-reboot left failed. Each known one is recorded with where it was
-        seen, and the swap the root runs with beside it."""
+        leave failed (:data:`SOFT_REBOOT_FAILURES`, empty now) or the first
+        plain soft-reboot left failed, a zram setup unit never. Each known one
+        is recorded with where it was seen, and the swap the root runs with
+        beside it."""
         failed = self.failed_units(label)
         swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
         found = failed_units_problems(failed, self.allowed_failed)

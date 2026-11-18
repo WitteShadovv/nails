@@ -1177,14 +1177,18 @@ operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
 `init_t` (the watcher's, and the sleep guard's in the second session), the
-overlay feature options, the canaries in their uppers, the failed units, a
+overlay feature options, the canaries in their uppers, the failed units, no
+swap on a zram device with zram-generator masked in the hidden root, a marker
+held in more memory than its unit may keep in RAM found on no zram device, a
 login and a failed login that the session's own wtmp and btmp record, a
 `security.selinux` round trip on the hidden volume, and a disk attached in
 the session read-only by the disk guard's udev rule, which records it: the
 watcher's sweep, the rule's fallback, runs once an hour in the gate's
 sessions, so it cannot set the disk read-only in the rule's place. The first
-session also plants the rehearsal, whose scan it must refuse. Each session
-starts a unit ordered before journald, without the default dependencies, so
+session also plants the rehearsal, whose scan it must refuse. The second
+leaves zram0 set up with a swap area out of use and the marker on it, as a
+stop whose reset failed leaves a device, for its way back to clean. Each
+session starts a unit ordered before journald, without the default dependencies, so
 that it stops after the hidden journald and logs a line through each of
 journald's sockets as it does (`/dev/log`, its standard output, the native
 socket), and as its last step runs 8000 programs, which push the kernel's
@@ -1210,8 +1214,9 @@ mount or an entry, the reconcile step's pieces left to their own check; `utab` g
 mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
 of the session's files on the decoy; the SELinux booleans as they were; the
 failed units: none of NAILS's, none the hidden root masks, and no other but
-one a switch is known to leave failed (the zram swap's, with the swap each
-root ran with recorded) or one the first plain soft-reboot left failed; and
+one the first plain soft-reboot left failed, a zram setup unit never; the zram
+devices, their swap and zram-generator's units as at the cold boot, with the
+session's marker on none of them; and
 the login and boot records changed only by the boot a power cycle adds, with
 no record of a login or a failed login made in the session: wtmp keeps the
 operator's console login, dated before the entry, and lastlog2, where the
