@@ -42,7 +42,8 @@
           "enum": [
             "hidden",
             "decoy",
-            "none"
+            "none",
+            "unknown"
           ]
         },
         "requested": {

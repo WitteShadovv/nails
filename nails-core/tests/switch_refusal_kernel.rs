@@ -74,6 +74,7 @@ mod kernel_tests {
                 pid_places: None,
                 zram: None,
                 now: 1_234,
+                mounts_unread: None,
                 mounts: read_mountinfo().expect("the live mount table"),
                 network: nails_teardown::whole_root::network::Places::system(self.run.path()),
                 network_kernel: None,

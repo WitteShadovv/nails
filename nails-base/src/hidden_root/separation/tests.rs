@@ -1754,3 +1754,26 @@ mod properties {
         }
     }
 }
+
+/// A btrfs subvolume is told from a bind by its `subvol=`, decoded byte for
+/// byte as its mount root is: a name with a space or with a byte that is not
+/// valid UTF-8 is a subvolume, and one whose `subvol=` differs from its root
+/// in one byte is a bind.
+#[test]
+fn a_subvolume_is_told_by_its_decoded_subvol_option() {
+    let table: &[u8] = b"1 0 0:35 /a\\040b /m1 rw - btrfs /dev/vdb rw,subvol=/a\\040b\n\
+2 0 0:35 /c\xff /m2 rw - btrfs /dev/vdb rw,subvol=/c\xff\n\
+3 0 0:35 /c\xff /m3 rw - btrfs /dev/vdb rw,subvol=/c\xfe\n\
+4 0 0:35 / /m4 rw - btrfs /dev/vdb rw,subvol=/\n";
+    let mounts = parse_mountinfo(table);
+    let how: Vec<Sharing> = mounts.iter().map(sharing).collect();
+    assert_eq!(
+        how,
+        [
+            Sharing::Subvolume,
+            Sharing::Subvolume,
+            Sharing::Bind,
+            Sharing::Filesystem
+        ]
+    );
+}

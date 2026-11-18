@@ -225,6 +225,10 @@ fn human_lines(
                 out.push(format!("  ! still mounted: {}", mount.display()));
             }
         }
+        Side::Unknown => out.push(style.marked(
+            Mark::Fail,
+            "The mount table could not be read: whether a hidden session runs cannot be told",
+        )),
         Side::Hidden => out.push(match report.dispatched {
             Some(Finish::Return) => style.marked(
                 Mark::Pass,
@@ -325,6 +329,7 @@ mod tests {
             runtime_dir: dir.path().join("run/overlay-runtime"),
             cgroup_root: dir.path().join("cgroup"),
             protected_pids: Vec::new(),
+            mountinfo: std::path::PathBuf::from(nails_teardown::mountinfo::SELF_MOUNTINFO),
             act: false,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };

@@ -16,7 +16,7 @@
       "required": ["place", "attention"],
       "properties": {
         "place": {
-          "description": "Where the machine is: the plain decoy, the hidden session, or an activation in flight. `unknown` only with an error: reading the record was refused, so nothing was established.",
+          "description": "Where the machine is: the plain decoy, the hidden session, or an activation in flight. `unknown` only with an error: reading the record, or the mount table, failed, so nothing was established.",
           "type": "string",
           "enum": ["decoy", "hidden", "activating", "unknown"]
         },

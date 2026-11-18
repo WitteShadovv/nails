@@ -419,14 +419,17 @@ impl Readiness {
             minimum_space_mb: config.minimum_space_mb,
         };
 
-        let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
-        let filesystems = decoy_filesystems(
-            manager.filesystem(),
-            &crate::filesystem::automount::Snapshot::read(manager.filesystem(), Path::new("/")),
-            Path::new("/"),
-            &mounts,
-            &config.hidden_volume_root,
-        );
+        // A table that cannot be read is named, never judged as an empty one.
+        let filesystems = match nails_teardown::mountinfo::read_mountinfo() {
+            Ok(mounts) => decoy_filesystems(
+                manager.filesystem(),
+                &crate::filesystem::automount::Snapshot::read(manager.filesystem(), Path::new("/")),
+                Path::new("/"),
+                &mounts,
+                &config.hidden_volume_root,
+            ),
+            Err(error) => filesystems_without_mount_table(&error.to_string()),
+        };
         let profile = profile_summary(
             manager
                 .discover_host_target(options.overlay_only)
@@ -488,6 +491,16 @@ fn attach_refusal<F: Filesystem>(
 /// nothing is mounted on yet is not looked up, and a line names it; without
 /// the mount table nothing is looked up. An fstab that cannot be read, as
 /// `fstab-policy` refuses it, gets a line of its own.
+/// What the report says of the decoy filesystems where the mount table
+/// cannot be read (`error`).
+fn filesystems_without_mount_table(error: &str) -> Vec<String> {
+    vec![format!(
+        "NAILS cannot tell how each decoy filesystem would be handled: NAILS cannot read the \
+         mount table ({error}), which shows where a lookup would mount an automount point, so \
+         it looks up nothing"
+    )]
+}
+
 fn decoy_filesystems<F: Filesystem>(
     fs: &F,
     snapshot: &std::sync::Arc<crate::filesystem::automount::Snapshot>,
@@ -498,11 +511,7 @@ fn decoy_filesystems<F: Filesystem>(
     use crate::filesystem::automount::{Guarded, Lookup, unnamed};
     use crate::session::{checks, fstab, mount_units, policy};
     if let Some(error) = snapshot.unreadable() {
-        return vec![format!(
-            "NAILS cannot tell how each decoy filesystem would be handled: NAILS cannot read the \
-             mount table ({error}), which shows where a lookup would mount an automount point, \
-             so it looks up nothing"
-        )];
+        return filesystems_without_mount_table(error);
     }
     let guarded = Guarded::new(fs.clone(), snapshot);
     let ask = |path: &Path, lookup: Lookup| guarded.ask(path, lookup);

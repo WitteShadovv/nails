@@ -143,20 +143,24 @@ pub fn read_selinux<F: Filesystem>(fs: &F) -> Option<SelinuxStatus> {
 /// Whether the mount table lists a selinuxfs. A table that cannot be read is
 /// [`Selinuxfs::Unknown`], never [`Selinuxfs::NotMounted`].
 fn read_selinuxfs<F: Filesystem>(fs: &F) -> Selinuxfs {
-    match read_optional(fs, SELF_MOUNTS) {
-        Some(table) if lists_selinuxfs(&table) => Selinuxfs::Mounted,
-        Some(_) => Selinuxfs::NotMounted,
-        None => Selinuxfs::Unknown,
+    match fs.read_file_bytes(Path::new(SELF_MOUNTS)) {
+        Ok(table) if lists_selinuxfs(&table) => Selinuxfs::Mounted,
+        Ok(_) => Selinuxfs::NotMounted,
+        Err(_) => Selinuxfs::Unknown,
     }
 }
 
 /// Whether a `/proc/self/mounts` table holds a line whose filesystem type, the
 /// third field, is selinuxfs. The kernel escapes blanks in the fields before
-/// it, so splitting on whitespace finds the type.
-fn lists_selinuxfs(table: &str) -> bool {
-    table
-        .lines()
-        .any(|line| line.split_whitespace().nth(2) == Some(SELINUXFS_TYPE))
+/// it, so splitting on whitespace finds the type. The table is read as bytes:
+/// a mount whose path is not valid UTF-8 is read as any other.
+fn lists_selinuxfs(table: &(impl AsRef<[u8]> + ?Sized)) -> bool {
+    table.as_ref().split(|&b| b == b'\n').any(|line| {
+        line.split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty())
+            .nth(2)
+            == Some(SELINUXFS_TYPE.as_bytes())
+    })
 }
 
 /// What this process's `/proc/self/attr/current` holds, without the NUL or the
@@ -333,6 +337,21 @@ mod tests {
         fs.mock_set_file_content(SELF_MOUNTS, SELINUX_MOUNTS);
         let status = read_selinux(&fs).expect("selinuxfs is mounted");
         assert_eq!(status.selinuxfs, Selinuxfs::Mounted);
+    }
+
+    /// A mount whose path is not valid UTF-8 failed the read before, and
+    /// selinuxfs read as unknown: the table is read as bytes now.
+    #[test]
+    fn a_mount_table_with_a_byte_that_is_not_utf8_is_read() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type(SELINUX_FS, PathKind::Dir);
+        fs.mock_set_file_bytes(
+            SELF_MOUNTS,
+            b"tmpfs /run/a\xff tmpfs rw 0 0\nselinuxfs /sys/fs/selinux selinuxfs rw 0 0\n",
+        );
+        let status = read_selinux(&fs).expect("selinuxfs is mounted");
+        assert_eq!(status.selinuxfs, Selinuxfs::Mounted);
+        assert!(!lists_selinuxfs(b"tmpfs /run/a\xff tmpfs rw 0 0\n"));
     }
 
     #[test]

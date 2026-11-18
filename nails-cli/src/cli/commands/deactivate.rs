@@ -106,6 +106,27 @@ pub(crate) fn deactivate_prepared_with(
         // Refused before the prompt, the lock and the lines a person reads
         // before the switch: there is no way back to take, and a plain
         // emergency, which finds no plan either, would do nothing.
+        // Refused as a session without a way back is: which side this is
+        // cannot be told, and the emergency powers off where it cannot tell.
+        Prepared::MountTableUnread(why) => {
+            return report_error(
+                json,
+                "deactivate",
+                ExitStatus::InvalidState,
+                ErrorBody::new(
+                    "invalid_state",
+                    format!(
+                        "the mount table could not be read, so whether a hidden session runs \
+                         cannot be told: {why}"
+                    ),
+                )
+                .with_hint(format!(
+                    "Power off to end a session: `{}`",
+                    sudo_line(Step::EmergencyPoweroff)
+                ))
+                .with_next(NextStep::new(Step::EmergencyPoweroff.command())),
+            );
+        }
         Prepared::WayBackUnknown(why) => {
             return report_error(
                 json,

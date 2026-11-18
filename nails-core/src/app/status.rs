@@ -41,8 +41,22 @@ pub fn status(config: Config) -> StatusOutcome {
     }
 }
 
-/// The one-line reason a state file could not be read, named for the operator.
+/// Whether `error` is a failed read of the mount table, which leaves where
+/// the machine is untold, rather than of the state file.
+pub fn is_mount_table_error(error: &NailsError) -> bool {
+    matches!(error, NailsError::IoError { path, .. }
+        if path == Path::new(nails_teardown::mountinfo::SELF_MOUNTINFO))
+}
+
+/// The one-line reason a state file could not be read, named for the operator,
+/// or that the mount table could not be read.
 fn unknown_message(error: &NailsError, state_path: &Path) -> String {
+    if is_mount_table_error(error) {
+        return format!(
+            "The mount table could not be read, so whether a hidden session runs cannot be \
+             told: {error}"
+        );
+    }
     match error {
         NailsError::IoError { source, .. } => {
             if source.kind() == std::io::ErrorKind::NotFound {

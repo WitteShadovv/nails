@@ -16,9 +16,39 @@ fn host(dir: &Path) -> Host {
         runtime_dir: dir.join("run/overlay-runtime"),
         cgroup_root: dir.join("cgroup"),
         protected_pids: Vec::new(),
+        mountinfo: PathBuf::from(SELF_MOUNTINFO),
         act: false,
         selinux: &selinux::KERNEL,
     }
+}
+
+/// A mount table that cannot be read leaves the side untold: with a plan
+/// the hot path forces a power-off (or the reboot asked for) at once, on
+/// whichever side it runs, and never takes the decoy-side cleanup that an
+/// empty table would have chosen. Without a plan nothing changes.
+#[test]
+fn a_mount_table_that_cannot_be_read_forces_a_power_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let host = Host {
+        mountinfo: dir.path().join("no-mountinfo"),
+        ..host(dir.path())
+    };
+    for (requested, forced) in [
+        (Finish::Return, Finish::Poweroff),
+        (Finish::Poweroff, Finish::Poweroff),
+        (Finish::Reboot, Finish::Reboot),
+    ] {
+        let report = run(Some(sample()), &host, requested);
+        assert_eq!(report.side, Side::Unknown);
+        assert_eq!(report.dispatched, Some(forced), "{requested:?}");
+        assert_eq!(phases(&report), ["kill-shells", "force"], "{requested:?}");
+        let why = report.fallback.as_deref().unwrap_or_default();
+        assert!(why.contains("mount table could not be read"), "{why}");
+        assert!(report.remaining.is_empty());
+    }
+    let report = run(None, &host, Finish::Return);
+    assert_eq!(report.side, Side::None);
+    assert_eq!(report.dispatched, None);
 }
 
 #[test]

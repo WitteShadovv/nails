@@ -84,13 +84,15 @@ pub(super) fn decide(
 }
 
 /// Where this machine is, from the live mount table and the session plan
-/// (never from the state file alone).
+/// (never from the state file alone). A mount table that cannot be read
+/// takes the decoy's gate, the stricter one.
 fn session_view(env: &RuntimeEnv, config: Option<&Path>) -> SessionView {
     let config = nails_core::app::config::load_config_or_defaults(config).into_config();
     let state_path = config.state_file_path.clone();
     NailsManager::new(RealFilesystem, config, state_path)
         .with_runtime_env(env.clone())
         .session_view()
+        .unwrap_or(SessionView::Decoy)
 }
 
 /// What the gate reads of the decoy: its persistent records, without writing

@@ -234,10 +234,11 @@ pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
 /// the switch). Every mount below the next root is private from the moment it
 /// exists; this is the backstop for the finished tree. A mount that a later
 /// mount on top of it or of a parent shadows is left alone: its path leads to
-/// the mount on top, and it was made private when it was created.
+/// the mount on top, and it was made private when it was created. A mount
+/// table that cannot be read is an error: nothing shows the mounts are
+/// private.
 pub fn make_below_private(target: &Path) -> io::Result<()> {
-    for entry in read_mountinfo()
-        .unwrap_or_default()
+    for entry in read_mountinfo()?
         .into_iter()
         .filter(|entry| entry.mount_point != target && entry.mount_point.starts_with(target))
     {
@@ -372,13 +373,12 @@ pub fn mount_device(
         .map_err(to_io)
 }
 
-/// The mount points of the live mount table.
-pub fn mount_points() -> Vec<PathBuf> {
-    read_mountinfo()
-        .unwrap_or_default()
+/// The mount points of the live mount table, or why it could not be read.
+pub fn mount_points() -> io::Result<Vec<PathBuf>> {
+    Ok(read_mountinfo()?
         .into_iter()
         .map(|e| e.mount_point)
-        .collect()
+        .collect())
 }
 
 /// Whether `path` is a mount point in `entries`.
@@ -403,10 +403,15 @@ pub fn detach_under(path: &Path, mount_points: &[PathBuf]) -> Vec<PathBuf> {
 
 /// Detach the whole tree at `path` from the live mount table, repeating while
 /// mounts remain (stacked mounts come off one per round). Returns what is
-/// still mounted on or below `path` afterwards.
+/// still mounted on or below `path` afterwards. Where the mount table cannot
+/// be read, it detaches `path` itself (with everything below it) as often as
+/// the kernel takes that, and returns `path`: nothing shows that the tree is
+/// gone, so no caller may take it for gone.
 pub fn detach_tree(path: &Path) -> Vec<PathBuf> {
     for _ in 0..8 {
-        let points = mount_points();
+        let Ok(points) = mount_points() else {
+            return detach_unread(path);
+        };
         if !points.iter().any(|m| m.starts_with(path)) {
             return Vec::new();
         }
@@ -414,10 +419,22 @@ pub fn detach_tree(path: &Path) -> Vec<PathBuf> {
             break;
         }
     }
-    mount_points()
-        .into_iter()
-        .filter(|m| m.starts_with(path))
-        .collect()
+    match mount_points() {
+        Ok(points) => points.into_iter().filter(|m| m.starts_with(path)).collect(),
+        Err(_) => detach_unread(path),
+    }
+}
+
+/// [`detach_tree`] without a mount table: `path` detached while the kernel
+/// takes it (a lazy detach takes every mount below with it), and `path`
+/// returned as still there.
+fn detach_unread(path: &Path) -> Vec<PathBuf> {
+    for _ in 0..8 {
+        if rustix::mount::unmount(path, UnmountFlags::DETACH).is_err() {
+            break;
+        }
+    }
+    vec![path.to_path_buf()]
 }
 
 /// Remove the runtime directory `dir`, detaching every mount below it first.

@@ -99,7 +99,7 @@ pub(super) fn of_process<F: Filesystem>(
     pid: &str,
 ) -> Result<Option<String>, Untold> {
     let path = root.join(format!("proc/{pid}/mountinfo"));
-    let text = match fs.read_file_content(&path) {
+    let text = match fs.read_file_bytes(&path) {
         Ok(text) => text,
         Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => return Ok(None),
         Err(e) if e.io_kind() == Some(std::io::ErrorKind::PermissionDenied) => {

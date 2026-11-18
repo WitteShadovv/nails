@@ -744,7 +744,9 @@ pub fn still_up<'a>(listing: &str, units: &'a [String]) -> Vec<&'a str> {
 /// scrub detached, whose unit's end PID 1 logs (`<unit>: Deactivated
 /// successfully.`) once it reads the mount table again, which must come
 /// before the kmsg cursor. A mount point still in `mounted()` (a mount stacked
-/// below the one detached) keeps its unit up and is left out. Returns
+/// below the one detached) keeps its unit up and is left out; where
+/// `mounted()` cannot read the mount table, no unit is left out and the wait
+/// runs to its bound unless PID 1 lists every one down first. Returns
 /// whether PID 1 lists none of those units as up; a unit [`mount_unit`]
 /// does not name as PID 1 does never shows in the listing and counts as
 /// down, though PID 1 may still have it up. Without an answer from
@@ -752,9 +754,9 @@ pub fn still_up<'a>(listing: &str, units: &'a [String]) -> Vec<&'a str> {
 pub fn wait_for_unmounted(
     systemctl: &Path,
     detached: &[PathBuf],
-    mounted: impl Fn() -> Vec<PathBuf>,
+    mounted: impl Fn() -> io::Result<Vec<PathBuf>>,
 ) -> bool {
-    let still_mounted = mounted();
+    let still_mounted = mounted().unwrap_or_default();
     let units: Vec<String> = detached
         .iter()
         .filter(|path| !still_mounted.contains(path))

@@ -111,6 +111,7 @@ fn the_units_a_boot_target_requires_are_skipped_at_the_switch_while_their_device
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
             now: unix_now(),
+            mounts_unread: None,
             mounts: read_mountinfo().unwrap(),
             pid_places: None,
             zram: None,

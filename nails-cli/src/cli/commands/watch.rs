@@ -307,6 +307,7 @@ pub fn execute(
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     let alert_env = env.clone();
+    let mut table_alerted = false;
     watcher::run_loop(
         &watch_config,
         // A probe of a covered hidden root writes nothing and is no failure of
@@ -326,11 +327,32 @@ pub fn execute(
                 let env = env.clone();
                 notice.try_deliver(move |alert| send_immediate(alert, &env));
             }
-            let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
+            // A mount table that cannot be read shows no mount: the sweep then
+            // keeps writable only what the plan names, the stricter end, and
+            // the watch sends one alert that it cannot see the disks instead
+            // of judging an empty table.
+            let mounts = match nails_teardown::mountinfo::read_mountinfo() {
+                Ok(mounts) => {
+                    table_alerted = false;
+                    Some(mounts)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "Could not read the mount table");
+                    if !table_alerted {
+                        table_alerted = true;
+                        let env = env.clone();
+                        send_all_in_background(
+                            vec![(unread_table_alert(), "mount-table")],
+                            move |alert| send_immediate(alert, &env),
+                        );
+                    }
+                    None
+                }
+            };
             if let Some(plan) = &sweep {
                 let set = disk_guard::sweep(
                     plan,
-                    &mounts,
+                    mounts.as_deref().unwrap_or_default(),
                     &sysfs,
                     Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
                 );
@@ -338,6 +360,9 @@ pub fn execute(
                     tracing::info!(devices = set.len(), "Unused disks set read-only");
                 }
             }
+            let Some(mounts) = mounts else {
+                return;
+            };
             let alerts = tick_alerts(
                 &mounts,
                 &mut cover_watch,
@@ -527,6 +552,21 @@ fn cover_alert(cover: &MountEntry) -> Notification {
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
+    }
+}
+
+/// The neutral desktop alert of a watcher that could not read the mount
+/// table: it cannot see a disk mounted over the folder in use or read-write
+/// until it can read it again.
+fn unread_table_alert() -> Notification {
+    Notification {
+        title: "Storage monitor cannot see the disks".to_string(),
+        body: "The storage monitor could not read the list of mounted disks. Until it can, it \
+               cannot warn you when a disk is mounted over a folder in use or with write access."
+            .to_string(),
+        urgency: "critical".to_string(),
+        icon: Some("drive-harddisk".to_string()),
         created_at: nails_core::time::Timestamp::now().to_rfc3339(),
     }
 }

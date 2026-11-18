@@ -419,8 +419,15 @@ impl<F: Filesystem> StatusCommand<F> {
     }
 
     /// Build the report from the live system.
+    ///
+    /// # Errors
+    ///
+    /// The mount table cannot be read: where the machine is cannot be told
+    /// then, and an empty table would show a hidden session as the decoy.
+    /// The state file cannot be read either.
     pub fn run(&self) -> Result<StatusReport> {
-        let entries = read_mountinfo().unwrap_or_default();
+        let entries = read_mountinfo()
+            .map_err(|e| crate::NailsError::io(nails_teardown::mountinfo::SELF_MOUNTINFO, e))?;
         let view = crate::session::probe::probe_with(
             &self.paths,
             &self.config.hidden_volume_root,

@@ -517,7 +517,7 @@ fn the_wait_ends_once_pid_1_lists_the_detached_mount_s_unit_down() {
     let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", 2);
     let detached = [PathBuf::from("/run/initramfs")];
 
-    assert!(wait_for_unmounted(&systemctl, &detached, Vec::new));
+    assert!(wait_for_unmounted(&systemctl, &detached, || Ok(Vec::new())));
     let listing = MOUNT_UNITS.join(" ");
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
@@ -533,9 +533,28 @@ fn a_mount_point_still_mounted_or_none_detached_asks_nothing() {
     let detached = [PathBuf::from("/run/initramfs")];
 
     // A mount stacked below the detached one keeps its unit up.
-    assert!(wait_for_unmounted(&systemctl, &detached, || detached.to_vec()));
-    assert!(wait_for_unmounted(&systemctl, &[], Vec::new));
+    assert!(wait_for_unmounted(&systemctl, &detached, || Ok(
+        detached.to_vec()
+    )));
+    assert!(wait_for_unmounted(&systemctl, &[], || Ok(Vec::new())));
     assert!(!calls.exists());
+}
+
+/// Where the mount table cannot be read, no detached mount point is taken
+/// for one still mounted: each unit is asked about, and a unit PID 1 holds up
+/// keeps the wait to its bound.
+#[test]
+fn without_the_mount_table_every_detached_unit_is_waited_for() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", u32::MAX);
+    let detached = [PathBuf::from("/run/initramfs")];
+
+    let start = Instant::now();
+    assert!(!wait_for_unmounted(&systemctl, &detached, || Err(
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied)
+    )));
+    assert!(start.elapsed() >= UNMOUNTED_BUDGET, "{:?}", start.elapsed());
 }
 
 #[test]
@@ -546,7 +565,11 @@ fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
     let detached = [PathBuf::from("/run/initramfs")];
 
     let start = Instant::now();
-    assert!(!wait_for_unmounted(&systemctl, &detached, Vec::new));
+    assert!(!wait_for_unmounted(
+        &systemctl,
+        &detached,
+        || Ok(Vec::new())
+    ));
     let took = start.elapsed();
     assert!(took >= UNMOUNTED_BUDGET, "{took:?}");
     assert!(took < UNMOUNTED_BUDGET + TOOL_BUDGET, "{took:?}");
@@ -555,7 +578,7 @@ fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
     assert!(!wait_for_unmounted(
         &world.path().join("no-systemctl"),
         &detached,
-        Vec::new
+        || Ok(Vec::new())
     ));
     assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
 }
@@ -583,7 +606,7 @@ fn a_mount_point_that_is_not_utf8_is_not_waited_for() {
 
     assert_ne!(mount_unit(&detached[0]), "run-a\\xff.mount");
     let start = Instant::now();
-    assert!(wait_for_unmounted(&systemctl, &detached, Vec::new));
+    assert!(wait_for_unmounted(&systemctl, &detached, || Ok(Vec::new())));
     assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
     assert_eq!(fs::read_to_string(&calls).unwrap().lines().count(), 1);
 }

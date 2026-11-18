@@ -146,6 +146,7 @@ mod kernel_tests {
                 pid_places: None,
                 zram: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
+                mounts_unread: None,
                 mounts: read_mountinfo().unwrap(),
                 network: nails_teardown::whole_root::network::Places::system(self.run.path()),
                 network_kernel: None,
@@ -530,6 +531,112 @@ mod kernel_tests {
                 3,
                 "asked until the unit was down, and no more"
             );
+            nextroot::detach_tree(&world.nextroot());
+        });
+    }
+
+    /// A tmpfs at a folder of `/run` whose name ends in byte 0xff (the
+    /// verify's probe): the mount table read as the step reads it failed on
+    /// that byte, the step took `/run/nextroot` for unmounted and did nothing
+    /// on either direction. Read byte for byte, it works as on a plain table:
+    /// the leftover guard detaches an unarmed tree, an armed entry is
+    /// prepared, and the way back scrubs, detaches and writes the cursor.
+    #[test]
+    fn a_mount_point_that_is_not_utf8_leaves_the_step_as_on_a_plain_table() {
+        let _ = Rerun::new(test_path!(
+            a_mount_point_that_is_not_utf8_leaves_the_step_as_on_a_plain_table
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::os::unix::ffi::OsStrExt;
+            let odd_mount = |run: &Path| {
+                let odd = run.join(std::ffi::OsStr::from_bytes(b"a\xff"));
+                std::fs::create_dir(&odd).unwrap();
+                nix::mount::mount(
+                    Some("tmpfs"),
+                    &odd,
+                    Some("tmpfs"),
+                    nix::mount::MsFlags::empty(),
+                    Some("mode=0755"),
+                )
+                .unwrap();
+                assert!(
+                    std::fs::read("/proc/self/mountinfo")
+                        .unwrap()
+                        .windows(3)
+                        .any(|w| w == b"a\xff "),
+                    "the table holds the byte"
+                );
+                odd
+            };
+            let live = |env: &mut Env| {
+                let (mounts, unread) = transition::live_mounts();
+                assert_eq!(unread, None, "the table is read");
+                env.mounts = mounts;
+                env.mounts_unread = unread;
+            };
+
+            // The way in: the leftover guard, then an armed entry.
+            let world = World::new();
+            let runtime = world.run.path().join("overlay-runtime");
+            let odd = odd_mount(world.run.path());
+            world.build();
+            let mut plan = world.plan(Direction::Enter);
+            plan.armed = None;
+            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
+            let mut env = world.env();
+            live(&mut env);
+            assert!(matches!(transition::run(&env), Outcome::Disarmed(_)));
+            assert!(mounted_below(&world.nextroot()).is_empty());
+            std::fs::create_dir_all(&runtime).unwrap();
+            world.build();
+            world
+                .plan(Direction::Enter)
+                .write_atomic(&runtime.join(PLAN_NAME))
+                .unwrap();
+            let mut env = world.env();
+            live(&mut env);
+            assert_eq!(transition::run(&env), Outcome::Entered);
+            assert!(!mounted_below(&world.nextroot()).is_empty());
+            nextroot::detach_tree(&world.nextroot());
+            nix::mount::umount2(&odd, nix::mount::MntFlags::MNT_DETACH).unwrap();
+
+            // The way back, as in the verify's probe.
+            let world = World::new();
+            let run = world.run.path();
+            let runtime = run.join("overlay-runtime");
+            std::fs::write(runtime.join(SNAPSHOT_NAME), Snapshot::take(run).to_text()).unwrap();
+            let initramfs = run.join("initramfs");
+            std::fs::create_dir_all(&initramfs).unwrap();
+            nix::mount::mount(
+                Some("tmpfs"),
+                &initramfs,
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .unwrap();
+            nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
+            nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
+            let mut plan = world.plan(Direction::Leave);
+            plan.entered_at = Some(1);
+            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let kmsg = dir.path().join("kmsg");
+            std::fs::write(&kmsg, "6,500,1,-;hidden record\n").unwrap();
+            let odd = odd_mount(run);
+            let mut env = world.env();
+            env.kmsg = kmsg;
+            live(&mut env);
+            assert!(env.mounts.iter().any(|m| m.mount_point == odd));
+
+            let outcome = transition::run(&env);
+
+            assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+            assert!(run.join(KERNEL_SEQNUM).exists(), "the cursor is written");
+            assert!(!runtime.join(PLAN_NAME).exists(), "the plan is scrubbed");
+            assert!(mounted_below(&initramfs).is_empty());
+            assert!(mounted_below(&odd).is_empty(), "the odd mount is detached");
             nextroot::detach_tree(&world.nextroot());
         });
     }
