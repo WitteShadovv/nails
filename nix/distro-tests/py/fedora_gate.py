@@ -64,9 +64,10 @@ QEMU process:
    way-back assertions;
 8. a last plain soft-reboot, the second control; the decoy disk and ``/run``
    after each way back changed only where a control changed them, or, on the
-   disk, where a run of the decoy's own timer after the switch did: its
-   change dated within the run, and the same change made by the unit when the
-   gate starts it once more by hand, or the stamp of its persistent timer.
+   disk, where a run of one of the decoy's own timers did that started once
+   the way back had begun: its change dated within the run, and the same
+   change made by the unit when the gate starts it once more by hand, or the
+   stamp of its persistent timer.
    A timer the gate adds to the decoy before the first entry, which catches
    up at the first way back, is the positive control of that reading. And a
    login on the decoy, the positive control of the login records.
@@ -1664,12 +1665,12 @@ class Gate:
         ]
 
     def decoy_timers(self, label: str, lower: float) -> None:
-        """What the decoy's own timers did since the switch of ``label``,
+        """What the decoy's own timers did around the switch of ``label``,
         taken right after the listing of its changes on the decoy disk: the
-        runs PID 1 reports, the times of each path the listing has that no
-        control taken so far has, and, for each unit whose run held such a
-        change, that unit's changes when the gate starts it once more by hand
-        (:func:`timer_explained` reads them)."""
+        last run of each that PID 1 reports, the times of each path the
+        listing has that no control taken so far has, and, for each unit whose
+        run held such a change, that unit's changes when the gate starts it
+        once more by hand (:func:`timer_explained` reads them)."""
         runs, now = timer_runs(self.fact(f"decoy-timers-{label}", DECOY_TIMERS))
         known: set[str] = set()
         for other, paths in self.disk.items():
