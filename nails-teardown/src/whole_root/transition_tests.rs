@@ -391,6 +391,10 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         format!(
             "#!/bin/sh\necho \"$@\" >> {all_calls}\n\
              if [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
+             if [ \"$1\" = list-units ] && [ \"$4\" = --state=active ]; then\n\
+               echo 'systemd-journald.socket loaded active running Journal Sockets'\n\
+               exit 0\n\
+             fi\n\
              if [ \"$1\" = list-units ]; then\n\
                echo 'overlay-runtime-monitor.service loaded failed failed watcher'\n\
                echo 'nscd.service loaded failed failed Name Service Cache Daemon'\n\
@@ -455,8 +459,9 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         tail::tmpfiles_text(true)
     );
     // journald's sockets were closed with what they hold, after the wait for
-    // the late unit: the last calls before the cursor.
-    let stops: Vec<String> = tail::journal_socket_calls()
+    // the late unit, and the one that listened before opened again: the last
+    // calls before the cursor.
+    let stops: Vec<String> = tail::journal_socket_calls(&["systemd-journald.socket"])
         .iter()
         .map(|args| args.join(" "))
         .collect();
@@ -476,9 +481,93 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     // An emergency's SIGKILL left units failed (the session's own, a decoy
     // unit caught stopping); the decoy must not inherit that record, but keeps
     // the failure it had before the session.
+    // journald's own failure goes too, so that PID 1 drops its store.
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
-        "reset-failed overlay-runtime-monitor.service nscd.service\n"
+        "reset-failed overlay-runtime-monitor.service nscd.service\n\
+         reset-failed systemd-journald.service\n"
+    );
+    let Outcome::Returned { journal, .. } = outcome else {
+        unreachable!()
+    };
+    assert!(journal.is_empty(), "{journal:?}");
+}
+
+/// A process the session leaves running, in the unit `unit`, under the fake
+/// procfs `proc`, with a number no process can have, so nothing signals a
+/// real one.
+fn leftover(proc: &Path, unit: &str) -> u32 {
+    let pid = 4_194_400;
+    let dir = proc.join(pid.to_string());
+    fs::create_dir_all(&dir).unwrap();
+    let mut fields = vec!["S", "1", "1", "1", "0", "-1", "0"];
+    fields.extend(std::iter::repeat_n("0", 12));
+    fields.push("4242");
+    fs::write(
+        dir.join("stat"),
+        format!("{pid} (sleep) {}\n", fields.join(" ")),
+    )
+    .unwrap();
+    fs::write(dir.join("status"), "Name:\tsleep\nUid:\t0\t0\t0\t0\n").unwrap();
+    fs::write(dir.join("cmdline"), b"sleep\0infinity\0").unwrap();
+    fs::write(dir.join("cgroup"), format!("0::/system.slice/{unit}\n")).unwrap();
+    pid
+}
+
+#[test]
+fn the_session_s_leftovers_end_before_the_scrub_takes_what_their_stop_wrote() {
+    // A unit of the session the shutdown does not stop still runs at the way
+    // back. Its stop command writes to /run as its stop job runs: the way
+    // back ends it before the scrub, which then removes what it wrote.
+    let world = World::new();
+    let r = world.run();
+    let snapshot = Snapshot::take(&r);
+    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let places = tail::Places {
+        proc: world.dir.path().join("fake-proc"),
+        sys_dev_block: world.dir.path().join("sys/dev/block"),
+        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
+    };
+    let pid = leftover(&places.proc, "lngr.service");
+    let all_calls = world.dir.path().join("all-calls");
+    let systemctl = world.dir.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> {all_calls}\n\
+             if [ \"$1 $2\" = 'stop --no-block' ]; then\n\
+               rm -r {proc}/{pid}\n\
+               echo stopped > {run}/lngr-stopped\n\
+             fi\n",
+            all_calls = all_calls.display(),
+            proc = places.proc.display(),
+            run = r.display(),
+        ),
+        0o755,
+    );
+    let mut env = world.env(true, 1_000);
+    env.systemctl = Some(systemctl);
+    env.tail = Some(places);
+
+    let outcome = run(&env);
+
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+    let every_call = fs::read_to_string(&all_calls).unwrap();
+    assert_eq!(
+        every_call
+            .lines()
+            .filter(|call| call.starts_with("stop --no-block"))
+            .collect::<Vec<_>>(),
+        ["stop --no-block -- lngr.service"],
+        "{every_call}"
+    );
+    assert!(
+        !r.join("lngr-stopped").exists(),
+        "what the leftover's stop wrote to /run is scrubbed"
     );
 }
 

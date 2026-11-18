@@ -23,16 +23,17 @@
 //!   ([`crate::whole_root::run_records`]), drop journald's stored output
 //!   streams ([`crate::whole_root::tail::drop_journal_streams`]), and record
 //!   the entry.
-//! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
-//!   decoy, make the disks the session set read-only writable again and remove
+//! - **Leave** (hidden to decoy): end the session's processes that PID 1
+//!   would still kill at the switch ([`crate::whole_root::tail`]), repoint
+//!   `/run/current-system` back to the decoy, make the disks the session set read-only writable again and remove
 //!   the rule, the drop-ins and the masks, scrub `/run`
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
 //!   the hidden units have stopped, put the decoy's network state back
 //!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
 //!   the decoy mounts the way back restored, leave the line that removes the
-//!   empty `/run/nextroot` at the decoy's start, end the session's last
-//!   processes, empty journald's sockets and quiet an ext4 hidden volume's
-//!   unmount line ([`crate::whole_root::tail`]), write the kmsg cursor and,
+//!   empty `/run/nextroot` at the decoy's start, end what process of the
+//!   session started since, empty journald's sockets and open them again, and
+//!   quiet an ext4 hidden volume's unmount line ([`crate::whole_root::tail`]), write the kmsg cursor and,
 //!   last, set the kernel's process-number counter back to where the decoy's
 //!   own boot numbered its units ([`crate::whole_root::fresh_pids`]).
 //!   When what it sets out to undo of the network state is still the
@@ -450,6 +451,9 @@ pub enum Outcome {
         network: network::Kept,
         /// What became of the process-number counter ([`fresh_pids::lower`]).
         pids: fresh_pids::Lowered,
+        /// The `systemctl` calls that emptied journald's sockets and store
+        /// and did not succeed ([`tail::empty_journal_sockets`]).
+        journal: Vec<String>,
     },
     /// `/run/nextroot` was populated but not armed for this transition, or
     /// failed the init check: it was detached, so PID 1 stays on this root.
@@ -653,6 +657,11 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .is_none()
         .then(|| std::fs::read(env.runtime_dir.join(BINARY_NAME)).ok())
         .flatten();
+    // First the session's processes PID 1 would still kill at the switch:
+    // ending them runs their units' stop commands, whose writes to /run the
+    // scrub below removes and whose changes to the network and to utab the
+    // restores below undo.
+    end_session_leftovers(env, plan);
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
             let _ = repoint_current_system(&env.run, system);
@@ -780,7 +789,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
     // Nothing of the hidden session may log after the cursor, and nothing it
     // sent journald may wait for the decoy's journald.
-    finish_tail(env, plan);
+    let journal = finish_tail(env, plan);
     // Anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
@@ -799,27 +808,37 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         failed: report.failed.len(),
         network: network_kept,
         pids,
+        journal,
     }
 }
 
-/// The last steps before the kmsg cursor ([`tail`]): end what PID 1 would
-/// still kill at the switch ([`tail::end_leftovers`]) and forget the
-/// failures that left; then stop journald's sockets, which discards what they
-/// hold, and quiet the hidden ext4 filesystem, whose unmount follows the
-/// switch.
-fn finish_tail(env: &Env, plan: &Plan) {
+/// End what PID 1 would still kill at the switch ([`tail::end_leftovers`])
+/// and forget the failures that left.
+fn end_session_leftovers(env: &Env, plan: &Plan) {
     if let Some(places) = &env.tail {
         let killed = tail::end_leftovers(places, env.systemctl.as_deref(), &OWN_JOBS);
         if let (Some(systemctl), false) = (&env.systemctl, killed.is_empty()) {
             reset_new_failures(systemctl, &plan.failed_at_entry);
         }
     }
-    if let Some(systemctl) = &env.systemctl {
-        let _ = tail::empty_journal_sockets(systemctl);
-    }
+}
+
+/// The last steps before the kmsg cursor ([`tail`]): end once more what PID 1
+/// would still kill at the switch, which finds nothing after the way back's
+/// first pass unless a process started since; then empty journald's sockets
+/// and descriptor store and open its sockets again, and quiet the hidden
+/// ext4 filesystem, whose unmount follows the switch. Returns the `systemctl`
+/// calls on journald's sockets that did not succeed.
+fn finish_tail(env: &Env, plan: &Plan) -> Vec<String> {
+    end_session_leftovers(env, plan);
+    let journal = match &env.systemctl {
+        Some(systemctl) => tail::empty_journal_sockets(systemctl),
+        None => vec!["no systemctl".to_string()],
+    };
     if let Some(places) = &env.tail {
         let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
     }
+    journal
 }
 
 /// How long the way back waits, once PID 1 took the power-off, before it asks
