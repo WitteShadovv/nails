@@ -63,8 +63,13 @@ QEMU process:
    whose reset failed leaves a device; ended with the emergency, and the same
    way-back assertions;
 8. a last plain soft-reboot, the second control; the decoy disk and ``/run``
-   after each way back changed only where a control changed them; and a login
-   on the decoy, the positive control of the login records.
+   after each way back changed only where a control changed them, or, on the
+   disk, where a run of the decoy's own timer after the switch did: its
+   change dated within the run, and the same change made by the unit when the
+   gate starts it once more by hand, or the stamp of its persistent timer.
+   A timer the gate adds to the decoy before the first entry, which catches
+   up at the first way back, is the positive control of that reading. And a
+   login on the decoy, the positive control of the login records.
 
 In the variant with the policy's dontaudit rules on, the kernel also records
 every program run from below ``/run`` with its domain, and every program run
@@ -403,6 +408,58 @@ RECORD_PATHS = (
 )
 # The filesystem types of the decoy's disk mounts.
 DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
+# The decoy's own timers and the units each starts, as the PID 1 of the root
+# that runs reports them: whether the timer is persistent, when it last
+# triggered, and when its unit last left and last entered its inactive state.
+# PID 1 keeps no unit's runs across a soft-reboot, so a run it reports after a
+# switch is one of its own start, never one of the root before it. Times are
+# to the second, the guest's wall clock last.
+DECOY_TIMERS = r"""
+systemctl list-units --all --type=timer --plain --no-legend --no-pager |
+while read -r t _; do
+  case "$t" in *.timer) ;; *) continue ;; esac
+  p=$(systemctl show -P Persistent "$t")
+  l=$(systemctl show -P LastTriggerUSec --timestamp=unix "$t")
+  for u in $(systemctl show -P Triggers "$t"); do
+    echo "timer=$t unit=$u persistent=$p last=$l" \
+      "start=$(systemctl show -P InactiveExitTimestamp --timestamp=unix "$u")" \
+      "end=$(systemctl show -P InactiveEnterTimestamp --timestamp=unix "$u")" \
+      "state=$(systemctl show -P ActiveState "$u")"
+  done
+done
+echo "now=$(date +%s.%N)"
+"""
+# Where PID 1 keeps a persistent timer's stamp, whose time is the timer's last
+# trigger.
+TIMER_STAMPS = "/var/lib/systemd/timers"
+# How far apart, in seconds, a change and a run of a timer's unit may be and
+# still count as that run's: PID 1 gives the times of a run to the second.
+TIMER_SLACK = 1.0
+# A timer of the decoy's own that the gate adds before the first entry, the
+# positive control of the comparison's reading of the decoy's timers: it
+# triggered last before the time it is set to, so the next start of PID 1 that
+# starts it catches up at once, and its unit writes a file on the decoy disk.
+# The decoy's PID 1 does not start it before the first entry; the first hidden
+# session's does, into its upper, and the decoy's at the first way back, on
+# the decoy disk. That run moves the stamp past the set time, so no later
+# start triggers it again.
+GATE_TIMER = "gate-timer"
+GATE_TIMER_FILE = "/var/lib/gate-timer/written"
+GATE_TIMER_PLANT = f"""
+set -eu
+at=$(date -u -d @$(( $(date +%s) - 3600 )) '+%Y-%m-%d %H:%M:%S UTC')
+mkdir -p /var/lib/gate-timer
+date +%s.%N > {GATE_TIMER_FILE}
+printf '%s\\n' '[Unit]' 'Description=gate timer' '[Timer]' "OnCalendar=$at" \\
+  Persistent=true '[Install]' WantedBy=timers.target \\
+  > /etc/systemd/system/{GATE_TIMER}.timer
+printf '%s\\n' '[Unit]' 'Description=gate timer' '[Service]' Type=oneshot \\
+  'ExecStart=/bin/sh -c "date +%%s.%%N > {GATE_TIMER_FILE}"' \\
+  > /etc/systemd/system/{GATE_TIMER}.service
+touch -d @$(( $(date +%s) - 7200 )) {TIMER_STAMPS}/stamp-{GATE_TIMER}.timer
+systemctl enable {GATE_TIMER}.timer
+systemctl is-active {GATE_TIMER}.timer || true
+"""
 # The blind spot the rehearsal's scan must name for a btrfs root mounted to
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
@@ -513,6 +570,153 @@ def decoy_disk_residue(
     for control in controls:
         seen |= control
     return sorted(way_back - seen)
+
+
+_TIMER_FIELD = re.compile(r"(\w+)=(\S*)")
+_UNIX_TIME = re.compile(r"^@?(\d+(?:\.\d+)?)$")
+
+
+def _unix_time(value: str) -> float | None:
+    match = _UNIX_TIME.match(value)
+    return float(match.group(1)) if match else None
+
+
+def timer_runs(text: str) -> tuple[list[dict[str, Any]], float | None]:
+    """The runs of the decoy's own timers in ``text`` (output of
+    :data:`DECOY_TIMERS`), and the guest's wall clock at its end. A unit
+    whose inactive state it left at no time has not run in this start of PID
+    1 and is not listed; one still running, or whose last return to its
+    inactive state came before its last start, ends at ``None``."""
+    runs: list[dict[str, Any]] = []
+    now = None
+    for line in text.splitlines():
+        line = line.strip()
+        if line.startswith("now="):
+            now = _unix_time(line[4:])
+            continue
+        fields = dict(_TIMER_FIELD.findall(line))
+        if "timer" not in fields or "unit" not in fields:
+            continue
+        start = _unix_time(fields.get("start", ""))
+        if start is None:
+            continue
+        end = _unix_time(fields.get("end", ""))
+        if end is not None and end < start:
+            end = None
+        runs.append(
+            {
+                "timer": fields["timer"],
+                "unit": fields["unit"],
+                "persistent": fields.get("persistent") == "yes",
+                "last": _unix_time(fields.get("last", "")),
+                "start": start,
+                "end": end,
+                "state": fields.get("state", ""),
+            }
+        )
+    return runs, now
+
+
+def file_times(text: str) -> dict[str, tuple[float, float]]:
+    """Each path of ``text`` (``find -printf '%C@ %T@ %p\\n'``) with its
+    change and modification times."""
+    found = {}
+    for line in text.splitlines():
+        parts = line.split(" ", 2)
+        if len(parts) != 3:
+            continue
+        try:
+            found[parts[2]] = (float(parts[0]), float(parts[1]))
+        except ValueError:
+            continue
+    return found
+
+
+def timer_explained(
+    paths: Iterable[str],
+    timers: Mapping[str, Any],
+) -> dict[str, str]:
+    """The paths of ``paths`` a run of the decoy's own timer explains, each
+    with the unit or timer that explains it. ``timers`` is what the gate took
+    of the decoy's timers right after the listing of the changes: ``lower``,
+    the time from which a run counts (after the hidden session's last mark,
+    for a way back), ``now``, ``runs`` (:func:`timer_runs`), ``times``
+    (:func:`file_times`) and ``reruns``, each unit's own changes when the gate
+    started it once more by hand.
+
+    A path counts as a run's when that run started at or after ``lower`` and
+    the path's inode changed while it ran, and either the unit's run by hand
+    changed the path too, or the path is the stamp of the run's persistent
+    timer, dated at its trigger, which came while the run did. A path with no
+    times, one no run started that changed it, or one changed only outside the
+    run of the unit, is not explained: a write of the session or of NAILS on
+    the decoy disk shows."""
+    lower = float(timers.get("lower") or 0.0)
+    now = timers.get("now")
+    runs = timers.get("runs") or []
+    times = timers.get("times") or {}
+    reruns = timers.get("reruns") or {}
+    found: dict[str, str] = {}
+    for path in sorted(paths):
+        if path not in times:
+            continue
+        changed, modified = times[path]
+        for run in runs:
+            start = run["start"]
+            end = run["end"] if run["end"] is not None else now
+            if start < lower or end is None:
+                continue
+            if not start - TIMER_SLACK <= changed <= end + TIMER_SLACK:
+                continue
+            if path in reruns.get(run["unit"], ()):
+                found[path] = run["unit"]
+                break
+            last = run["last"]
+            if (
+                run["persistent"]
+                and path == f"{TIMER_STAMPS}/stamp-{run['timer']}"
+                and last is not None
+                and start - TIMER_SLACK <= last <= end + TIMER_SLACK
+                and abs(modified - last) <= TIMER_SLACK
+            ):
+                found[path] = run["timer"]
+                break
+    return found
+
+
+def decoy_reference(
+    controls: Mapping[str, set[str]], explained: Mapping[str, Mapping[str, str]]
+) -> list[set[str]]:
+    """What each plain soft-reboot changed, as the reference of the ways back:
+    a path a run of the decoy's own timer explains in a control
+    (``explained``, by the control's label) is left out of that control
+    unless another control changed it as well, so that a timer's chance run
+    in a control does not widen what a way back may change."""
+    reference = []
+    for label, paths in controls.items():
+        others: set[str] = set()
+        for other, more in controls.items():
+            if other != label:
+                others |= more
+        chance = {
+            path for path in explained.get(label, {}) if path not in others
+        }
+        reference.append(paths - chance)
+    return reference
+
+
+def disk_listing(since: str) -> str:
+    """The guest command that lists every file and folder on the decoy's disk
+    mounts whose contents or inode (its labels among the extended attributes)
+    changed since the wall clock ``since`` (a number, or a shell expansion
+    of one), the hidden volume and the gate's bind left out."""
+    return (
+        "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
+        f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
+        f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
+        f'find "$target" -xdev \\( -newerct @{since} -o -newermt @{since} \\) '
+        "-print; done | sort -u"
+    )
 
 
 def rehearse_scan_problems(
@@ -945,8 +1149,10 @@ class Gate:
         self.calls = 0
         self.where = "decoy before the first entry"
         self.lost = False
-        # The changes on the decoy disk across each switch, by its label.
+        # The changes on the decoy disk across each switch, by its label, and
+        # what the decoy's own timers did there (:meth:`decoy_timers`).
         self.disk: dict[str, set[str]] = {}
+        self.timers: dict[str, dict[str, Any]] = {}
         # /run before and after each switch, by its label, and the reconcile
         # step's pieces that stayed after each way back.
         self.runs: dict[str, tuple[set[str], set[str]]] = {}
@@ -1393,18 +1599,17 @@ class Gate:
         inode (its labels among the extended attributes) changed since the
         wall clock ``since``: the hidden volume and the gate's bind left out,
         and the record files the records checks judge."""
-        listing = self.fact(
-            f"disk-changes-{label}",
-            "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
-            f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
-            f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
-            f'find "$target" -xdev \\( -newerct @{since} -o -newermt @{since} \\) '
-            "-print; done | sort -u",
-            600,
-        )
-        # find lists the mount points of other filesystems with the times of
-        # what is mounted there; the roots of the decoy's own stay listed.
-        others = [
+        listing = self.fact(f"disk-changes-{label}", disk_listing(since), 600)
+        changed = changed_paths(listing, self.other_mounts())
+        self.disk[label] = changed
+        return changed
+
+    def other_mounts(self) -> list[str]:
+        """The mount points find lists with the times of the filesystem mounted
+        there: those of other filesystems than the decoy's disk mounts, the
+        hidden volume's and the gate's bind. The roots of the decoy's own stay
+        listed."""
+        return [
             target
             for target, _, fstype in (
                 line.partition(" ")
@@ -1414,9 +1619,67 @@ class Gate:
             or target in (HIDDEN, UTAB_BIND)
             or target.startswith(HIDDEN + "/")
         ]
-        changed = changed_paths(listing, others)
-        self.disk[label] = changed
-        return changed
+
+    def decoy_timers(self, label: str, lower: float) -> None:
+        """What the decoy's own timers did since the switch of ``label``,
+        taken right after the listing of its changes on the decoy disk: the
+        runs PID 1 reports, the times of each path the listing has that no
+        control taken so far has, and, for each unit whose run held such a
+        change, that unit's changes when the gate starts it once more by hand
+        (:func:`timer_explained` reads them)."""
+        runs, now = timer_runs(self.fact(f"decoy-timers-{label}", DECOY_TIMERS))
+        known: set[str] = set()
+        for other, paths in self.disk.items():
+            if "control" in other and other != label:
+                known |= paths
+        open_paths = sorted(
+            path for path in self.disk.get(label, set()) - known if "*" not in path
+        )
+        times: dict[str, tuple[float, float]] = {}
+        if open_paths and runs:
+            times = file_times(
+                self.fact(
+                    f"changed-times-{label}",
+                    "find "
+                    + " ".join(shlex.quote(path) for path in open_paths)
+                    + " -maxdepth 0 -printf '%C@ %T@ %p\\n' 2>/dev/null; true",
+                )
+            )
+        reruns: dict[str, list[str]] = {}
+        for run in runs:
+            end = run["end"] if run["end"] is not None else now
+            if run["start"] < lower or end is None or run["unit"] in reruns:
+                continue
+            held = [
+                path
+                for path, (changed, _) in times.items()
+                if run["start"] - TIMER_SLACK <= changed <= end + TIMER_SLACK
+            ]
+            if not held:
+                continue
+            # Once the unit's own run has ended, the gate starts it and lists
+            # what changed from then on.
+            unit = shlex.quote(run["unit"])
+            out = self.fact(
+                f"timer-rerun-{label}-{run['unit']}",
+                f"for i in $(seq 120); do s=$(systemctl show -P ActiveState {unit}); "
+                'case "$s" in inactive|failed) break ;; esac; sleep 1; done; '
+                "since=$(date +%s.%N); "
+                f"timeout 300 systemctl start {unit}; echo rc=$?; "
+                + disk_listing('"$since"'),
+                600,
+            )
+            listed = [line for line in out.splitlines() if line.startswith("/")]
+            reruns[run["unit"]] = sorted(
+                changed_paths("\n".join(listed), self.other_mounts())
+            )
+        self.timers[label] = {
+            "lower": lower,
+            "now": now,
+            "runs": runs,
+            "times": times,
+            "reruns": reruns,
+        }
 
     # --- the decoy -------------------------------------------------------
 
@@ -1769,6 +2032,13 @@ class Gate:
                 "the decoy's utab holds the line of its bind mount before the entry",
                 UTAB_OPTION in bind,
                 bind,
+            )
+            plant = self.fact("gate-timer", GATE_TIMER_PLANT)
+            self.check(
+                "the gate's timer waits for the next start of PID 1 before the "
+                "first entry",
+                plant.splitlines()[-1:] == ["inactive"],
+                plant,
             )
         state["bound"] = self.vm.execute(f"mountpoint -q {UTAB_BIND}")[0] == 0
         state["mountinfo"] = self.vm.succeed("cat /proc/self/mountinfo")
@@ -2373,6 +2643,7 @@ class Gate:
         self.runs[f"way-back-{n}"] = (state["run"], self.run_listing(f"after-{n}"))
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
+        self.decoy_timers(f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]))
         self.enforcing(f"after way back {n}")
         try:
             self.session.assert_decoy_root(vm)
@@ -2726,6 +2997,7 @@ class Gate:
         self.wait_reconcile()
         self.runs[label] = (run, self.run_listing(f"after-{label}"))
         self.disk_changes(label, since)
+        self.decoy_timers(label, float(since))
         self.enforcing(f"after {label}")
         failed = self.failed_units(f"failed-{label}")
         swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
@@ -2747,27 +3019,66 @@ class Gate:
 
     def judge_disk(self) -> None:
         """The decoy disk after each way back changed only where a plain
-        soft-reboot changed it, its login records aside, which the records
-        checks judge: a label or a file the session or NAILS wrote on the
-        decoy would show as a path no control changed."""
+        soft-reboot changed it or a run of the decoy's own timer after the
+        switch did (:func:`timer_explained`), its login records aside, which
+        the records checks judge: a label or a file the session or NAILS wrote
+        on the decoy would show as a path neither explains. A path that only a
+        timer's run explains in one control is not part of the reference
+        (:func:`decoy_reference`)."""
         self.where = "the decoy disk"
-        controls = [paths for label, paths in self.disk.items() if "control" in label]
-        self.facts["disk-controls"] = {
-            label: sorted(paths)
+        explained = {
+            label: timer_explained(paths, self.timers.get(label, {}))
             for label, paths in self.disk.items()
-            if "control" in label
+        }
+        self.facts["disk-timers"] = {
+            label: {**self.timers[label], "explained": explained.get(label, {})}
+            for label in self.timers
+        }
+        controls_by_label = {
+            label: paths for label, paths in self.disk.items() if "control" in label
+        }
+        controls = decoy_reference(controls_by_label, explained)
+        self.facts["disk-controls"] = {
+            label: sorted(paths) for label, paths in controls_by_label.items()
         }
         for label, paths in self.disk.items():
             if not label.startswith("way-back-"):
                 continue
-            residue = decoy_disk_residue(paths, controls)
+            own = explained.get(label, {})
+            residue = decoy_disk_residue(paths - set(own), controls)
             self.check(
                 f"{label.replace('-', ' ')}: the decoy disk changed only where a "
-                "plain soft-reboot changes it",
+                "plain soft-reboot or a run of the decoy's own timer changes it",
                 bool(controls) and not residue,
-                {"changed": sorted(paths), "not in a control": residue}
+                {
+                    "not in a control": residue,
+                    "the decoy's timers": own,
+                    "changed": sorted(paths),
+                }
                 if controls
                 else "no control was taken",
+            )
+        # The positive control: the gate's own timer of the decoy caught up at
+        # the first way back, and its write counts as its run's.
+        first = "way-back-1"
+        if first in self.disk:
+            runs = [
+                run
+                for run in self.timers.get(first, {}).get("runs", [])
+                if run["timer"] == f"{GATE_TIMER}.timer"
+            ]
+            self.check(
+                "way back 1: the gate's timer of the decoy caught up at its start, "
+                "and the comparison counts its write as the timer's",
+                bool(runs)
+                and GATE_TIMER_FILE in self.disk[first]
+                and explained.get(first, {}).get(GATE_TIMER_FILE)
+                == f"{GATE_TIMER}.service",
+                {
+                    "runs": runs,
+                    "changed": GATE_TIMER_FILE in self.disk[first],
+                    "explained": explained.get(first, {}),
+                },
             )
 
     def judge_run(self) -> None:
