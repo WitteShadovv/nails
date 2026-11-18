@@ -714,12 +714,12 @@ near the decoy's own boot's, not on it. Before the way back aimed inside the
 power-of-two range, Fedora's admission gate saw the consoles' units land up to
 35 numbers off their number before the session, either way, and after the
 emergency way back of two Fedora 44 runs the getty and its wtmp record got
-1025, where the cold boot gave it 990 and 991. In every way back of the gate's
+1025, where the cold boot gave it 990 and 991. In the way backs of the gate's
 Fedora 44 and 45 runs since, each console's unit landed in the range the cold
-boot gave it, the Fedora 44 getty up to 36 numbers off its aim. A getty that
-lands 64 or more off can still leave its range. An examiner who compares the
-getty records with those of every earlier boot can still see one that sits apart from the rest, the more
-so after several sessions without a power-off. Until the next
+boot gave it, the Fedora 44 getty less than 64 numbers off its aim. A getty
+that lands 64 or more off can still leave its range. An examiner who compares
+the getty records with those of every earlier boot can still see one that sits
+apart from the rest, the more so after several sessions without a power-off. Until the next
 power-off, anyone with a shell can see the reset itself: the decoy's units can
 hold numbers below those of kernel threads that started before them (the
 soft-reboot row of the residual table above). Only a session ended with
