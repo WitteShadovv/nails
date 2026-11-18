@@ -868,7 +868,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
     // Nothing of the hidden session may log after the cursor, and nothing it
     // sent journald may wait for the decoy's journald.
-    let journal = finish_tail(env, plan, sockets.as_deref());
+    let journal = finish_tail(env, plan, sockets.as_deref(), &report.detached);
     // Anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
@@ -908,10 +908,18 @@ fn end_session_leftovers(env: &Env, plan: &Plan) {
 /// first pass unless a process started since; then drop journald's
 /// descriptor store and put its socket units as the decoy had them, empty
 /// journald's sockets in place once the session's last writer is gone, and
-/// quiet the hidden ext4 filesystem, whose unmount follows the switch.
-/// `sockets` are the journald socket units the decoy had active at the
-/// entry. Returns what did not succeed of the work on journald's sockets.
-fn finish_tail(env: &Env, plan: &Plan, sockets: Option<&[String]>) -> Vec<String> {
+/// quiet the hidden ext4 filesystem, whose unmount follows the switch. Last,
+/// wait until PID 1 has taken down the units of the mounts the `/run` scrub
+/// detached (`detached`), so that it logs their end before the cursor
+/// ([`tail::wait_for_unmounted`]). `sockets` are the journald socket units
+/// the decoy had active at the entry. Returns what did not succeed of the
+/// work on journald's sockets.
+fn finish_tail(
+    env: &Env,
+    plan: &Plan,
+    sockets: Option<&[String]>,
+    detached: &[PathBuf],
+) -> Vec<String> {
     end_session_leftovers(env, plan);
     let mut journal = match &env.systemctl {
         Some(systemctl) => tail::settle_journal_sockets(systemctl, sockets),
@@ -920,6 +928,9 @@ fn finish_tail(env: &Env, plan: &Plan, sockets: Option<&[String]>) -> Vec<String
     if let Some(places) = &env.tail {
         journal.extend(tail::drain_journal_sockets(places).failed);
         let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
+    }
+    if let (Some(systemctl), false) = (&env.systemctl, detached.is_empty()) {
+        let _ = tail::wait_for_unmounted(systemctl, detached, nextroot::mount_points);
     }
     journal
 }
