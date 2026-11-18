@@ -655,7 +655,8 @@ soft-reboots with `py/nails_e2e/session.py`:
   before the way back, as its log on the hidden volume records, a line for the
   third disk below the hidden root that the session wrote into its own
   `/etc/fstab` kept off with a warning by the next `--overlay-only` entry, and
-  with `[session_mounts] read_only` the disk read-only from the hidden boot on,
+  with `[session_mounts] read_only` the disk read-only once the session's
+  watcher has started (its first sweep),
   a disk hot-plugged during the session made read-only by the udev rule alone,
   every write failing, the third disk, mounted read-only below the hidden root
   and set writable by hand, swept read-only again, and every disk writable
@@ -766,7 +767,16 @@ and needed by no decoy unit, and systemd's GPT auto-generator masked in each
 hidden session and unmasked after each way back; runs `emergency`, which
 soft-reboots back to the plain decoy, where the PID-file service starts again;
 asserts the kernel log names no session drop-in and no failed unmount of the
-hidden volume; runs a second session
+hidden volume; before each way back plants what would reach the decoy's
+journal past the kmsg cursor or through journald's sockets
+(`nails_e2e.journal_tail`: a unit that stops after the hidden journald and
+logs through each socket, and a lingering unit whose stop command writes to
+`/run`, each proving in the ring buffer that it ran), and after it asserts
+that the decoy's journal holds none of it and no other line of the hidden
+session past the cursor but a device-mapper volume's teardown lines, that
+the decoy's start opened none of journald's sockets anew, that the
+lingering unit's file in `/run` is gone, and that `/run/nextroot` and the
+line that removes it are gone; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
 volume keeps the unit's stop from unmounting it, and writing canaries of its
@@ -1218,7 +1228,9 @@ journald: audit records numbered up to the hidden root's last before the
 switch's last step, syslog and native lines the kernel took in before that
 step ended, and standard output lines of a process numbered at or above what
 the session pushed the counter to; a line logged after the way back in the
-decoy's journal, the positive control of that reading; `/run` at every depth,
+decoy's journal, the positive control of that reading; no line of the
+decoy's start that opens one of journald's sockets anew, which a plain
+soft-reboot carries listening; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots added there (a new journal stream,
 session or unit file of the decoy's own start, its numbers left out), with
