@@ -153,8 +153,9 @@ impl Scanner {
     }
 
     /// The ranges of `line` that name something ([`Named`]). `line` is read
-    /// as the file spells it: an attribute name is compared with any case,
-    /// and [`Scanner::places`] keeps its spelling.
+    /// as the file spells it: a keyword and an attribute name that leads to
+    /// a mapping are compared with any case, and [`Scanner::places`] keeps
+    /// the spelling.
     pub(super) fn line(&mut self, line: &[u8]) -> Vec<(Range<usize>, Named)> {
         let mut names = Vec::new();
         let mut places = Vec::new();
@@ -460,9 +461,11 @@ impl Stack {
 
     /// The token `word`, which may be a keyword: `let` opens a block of
     /// bindings, which `in` closes, and `with` makes the next `;` part of the
-    /// value being read. Returns whether a binding may start after it.
+    /// value being read. Returns whether a binding may start after it. A
+    /// keyword is read in any case (`LET`, `With`), as in a comment that
+    /// writes one so.
     fn keyword(&mut self, word: &[u8], indent: usize) -> bool {
-        match word {
+        match word.to_ascii_lowercase().as_slice() {
             b"let" => {
                 let attrs = Attrs {
                     binding: true,
@@ -515,8 +518,14 @@ impl Stack {
         let attrs = self.attrs_mut()?;
         // The old list form's elements are no entries: `name` names one.
         let entries = !(attrs.in_list && names_entry(&attrs.path));
-        if let Some(rest) = line[start..].strip_prefix(b"inherit")
-            && !rest.first().copied().is_some_and(is_identifier_byte)
+        // `inherit` in any case, as a keyword is read.
+        if line[start..]
+            .get(..b"inherit".len())
+            .is_some_and(|word| word.eq_ignore_ascii_case(b"inherit"))
+            && !line
+                .get(start + b"inherit".len())
+                .copied()
+                .is_some_and(is_identifier_byte)
         {
             let entries = entries && names_entry(&attrs.path);
             return Some(inherit(entries, line, start + b"inherit".len(), names));
