@@ -45,8 +45,9 @@
 //! uninterruptible sleep past [`end_leftovers`]'s bound (PID 1 names it), a
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
-//! decoy. journald's sockets are new ones, made at the way back, where a
-//! plain soft-reboot keeps those of the boot; where the kernel's audit is on,
+//! decoy. journald's sockets are new ones, made at the way back (their files
+//! and their units' start time date from it), where a plain soft-reboot keeps
+//! those of the boot; where the kernel's audit is on,
 //! the decoy's start opens journald's audit socket anew and logs that, which
 //! a plain soft-reboot does not; and the stream of a process the soft-reboot
 //! leaves running goes with the store ([`drop_journal_streams`]).
