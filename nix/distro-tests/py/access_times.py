@@ -225,3 +225,29 @@ def as_json(findings: Sequence[Finding]) -> list[dict[str, object]]:
         {"window": f.window, "path": f.path, "atime": f.atime, "kind": f.kind}
         for f in findings
     ]
+
+
+#: The lines the scenario writes to the serial console before and after its
+#: copy of what a trigger printed, where the trigger failed without switching.
+OUTPUT_BEGIN = "atime-trigger-output-begin"
+OUTPUT_END = "atime-trigger-output-end"
+
+
+def trigger_output(lines: Sequence[str]) -> str | None:
+    """What a failed trigger printed, from the scenario's copy of it on the
+    serial console: the lines after the first that ends with
+    :data:`OUTPUT_BEGIN`, up to the next that ends with :data:`OUTPUT_END`
+    or, where that has not come, to the last. ``None`` where no copy began.
+    The lines the kernel writes to the console in between are kept."""
+    begin = next(
+        (i for i, line in enumerate(lines) if line.rstrip().endswith(OUTPUT_BEGIN)),
+        None,
+    )
+    if begin is None:
+        return None
+    copy = lines[begin + 1 :]
+    end = next(
+        (i for i, line in enumerate(copy) if line.rstrip().endswith(OUTPUT_END)),
+        len(copy),
+    )
+    return "\n".join(copy[:end])
