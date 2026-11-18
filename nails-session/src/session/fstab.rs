@@ -251,12 +251,18 @@ pub fn required_by(entry: &FstabEntry) -> Option<String> {
     {
         return None;
     }
-    let target = if entry.is_network() {
+    Some(boot_target(entry).to_string())
+}
+
+/// The target the fstab generator links the mount of `entry` into when
+/// nothing names another: `remote-fs.target` for a network filesystem,
+/// `local-fs.target` for any other.
+pub fn boot_target(entry: &FstabEntry) -> &'static str {
+    if entry.is_network() {
         "remote-fs.target"
     } else {
         "local-fs.target"
-    };
-    Some(target.to_string())
+    }
 }
 
 /// The device the unit systemd makes for `entry` waits for at its start: the

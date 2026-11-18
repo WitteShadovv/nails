@@ -129,8 +129,8 @@
 //! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
-    FstabEntry, automount_unit, checkers, escape_path, mount_unit, option_named, reads_pulls_of,
-    required_by, swap_unit, waits_for,
+    FstabEntry, automount_unit, boot_target, checkers, escape_path, mount_unit, option_named,
+    reads_pulls_of, required_by, swap_unit, waits_for,
 };
 use nails_base::hidden_root::separation::unread_fstab_options;
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
@@ -885,17 +885,6 @@ fn overlay_upper(entry: &FstabEntry, mounts: &[MountEntry]) -> Result<Option<Pat
             .and_then(|m| parse_overlay_opts(&m.super_opts).upperdir)),
         [Some(upper)] => Ok(Some(PathBuf::from(upper))),
         _ => Err(()),
-    }
-}
-
-/// The target the fstab generator links the mount of `entry` into when
-/// nothing names another: `remote-fs.target` for a network filesystem,
-/// `local-fs.target` for any other.
-fn boot_target(entry: &FstabEntry) -> &'static str {
-    if entry.is_network() {
-        "remote-fs.target"
-    } else {
-        "local-fs.target"
     }
 }
 
