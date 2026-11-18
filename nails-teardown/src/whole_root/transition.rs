@@ -755,10 +755,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
-    // Now that the hidden units have stopped, a zram device whose reset failed
-    // at a stop goes back to what the decoy's start sets up, before the kmsg
-    // cursor, which is there to keep the reset's line from the decoy's
-    // journal as well.
+    // Now that the hidden units have stopped, reset every zram device that
+    // holds a swap area no swap uses (one whose reset failed at a stop, or the
+    // decoy's own left with its swap off), before the kmsg cursor is taken.
     let zram_reset = env
         .zram
         .as_ref()

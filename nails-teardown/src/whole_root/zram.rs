@@ -14,15 +14,16 @@
 //!
 //! So the way back, once every hidden unit has stopped, resets each zram
 //! device that holds a swap area no swap uses ([`reset_idle_swaps`]): the
-//! decoy's start sets it up as its cold boot did. A device in use, one that
+//! decoy's start can set it up as its cold boot did. It does not tell such a
+//! device from one the decoy set up itself and left with its swap off, which
+//! it resets as well. A device in use, one that
 //! was never set up and one that holds anything but a swap area are left
 //! alone: a swap area out of use keeps nothing a later start reads, but
 //! another device can hold a filesystem the decoy expects to find again. The
 //! kernel refuses to reset a device that is open.
 //!
 //! Resetting a device logs its change of size to the kernel log, so the way
-//! back does it before it takes the kernel log's cursor, among the records the
-//! cursor is there to keep from the decoy's journal.
+//! back does it before it takes the kernel log's cursor.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};

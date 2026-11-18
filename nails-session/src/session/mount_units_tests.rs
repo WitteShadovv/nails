@@ -542,8 +542,8 @@ fn a_zram_swap_that_may_write_back_to_a_disk_is_kept_off_as_disk_swap() {
         reason: "swap would take hidden RAM onto a decoy disk",
         unreached: None,
     };
-    // The device is not there: what the hidden session's zram-generator sets
-    // up is not known.
+    // The device is not there: what sets it up in the hidden session, and
+    // with which backing device, is not known.
     assert_eq!(decoy.decide(ROOT_ONLY, true), std::slice::from_ref(&masked));
     // A kernel without writeback gives it no backing_dev at all.
     std::fs::create_dir_all(decoy.at("/sys/block/zram0")).unwrap();

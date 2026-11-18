@@ -58,9 +58,9 @@ pub const UNITS: &[&str] = &[
 /// (`systemd-zram-setup@.service`). In the hidden root it would set the device
 /// up again from the hidden root's copy of that configuration, which the fstab
 /// policy does not read and which can name a disk the device writes its pages
-/// back to, and put hidden pages in a device the kernel keeps for the decoy.
-/// With it masked the hidden session sets up no zram device of its own and
-/// runs without zram swap.
+/// back to. With it masked the hidden session runs without zram-generator's
+/// swap. A zram swap unit of another origin is decided by the fstab policy
+/// ([`super::mount_units`]), which leaves a RAM-only one on.
 pub const GENERATORS: &[&str] = &["systemd-gpt-auto-generator", "zram-generator"];
 
 /// The [`UNITS`] installed in `root`, the next root, without those already in
