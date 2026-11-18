@@ -714,20 +714,22 @@ of this changelog for that version becomes the release notes word for word, and
 
 - The time code no longer uses chrono, which RustSec lists as unmaintained (RUSTSEC-2026-0543).
   NAILS writes and reads its times with code of its own, and reads the local time zone's rules with
-  jiff. The times it writes stay as they were: the state file's fields, the JSON reports, the
-  alerts and the examiner's evidence. So do the local times `status` shows, with two exceptions: a
-  `TZ` rule with a daylight saving change on day 365 now shows what glibc's `date` shows, where
-  chrono was off, and `status --details` no longer lists a log line stamped with a leap second
-  (`23:59:60`), which NAILS never writes. The local zone comes from the same files as before
-  (`TZ`, else `/etc/localtime`, else the zone `/etc/localtime` links to or `/etc/timezone` names),
-  with no zone database listed or searched, but OpenWrt's `/etc/config/system` is no longer read.
-  A zone file that is not well formed may be judged otherwise: one with a blank or other bytes
-  after its footer, of TZif version 4, with transitions out of order or a last one past year 9999
-  is now read, where chrono refused it and NAILS fell back to the zone `/etc/localtime` links to
-  or `/etc/timezone` names, so NAILS reads fewer files for it, and one whose only offset is 25
-  hours, with no rule in its footer, now shows its time, where chrono panicked. A timestamp in the
-  state file in a form NAILS never wrote, such as a year without four digits, a blank around it or
-  a leap second, now makes the file corrupt, where chrono's reading took some of them.
+  jiff. The times it writes stay as they were: the state file's fields, the JSON reports, the alerts
+  and the examiner's evidence. For the zones of the tz database, the local zone comes from the same
+  files as before (`TZ`, else `/etc/localtime`, else the zone `/etc/localtime` links to or
+  `/etc/timezone` names), with no zone database listed or searched, and the local times `status`
+  shows stay the same. OpenWrt's `/etc/config/system` is no longer read. For any other zone file,
+  malformed or contrived, NAILS may read other files than before, or fewer, and show another time:
+  some that chrono read are now refused, after which NAILS falls back to the zone `/etc/localtime`
+  links to or `/etc/timezone` names, and some that chrono refused are now read. Such files include
+  one with an offset of 24 hours or more, on which chrono could panic, and one whose daylight saving
+  rule changes at a year's start or end, as in some of zic's test zones. A `TZ` value whose daylight
+  saving change falls at a year's start or end may also show another offset than before: for the
+  rules checked against glibc's `date`, NAILS shows what `date` shows. `status --details` no longer
+  lists a log line stamped with a leap second (`23:59:60`), which NAILS never writes.
+  A timestamp in the state file in a form NAILS never wrote, such as a year without four digits, a
+  blank around it or a leap second, now makes the file corrupt, where chrono's reading took some of
+  them.
 
 - `decoy-persistence` warns of a `kernel.core_pattern` that hands core dumps to a handler other
   than systemd-coredump, by a pipe or the kernel's coredump socket, which it left alone before:
