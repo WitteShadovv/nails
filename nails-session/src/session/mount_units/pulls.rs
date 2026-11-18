@@ -133,6 +133,63 @@ fn chain(reached: &[Reached], at: usize) -> String {
     steps.join(", which pulls in ")
 }
 
+/// The units among `noauto` that `start`, a unit the hidden boot starts,
+/// requires through a chain of requirements PID 1 adds to its start job
+/// ([`Edge::required`](super::deps::Edge::required)), each once with the
+/// chain, given `masks`, the units the session masks: a masked unit ends its
+/// chain, as do a scope and a target the hidden boot starts anyway. A unit
+/// whose pulls NAILS cannot read ends its chain too, and so does a walk
+/// deeper or wider than [`walk`] follows: what is found is all NAILS reads.
+pub fn requires_among(
+    graph: &Graph<'_>,
+    start: &str,
+    masks: &[String],
+    noauto: &[String],
+) -> Vec<(String, String)> {
+    let mut reached = vec![Reached {
+        unit: start.to_string(),
+        from: None,
+        how: "",
+    }];
+    let mut queue: VecDeque<(usize, usize)> = VecDeque::from([(0, 0)]);
+    let mut found: Vec<(String, String)> = Vec::new();
+    while let Some((at, depth)) = queue.pop_front() {
+        let unit = reached[at].unit.clone();
+        if at != 0 {
+            if noauto.contains(&unit) {
+                if !found.iter().any(|(seen, _)| *seen == unit) {
+                    found.push((unit, chain(&reached, at)));
+                }
+                continue;
+            }
+            if masks.contains(&unit) || kind(&unit) == "scope" || graph.boot.contains(&unit) {
+                continue;
+            }
+        }
+        if depth >= MAX_DEPTH {
+            continue;
+        }
+        let Ok(pulled) = edges(graph, &unit) else {
+            continue;
+        };
+        for edge in pulled {
+            if !(edge.required && edge.start)
+                || reached.iter().any(|seen| seen.unit == edge.unit)
+                || reached.len() >= MAX_UNITS
+            {
+                continue;
+            }
+            reached.push(Reached {
+                unit: edge.unit,
+                from: Some(at),
+                how: edge.how,
+            });
+            queue.push_back((reached.len() - 1, depth + 1));
+        }
+    }
+    found
+}
+
 /// Walk the pulls of the skipped unit `start` (see the module docs), given
 /// `masks`, the units the session masks. `Ok` with the masked units `start`
 /// requires through a chain of requirements, each with that chain: they

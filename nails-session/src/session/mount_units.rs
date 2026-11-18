@@ -79,8 +79,24 @@
 //! where NAILS cannot tell all it reaches ([`pulls`], [`deps`]). The
 //! generators the hidden root does not mask run again in the hidden session;
 //! what they made in the decoy is taken as what they make there.
+//!
+//! The policy masks a `noauto` line of a decoy disk whatever pulls it in
+//! ([`Decision::is_noauto_mask`]). What NAILS reads here weighs on that mask
+//! ([`kept_off`]). A unit file of the line's name in a unit directory systemd
+//! reads before the fstab generator's is what the name loads, so the mask
+//! yields to the decision for that file where a target links it. A line or
+//! unit file of the same name that the session leaves to the hidden systemd
+//! keeps the unit masked, as NAILS cannot tell which of them the hidden
+//! systemd reads, with a warning, and with a record where a boot target
+//! requires that one. A unit a target requires through its `.requires`
+//! directory that requires the mount, through a chain of requirements NAILS
+//! reads, has the line kept off as a line the boot mounts: skipped where its
+//! device is there, masked with a warning and a record where it is not. Where
+//! a target only wants such a unit, or NAILS does not read the chain, the
+//! mask stands: the unit does not start in the hidden session.
 
 mod deps;
+mod noauto;
 mod pulls;
 pub mod unit_dirs;
 pub mod unit_file;
@@ -397,22 +413,22 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// unit masked because what describes it disagrees
 /// ([`MaskCause::ConflictingLines`]), and for each skipped unit that
 /// requires a unit the session masks, which keeps it, and the boot target
-/// that requires it, from starting.
+/// that requires it, from starting. `present` tells whether a device is
+/// there now.
+///
+/// The mask of a `noauto` line that nothing NAILS reads in the fstab pulls
+/// in ([`Decision::is_noauto_mask`]) is weighed against the units outside
+/// the fstab ([`noauto::yield_masks`], [`noauto::weigh_masks`]).
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
     decisions: &[Decision],
+    present: Present<'_>,
 ) -> (KeptOff, Vec<String>) {
+    // A directory that cannot be listed refuses the entry (see [`read`]).
+    let native = read(dirs).unwrap_or_default();
+    let decisions = &noauto::yield_masks(dirs, &native, decisions);
     let mut kept = policy::runtime_units(fstab, decisions);
-    let covered = covered_units(decisions);
-    let noauto = kept.noauto_masks.clone();
-    let new_graph = || {
-        let mut graph = deps::Graph::new(dirs, fstab, &covered);
-        graph.noauto = noauto.clone();
-        graph
-    };
-    // Read only where a skip needs it: the walk reads the boot's targets too.
-    let graph = std::cell::OnceCell::new();
     let mut warnings: Vec<String> = kept
         .required_masks
         .iter()
@@ -421,6 +437,27 @@ pub fn kept_off(
         .chain(kept.may_conflicts.iter().map(String::as_str))
         .map(conflict_warning)
         .collect();
+    let mut covered = covered_units(decisions);
+    warnings.extend(noauto::weigh_masks(
+        dirs, fstab, &native, decisions, &covered, &mut kept, present,
+    ));
+    // A noauto line's mount skipped now is kept off as any skip is.
+    covered.extend(
+        kept.skips
+            .iter()
+            .flat_map(|skip| skip.units.iter())
+            .filter(|unit| !covered.contains(unit))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
+    let noauto = kept.noauto_masks.clone();
+    let new_graph = || {
+        let mut graph = deps::Graph::new(dirs, fstab, &covered);
+        graph.noauto = noauto.clone();
+        graph
+    };
+    // Read only where a skip needs it: the walk reads the boot's targets too.
+    let graph = std::cell::OnceCell::new();
     for mut skip in std::mem::take(&mut kept.skips) {
         let pulled: Result<Vec<Vec<String>>, &str> = skip
             .units

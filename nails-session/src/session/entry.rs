@@ -837,7 +837,8 @@ fn keep_units_off(
         return Err(refused(refusal.clone()));
     }
     decided.add(paths, layout, plan, Vec::new(), more, inputs)?;
-    let (kept_off, unskipped) = mount_units::kept_off(dirs, &decided.fstab, &decided.decisions);
+    let (kept_off, unskipped) =
+        mount_units::kept_off(dirs, &decided.fstab, &decided.decisions, present);
     plan.masks = kept_off.masks;
     plan.skips = kept_off.skips;
     plan.required_masks = kept_off.required_masks;
