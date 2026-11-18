@@ -723,6 +723,113 @@ fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
 }
 
 #[test]
+fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
+    // Something may reach journald's sockets while the last step waits for
+    // the units of the mounts the scrub detached, ends the leftovers again and
+    // settles journald's socket units. Here every systemctl call of those
+    // steps returns only once a datagram reached journald's native socket:
+    // the drain has to come after all of them, so the socket holds nothing
+    // when the step is done.
+    use std::io::Write;
+    use std::os::unix::net::UnixDatagram;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let world = World::new();
+    let plan = armed(Direction::Leave);
+    let journal_run = world.dir.path().join("run-systemd");
+    fs::create_dir_all(journal_run.join("journal")).unwrap();
+    let native_path = journal_run.join("journal/socket");
+    let native = UnixDatagram::bind(&native_path).unwrap();
+    // A procfs that shows only this process, which holds the socket: the
+    // second pass ends nothing, and the drain takes this process's
+    // descriptors.
+    let own = std::process::id();
+    let proc = world.dir.path().join("fake-proc");
+    fs::create_dir_all(&proc).unwrap();
+    symlink(format!("/proc/{own}"), proc.join(own.to_string())).unwrap();
+    let calls = world.dir.path().join("calls");
+    let sent = world.dir.path().join("sent");
+    fs::write(&calls, "").unwrap();
+    fs::write(&sent, "").unwrap();
+    let systemctl = world.dir.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> {calls}\n\
+             n=$(wc -l < {calls})\n\
+             i=0\n\
+             while [ \"$(wc -l < {sent})\" -lt \"$n\" ] && [ \"$i\" -lt 2000 ]; do\n\
+               i=$((i + 1))\n\
+             done\n",
+            calls = calls.display(),
+            sent = sent.display(),
+        ),
+        0o755,
+    );
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let sender = {
+        let (stop, calls, sent, native_path) = (
+            stop.clone(),
+            calls.clone(),
+            sent.clone(),
+            native_path.clone(),
+        );
+        std::thread::spawn(move || {
+            let client = UnixDatagram::unbound().unwrap();
+            let mut done = 0;
+            while !stop.load(Ordering::SeqCst) {
+                let asked = fs::read_to_string(&calls).unwrap().lines().count();
+                while done < asked {
+                    client
+                        .send_to(format!("during call {done}").as_bytes(), &native_path)
+                        .unwrap();
+                    done += 1;
+                    writeln!(fs::OpenOptions::new().append(true).open(&sent).unwrap()).unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            done
+        })
+    };
+    let mut env = world.env(true, 1_000);
+    env.systemctl = Some(systemctl);
+    env.tail = Some(tail::Places {
+        proc,
+        sys_dev_block: world.dir.path().join("sys/dev/block"),
+        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
+        journal_holder: own,
+        journal_run,
+    });
+    let detached = [world.run().join("initramfs")];
+
+    let journal = finish_tail(&env, &plan, None, &detached);
+
+    stop.store(true, Ordering::SeqCst);
+    let sent = sender.join().unwrap();
+    let every_call = fs::read_to_string(&calls).unwrap();
+    assert_eq!(sent, every_call.lines().count(), "{every_call}");
+    assert!(
+        every_call
+            .lines()
+            .any(|call| call == tail::MOUNT_UNITS.join(" ")),
+        "the wait for the detached mount's unit ran: {every_call}"
+    );
+    assert!(
+        every_call
+            .lines()
+            .any(|call| call == tail::DROP_STREAMS.join(" ")),
+        "the sockets were settled: {every_call}"
+    );
+    assert!(journal.is_empty(), "{journal:?}");
+    native.set_nonblocking(true).unwrap();
+    let mut buf = [0_u8; 32];
+    assert_eq!(
+        native.recv(&mut buf).map_err(|e| e.kind()),
+        Err(std::io::ErrorKind::WouldBlock),
+        "nothing sent during the steps before the drain stays: {every_call}"
+    );
+}
+
+#[test]
 fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
     // The decoy's initrd lines name its root and store by the IDs they had at
     // entry. The way back mounts the decoy root and binds the store it carried

@@ -32,7 +32,9 @@
 //!   stops among it. [`settle_journal_sockets`] drops that store, and
 //!   [`drain_journal_sockets`] empties the sockets in place, through PID 1's
 //!   own descriptors of them, so that they stay the same sockets, as a plain
-//!   soft-reboot keeps them.
+//!   soft-reboot keeps them. The drain is the last of these steps before the
+//!   cursor, after the wait for the detached mounts' units, so what reaches
+//!   the sockets during the others goes as well.
 //!
 //! The switch itself leaves `/run/nextroot` behind, an empty folder where the
 //! decoy root was mounted for it, which a boot never has. It is a mount point
