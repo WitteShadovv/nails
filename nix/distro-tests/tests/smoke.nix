@@ -10,7 +10,9 @@
 # on the decoy disk. Before the first entry, check refuses a noauto line of the
 # decoy's fstab below the hidden root (fstab-policy, exit 4), and its
 # lsm-status row passes, naming the security modules the kernel runs: SELinux
-# does not run on these images. The decoy runs blk-availability.service as
+# does not run on these images but Fedora's, which boot enforcing with the
+# targeted policy (`enforcing` in images.json), and there the row passes for
+# SELinux that enforces. The decoy runs blk-availability.service as
 # Debian's and Ubuntu's lvm2 ships it (the image's own unit where lvm2 is
 # installed, a copy where only dmsetup is), and the second session, entered
 # without /boot or the ESP mounted, keeps its hidden volume through that unit's
@@ -191,6 +193,9 @@ distroVm.buildVmTest {
     os_id = "${entry.osId}"
     # The root filesystem the image table says the image ships.
     rootfs = "${entry.rootfs}"
+    # Whether the image boots with SELinux enforcing (Fedora's), or runs no
+    # SELinux at all (every other image).
+    selinux_enforcing = ${if entry.osId == "fedora" && entry.enforcing then "True" else "False"}
 
     # btrfs-progs and sfdisk on the driver, for the logical scan of a btrfs
     # decoy's image.
@@ -1250,7 +1255,10 @@ distroVm.buildVmTest {
         row = next((r for r in rows if r["name"] == "lsm-status"), None)
         print(f"active LSMs: {lsms}; lsm-status row: {row}")
         assert row is not None and row["status"] == "pass", row
-        assert row["message"].startswith("SELinux does not run"), row
+        if selinux_enforcing:
+            assert row["message"].startswith("SELinux enforces"), row
+        else:
+            assert row["message"].startswith("SELinux does not run"), row
         assert row["message"].endswith(f"Active LSMs: {', '.join(lsms)}."), (lsms, row)
         vm.succeed("cp /run/fstab.orig /etc/fstab && rm /run/fstab.orig")
         vm.succeed(f"{nails_cmd} check --overlay-only")

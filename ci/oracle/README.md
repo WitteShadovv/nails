@@ -294,8 +294,8 @@ copy of the paused disk, and a reset boots it again.
 Fedora is not admitted yet, so the driver runs a test-only build of the release
 binary in which only the Fedora row of the family table is admitted
 (`nix/distro-tests/lib/admitted.nix`). It also leaves out the `lsm-status`
-check, which judges the SELinux this decoy runs, here permissive, so that the
-images do not depend on its verdict; the check only reads. Fedora's derivatives
+check, which judges the SELinux this decoy runs, so that the images do not
+depend on its verdict; the check only reads. Fedora's derivatives
 follow that row there, as they will once Fedora is admitted, and no image of
 one runs. That build is never released, and once the image table enables the
 image, as the commit that admits Fedora does, the driver runs the release

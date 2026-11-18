@@ -100,8 +100,8 @@ let
   # until then the release binary with the base row of the image's family
   # admitted, for the scenarios of its admission only. That build fails for a
   # family whose row is admitted already. For Fedora it also leaves out the
-  # lsm-status check, which judges the SELinux this decoy runs, here
-  # permissive, so that the images do not depend on its verdict. The check
+  # lsm-status check, which judges the SELinux this decoy runs, so that the
+  # images do not depend on its verdict. The check
   # only reads, so leaving it out changes nothing a session leaves on the
   # disk. The build fails unless exactly that one line changes.
   admitted =
