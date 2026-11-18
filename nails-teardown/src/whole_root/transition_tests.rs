@@ -508,23 +508,42 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         fs::read_to_string(r.join(tail::TMPFILES_DIR).join(tail::TMPFILES_NAME)).unwrap(),
         tail::tmpfiles_text(true)
     );
-    // journald's sockets were closed with what they hold, after the wait for
-    // the late unit, and those the decoy had listening opened again: the
-    // last calls before the cursor.
-    let stops: Vec<String> =
-        tail::journal_socket_calls(&["systemd-journald.socket", "systemd-journald-dev-log.socket"])
+    // journald's store went and the /dev/log socket, which the decoy had at
+    // the entry and which no longer listens, was started again, after the
+    // wait for the late unit: the last calls before the cursor. Nothing
+    // stopped journald's socket, which listens.
+    let settle: Vec<String> = std::iter::once(tail::active_sockets_call().join(" "))
+        .chain(
+            tail::journal_socket_calls(
+                &[
+                    "systemd-journald.socket".into(),
+                    "systemd-journald-dev-log.socket".into(),
+                ],
+                &["systemd-journald.socket".into()],
+            )
             .iter()
-            .map(|args| args.join(" "))
-            .collect();
+            .map(|args| args.join(" ")),
+        )
+        .collect();
+    assert_eq!(
+        settle.last().map(String::as_str),
+        Some("start systemd-journald-dev-log.socket")
+    );
     let every_call = fs::read_to_string(&all_calls).unwrap();
     let every_call: Vec<&str> = every_call.lines().collect();
     assert!(
-        every_call.ends_with(&stops.iter().map(String::as_str).collect::<Vec<_>>()),
+        every_call.ends_with(&settle.iter().map(String::as_str).collect::<Vec<_>>()),
         "{every_call:?}"
     );
-    let first_stop = every_call.len() - stops.len();
     assert!(
-        every_call[..first_stop]
+        !every_call
+            .iter()
+            .any(|call| call.starts_with("stop systemd-journald")),
+        "{every_call:?}"
+    );
+    let first_settle = every_call.len() - settle.len();
+    assert!(
+        every_call[..first_settle]
             .iter()
             .any(|call| call.starts_with("list-jobs")),
         "{every_call:?}"
@@ -588,6 +607,8 @@ fn the_session_s_leftovers_end_before_the_scrub_takes_what_their_stop_wrote() {
         proc: world.dir.path().join("fake-proc"),
         sys_dev_block: world.dir.path().join("sys/dev/block"),
         sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
+        journal_holder: 1,
+        journal_run: world.dir.path().join("run-systemd"),
     };
     let pid = leftover(&places.proc, "lngr.service");
     let all_calls = world.dir.path().join("all-calls");
@@ -644,6 +665,8 @@ fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
         proc: world.dir.path().join("fake-proc"),
         sys_dev_block: world.dir.path().join("sys/dev/block"),
         sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
+        journal_holder: 1,
+        journal_run: world.dir.path().join("run-systemd"),
     };
     let pid = leftover_at(&places.proc, 4_194_400, "lngr.service");
     leftover_at(&places.proc, 4_194_401, "systemd-udevd.service");

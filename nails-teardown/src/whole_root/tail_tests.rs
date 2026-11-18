@@ -104,71 +104,84 @@ fn udevd_s_processes_are_left_to_pid_1_and_every_other_leftover_ended() {
     assert_eq!(to_end(&proc, 77), [42, 43, 44, 45, 46]);
 }
 
-#[test]
-fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
-    let world = tempfile::tempdir().unwrap();
-    let calls = world.path().join("calls");
-    // journald's socket and its /dev/log socket were listening, and the
-    // syslog socket is missing.
-    let systemctl = world.path().join("systemctl");
+/// A fake `systemctl` that appends its arguments to `calls`, lists `active`
+/// for `list-units` and fails for `failing` as its second argument.
+fn listing_systemctl(dir: &Path, calls: &Path, active: &str, failing: &str) -> PathBuf {
+    let systemctl = dir.join("systemctl");
     write_executable(
         &systemctl,
         format!(
             "#!/bin/sh\necho \"$*\" >> '{}'\n\
-             if [ \"$1\" = list-units ]; then\n\
-               echo 'systemd-journald-dev-log.socket loaded active running Journal Socket (/dev/log)'\n\
-               echo 'systemd-journald.socket loaded active running Journal Sockets'\n\
-               echo 'systemd-journald@x.socket loaded active running Journal Socket for Namespace x'\n\
-               exit 0\n\
-             fi\n\
-             [ \"$2\" = syslog.socket ] && exit 5\nexit 0\n",
+             if [ \"$1\" = list-units ]; then printf '{active}'; exit 0; fi\n\
+             [ \"$2\" = '{failing}' ] && exit 5\nexit 0\n",
             calls.display()
         ),
         0o755,
     );
+    systemctl
+}
 
-    // A unit the system lacks fails alone; the others still go. Without a
-    // record of the entry, the sockets listening now are opened again.
-    assert_eq!(
-        empty_journal_sockets(&systemctl, None),
-        ["stop syslog.socket"]
+fn units(names: &[&str]) -> Vec<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+#[test]
+fn the_socket_units_are_put_as_the_decoy_had_them_and_no_open_one_is_touched() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    // Now: journald's socket listens, PID 1 closed the /dev/log socket, and
+    // the session started a namespace's socket; the decoy's own namespace
+    // socket listens as it did at the entry.
+    let systemctl = listing_systemctl(
+        world.path(),
+        &calls,
+        "systemd-journald.socket loaded active running Journal Sockets\\n\
+         systemd-journald@x.socket loaded active listening Journal Socket for Namespace x\\n\
+         systemd-journald@y.socket loaded active listening Journal Socket for Namespace y\\n",
+        "none",
     );
+    let decoy = units(&[
+        "systemd-journald.socket",
+        "systemd-journald-dev-log.socket",
+        "systemd-journald@y.socket",
+    ]);
+
+    assert!(settle_journal_sockets(&systemctl, Some(&decoy)).is_empty());
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
         "list-units --plain --no-legend --state=active -- systemd-journald.socket \
-         systemd-journald-dev-log.socket\n\
-         stop systemd-journald.socket\n\
-         stop systemd-journald-dev-log.socket\n\
-         stop systemd-journald-audit.socket\n\
-         stop systemd-journald@*.socket\n\
-         stop syslog.socket\n\
+         systemd-journald-dev-log.socket systemd-journald@*.socket\n\
          reset-failed systemd-journald.service\n\
          clean --what=fdstore systemd-journald.service\n\
-         start systemd-journald.socket\n\
-         start systemd-journald-dev-log.socket\n"
-    );
-    // Without systemctl every call fails, and none opens a socket again.
-    assert_eq!(
-        empty_journal_sockets(&world.path().join("no-systemctl"), None).len(),
-        JOURNAL_SOCKETS.len() + 2
+         stop systemd-journald@x.socket\n\
+         start systemd-journald-dev-log.socket\n",
+        "only the closed socket is started and only the session's stopped"
     );
 
-    // With the entry's record, those the decoy had listening are opened
-    // again, one the hidden root's shutdown closed among them, and nothing
-    // asks which listen now.
+    // Without the entry's record nothing is started or stopped, and nothing
+    // asks which units are active.
     fs::remove_file(&calls).unwrap();
+    assert!(settle_journal_sockets(&systemctl, None).is_empty());
     assert_eq!(
-        empty_journal_sockets(&systemctl, Some(&["systemd-journald-dev-log.socket"])),
-        ["stop syslog.socket"]
+        fs::read_to_string(&calls).unwrap(),
+        "reset-failed systemd-journald.service\n\
+         clean --what=fdstore systemd-journald.service\n"
     );
-    let made = fs::read_to_string(&calls).unwrap();
-    assert!(!made.contains("list-units"), "{made}");
-    assert!(
-        made.ends_with(
-            "clean --what=fdstore systemd-journald.service\n\
-             start systemd-journald-dev-log.socket\n"
-        ),
-        "{made}"
+}
+
+#[test]
+fn without_an_answer_which_units_are_active_none_is_started_or_stopped() {
+    let world = tempfile::tempdir().unwrap();
+    let decoy = units(&["systemd-journald.socket"]);
+    let failed = settle_journal_sockets(&world.path().join("no-systemctl"), Some(&decoy));
+    assert_eq!(
+        failed,
+        [
+            "list-units --plain --no-legend --state=active -- systemd-journald.socket \
+             systemd-journald-dev-log.socket systemd-journald@*.socket",
+            "reset-failed systemd-journald.service",
+            "clean --what=fdstore systemd-journald.service",
+        ]
     );
 }
 
@@ -176,27 +189,28 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
 fn the_entry_keeps_the_sockets_the_decoy_had_listening() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    let systemctl = world.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\n\
-             echo 'systemd-journald.socket loaded active listening Journal Sockets'\n\
-             echo 'systemd-journald-dev-log.socket loaded active listening Journal Socket'\n",
-            calls.display()
-        ),
-        0o755,
+    let systemctl = listing_systemctl(
+        world.path(),
+        &calls,
+        "systemd-journald.socket loaded active listening Journal Sockets\\n\
+         systemd-journald@n.socket loaded active listening Journal Socket\\n\
+         systemd-journald-dev-log.socket loaded active listening Journal Socket\\n",
+        "none",
     );
     let record = world.path().join(SOCKETS_NAME);
     assert!(record_sockets(&systemctl, &record));
     let text = fs::read_to_string(&record).unwrap();
     assert_eq!(
         text,
-        "systemd-journald.socket\nsystemd-journald-dev-log.socket\n"
+        "systemd-journald.socket\nsystemd-journald-dev-log.socket\nsystemd-journald@n.socket\n"
     );
     assert_eq!(
         listed_sockets(&text),
-        ["systemd-journald.socket", "systemd-journald-dev-log.socket"]
+        units(&[
+            "systemd-journald.socket",
+            "systemd-journald-dev-log.socket",
+            "systemd-journald@n.socket"
+        ])
     );
     // Without an answer no record stays, an older one included.
     assert!(!record_sockets(&world.path().join("no-systemctl"), &record));
@@ -204,23 +218,27 @@ fn the_entry_keeps_the_sockets_the_decoy_had_listening() {
 }
 
 #[test]
-fn only_journald_s_own_listed_sockets_are_opened_again() {
+fn only_journald_s_own_and_namespace_sockets_are_listed() {
     assert_eq!(
         listed_sockets(
             "systemd-journald-audit.socket loaded active running Journal Audit Socket\n\
              syslog.socket loaded active listening Syslog Socket\n\
              systemd-journald@ns.socket loaded active listening Journal Socket\n\
+             systemd-journald@*.socket loaded active listening not a unit\n\
+             systemd-journald@.socket loaded active listening not a unit\n\
              \n\
              systemd-journald.socket loaded active running Journal Sockets\n"
         ),
-        ["systemd-journald.socket"],
-        "the audit socket stays closed"
+        units(&["systemd-journald.socket", "systemd-journald@ns.socket"]),
     );
     assert!(listed_sockets("").is_empty());
     assert_eq!(
-        journal_socket_calls(&[]).last().unwrap(),
-        &DROP_STREAMS.to_vec(),
-        "with none listed, none is started"
+        journal_socket_calls(&[], &[]),
+        [
+            vec!["reset-failed".to_string(), JOURNAL_SERVICE.to_string()],
+            DROP_STREAMS.iter().map(|arg| (*arg).to_string()).collect(),
+        ],
+        "with no record, only the store goes"
     );
 }
 
@@ -246,9 +264,168 @@ fn a_store_journald_cannot_give_up_is_reported() {
     // PID 1 refuses to drop the store of a service that is not dead.
     let systemctl = fake_systemctl(world.path(), &calls, "--what=fdstore");
     assert_eq!(
-        empty_journal_sockets(&systemctl, Some(&[])),
+        settle_journal_sockets(&systemctl, None),
         ["clean --what=fdstore systemd-journald.service"]
     );
+}
+
+#[test]
+fn journald_s_unix_sockets_are_found_by_their_paths() {
+    let listing = "Num       RefCount Protocol Flags    Type St Inode Path\n\
+        0000000000000000: 00000002 00000000 00010000 0001 01 101 /run/systemd/journal/stdout\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 102 /run/systemd/journal/socket\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 103 /run/systemd/journal/dev-log\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 104 /run/systemd/journal.ns/socket\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 105 /run/systemd/journald.sock\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 106 /run/systemd/journal.\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 107 /run/systemd/notify\n\
+        0000000000000000: 00000003 00000000 00000000 0001 03 108\n\
+        0000000000000000: 00000002 00000000 00000000 0002 01 109 @/run/systemd/journal/socket\n";
+    assert_eq!(
+        journal_unix_inodes(listing, Path::new("/run/systemd")),
+        [101, 102, 103, 104]
+    );
+}
+
+#[test]
+fn only_an_audit_socket_that_takes_the_records_is_found() {
+    let listing = "sk               Eth Pid        Groups   Rmem     Wmem     Dump  Locks    Drops    Inode\n\
+        0000000000000000 0   1          00000111 0        0        0     2        0        201\n\
+        0000000000000000 9   1          00000000 0        0        0     2        0        202\n\
+        0000000000000000 9   0          00000001 0        0        0     2        0        203\n\
+        0000000000000000 9   4711       00000000 0        0        0     2        0        204\n";
+    assert_eq!(audit_reader_inodes(listing), [203]);
+    assert!(audit_reader_inodes("").is_empty());
+}
+
+/// [`Places`] where this process holds the journal sockets below `run`.
+fn own_sockets(run: &Path) -> Places {
+    Places {
+        proc: PathBuf::from("/proc"),
+        sys_dev_block: PathBuf::from("/nonexistent"),
+        sys_fs_ext4: PathBuf::from("/nonexistent"),
+        journal_holder: std::process::id(),
+        journal_run: run.to_path_buf(),
+    }
+}
+
+#[test]
+fn the_sockets_are_emptied_in_place_through_the_holder_s_descriptors() {
+    use std::io::Write;
+    use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
+    let world = tempfile::tempdir().unwrap();
+    let run = world.path().join("systemd");
+    fs::create_dir_all(run.join("journal")).unwrap();
+    // journald's native socket with three datagrams, its stream socket with
+    // two connections that carry a line each, and a socket elsewhere whose
+    // datagram must stay.
+    let native = UnixDatagram::bind(run.join("journal/socket")).unwrap();
+    let stdout = UnixListener::bind(run.join("journal/stdout")).unwrap();
+    let other = UnixDatagram::bind(world.path().join("other")).unwrap();
+    let client = UnixDatagram::unbound().unwrap();
+    for line in ["one", "two", "three"] {
+        client
+            .send_to(line.as_bytes(), run.join("journal/socket"))
+            .unwrap();
+    }
+    client.send_to(b"keep", world.path().join("other")).unwrap();
+    let mut streams: Vec<UnixStream> = (0..2)
+        .map(|_| UnixStream::connect(run.join("journal/stdout")).unwrap())
+        .collect();
+    for stream in &mut streams {
+        stream.write_all(b"late\nunit\n").unwrap();
+    }
+
+    let drained = drain_journal_sockets(&own_sockets(&run));
+
+    assert_eq!(
+        drained,
+        Drained {
+            sockets: 2,
+            dropped: 5,
+            failed: Vec::new()
+        }
+    );
+    native.set_nonblocking(true).unwrap();
+    stdout.set_nonblocking(true).unwrap();
+    let mut buf = [0_u8; 16];
+    assert_eq!(
+        native.recv(&mut buf).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "the native socket holds nothing"
+    );
+    assert_eq!(
+        stdout.accept().unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock,
+        "no connection waits"
+    );
+    assert_eq!(
+        other.recv(&mut buf).unwrap(),
+        4,
+        "another socket keeps its datagram"
+    );
+    // The same socket, still bound, takes what is sent after.
+    client
+        .send_to(b"after", run.join("journal/socket"))
+        .unwrap();
+    assert_eq!(native.recv(&mut buf).unwrap(), 5);
+}
+
+#[test]
+fn a_connected_stream_is_left_as_it_is() {
+    use std::io::{Read, Write};
+    let (mut ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+    ours.write_all(b"x").unwrap();
+    drop(ours);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    assert_eq!(drain_socket(&theirs, deadline).unwrap(), 0);
+    let mut text = String::new();
+    (&theirs).read_to_string(&mut text).unwrap();
+    assert_eq!(text, "x");
+}
+
+#[test]
+fn a_holder_without_journal_sockets_is_no_failure() {
+    let world = tempfile::tempdir().unwrap();
+    assert_eq!(
+        drain_journal_sockets(&own_sockets(&world.path().join("systemd"))),
+        Drained::default()
+    );
+}
+
+#[test]
+fn what_cannot_be_drained_is_reported() {
+    let world = tempfile::tempdir().unwrap();
+    let proc = world.path().join("proc");
+    // No procfs: the sockets cannot be listed.
+    let mut places = own_sockets(&world.path().join("systemd"));
+    places.proc = proc.clone();
+    let drained = drain_journal_sockets(&places);
+    assert_eq!(drained.sockets, 0);
+    assert!(
+        drained.failed[0].starts_with("unix sockets: "),
+        "{drained:?}"
+    );
+    // A holder that is gone (a number no process can have): its descriptor
+    // of the native socket cannot be taken.
+    places.journal_holder = 4_194_400;
+    let holder = proc.join("4194400");
+    fs::create_dir_all(holder.join("net")).unwrap();
+    fs::create_dir_all(holder.join("fd")).unwrap();
+    fs::write(
+        holder.join("net/unix"),
+        format!(
+            "Num RefCount Protocol Flags Type St Inode Path\n\
+             0: 00000002 00000000 00000000 0002 01 77 {}/journal/socket\n",
+            places.journal_run.display()
+        ),
+    )
+    .unwrap();
+    symlink("socket:[77]", holder.join("fd/5")).unwrap();
+    symlink("socket:[78]", holder.join("fd/6")).unwrap();
+    let drained = drain_journal_sockets(&places);
+    assert_eq!(drained.sockets, 0);
+    assert!(drained.failed[0].starts_with("pidfd: "), "{drained:?}");
 }
 
 #[test]
@@ -285,6 +462,8 @@ fn sys(dir: &Path, dev: &str, name: &str, ext4: bool, interval: &str) -> Places 
         proc: dir.join("proc"),
         sys_dev_block: dir.join("sys/dev/block"),
         sys_fs_ext4: dir.join("sys/fs/ext4"),
+        journal_holder: 1,
+        journal_run: dir.join("run/systemd"),
     };
     fs::create_dir_all(&places.sys_dev_block).unwrap();
     symlink(
