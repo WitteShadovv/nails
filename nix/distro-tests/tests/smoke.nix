@@ -1019,7 +1019,8 @@ distroVm.buildVmTest {
         # After the way back: the decoy's journal holds no record of the
         # hidden session past the kmsg cursor, nor anything the hidden root
         # sent journald's sockets after its journald stopped; the decoy's
-        # start opened none of journald's sockets anew; the plants ran, and
+        # start opened neither journald's socket nor its /dev/log socket
+        # anew; the plants ran, and
         # what the lingering unit's stop wrote to /run is gone. The kernel's
         # lines of a device-mapper volume's teardown are the residue the
         # catalog names (kmsg-import). A line logged now reaches it.

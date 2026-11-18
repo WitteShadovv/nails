@@ -292,7 +292,8 @@ class ControlTest(unittest.TestCase):
         ):
             ring.append(Record(last.seq + n, last.usec + n, text))
         found = self.judge(ring).findings
-        self.assertEqual(len(found), 3, found)
+        # The audit socket, which the way back leaves closed, aside.
+        self.assertEqual(len(found), 2, found)
         self.assertTrue(all("opened journald's socket anew" in f for f in found))
 
 

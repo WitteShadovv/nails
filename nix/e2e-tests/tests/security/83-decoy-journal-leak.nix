@@ -19,8 +19,8 @@
 #     socket. Each proves in the ring buffer that it ran.
 # After the way back none of these is in the live decoy journal, which holds
 # no record of the hidden session past the cursor but the kernel's lines of
-# the hidden LUKS volume's teardown, the decoy's start opened none of
-# journald's sockets anew, the file the lingering unit's stop wrote to /run is
+# the hidden LUKS volume's teardown, the decoy's start opened neither
+# journald's socket nor its /dev/log socket anew, the file the lingering unit's stop wrote to /run is
 # gone, and a carve of the decoy disk image finds
 # none of the tokens in its journal or anywhere on the image. A line logged on
 # the decoy before activation must still be carved from the image (positive

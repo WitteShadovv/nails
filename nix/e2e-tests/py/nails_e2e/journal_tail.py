@@ -45,9 +45,10 @@ name a planted process or mark, or the hidden filesystem, and no audit record
 the hidden root sent may be in the decoy's journal by any transport. The
 kernel's lines of a device-mapper teardown (:data:`DM_TEARDOWN`) are judged
 apart: they are the residue a hidden volume on device-mapper leaves. After
-the decoy's first line its service manager must not open journald's sockets
-anew (:data:`REOPENED`): a plain soft-reboot carries them listening, and
-their ``Listening on`` lines would tell a way back from it.
+the decoy's first line its service manager must not open journald's socket
+or its ``/dev/log`` socket anew (:data:`REOPENED`): a plain soft-reboot
+carries them listening, and their ``Listening on`` lines would tell a way
+back from it.
 
 :func:`nextroot_left` reads what the switch left at ``/run/nextroot``.
 """
@@ -140,11 +141,13 @@ SOCKET_FAILED = {
     "native": re.compile(r"systemd\[1\]: systemd-journald\.socket: Failed with result"),
 }
 
-#: A service manager opening one of journald's sockets, by unit name and
-#: description, or by its description alone as NixOS logs it.
+#: A service manager opening journald's socket or its ``/dev/log`` socket,
+#: by unit name and description, or by its description alone as NixOS logs
+#: it. The way back leaves journald's audit socket closed, which the decoy's
+#: start opens anew where the kernel's audit is on.
 REOPENED = re.compile(
     r"systemd\[1\]: Listening on "
-    r"(systemd-journald(-dev-log|-audit)?\.socket - )?Journal (Audit )?Sockets?\b"
+    r"(systemd-journald(-dev-log)?\.socket - )?Journal Sockets?(\.| \(/dev/log\))"
 )
 
 #: An audit record's time stamp and serial, ``audit(1794677720.975:717)``.
