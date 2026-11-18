@@ -99,6 +99,25 @@ mod tests {
         PathBuf::from("/var/lib/nails/state.json")
     }
 
+    /// A mount table that cannot be read is named as such, never as a state
+    /// file that is missing: status cannot tell then where the machine is.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_is_named() {
+        let error = NailsError::io(
+            nails_teardown::mountinfo::SELF_MOUNTINFO,
+            io::Error::new(io::ErrorKind::NotFound, "no such file"),
+        );
+        assert!(is_mount_table_error(&error));
+        let message = unknown_message(&error, &state_path());
+        assert!(
+            message.starts_with("The mount table could not be read"),
+            "{message}"
+        );
+        assert!(message.contains("/proc/self/mountinfo"), "{message}");
+        let state = NailsError::io(state_path(), io::Error::other("disk on fire"));
+        assert!(!is_mount_table_error(&state));
+    }
+
     #[test]
     fn io_not_found_names_a_missing_state_file() {
         let error = NailsError::io(
