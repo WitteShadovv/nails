@@ -456,6 +456,110 @@ fn no_unit_waiting_to_restart_settles_at_once() {
     assert!(!settle_units(&world.path().join("no-systemctl")));
 }
 
+#[test]
+fn a_mount_unit_is_named_as_systemd_escapes_its_path() {
+    assert_eq!(
+        mount_unit(Path::new("/run/initramfs")),
+        "run-initramfs.mount"
+    );
+    assert_eq!(
+        mount_unit(Path::new("/run//my-disk/./.x/")),
+        "run-my\\x2ddisk-.x.mount"
+    );
+    assert_eq!(mount_unit(Path::new("/.hidden")), "\\x2ehidden.mount");
+    assert_eq!(
+        mount_unit(Path::new("/run/a b\\c")),
+        "run-a\\x20b\\x5cc.mount"
+    );
+    assert_eq!(mount_unit(Path::new("/")), "-.mount");
+}
+
+#[test]
+fn only_a_listed_unit_that_is_not_down_is_still_up() {
+    let listing = "run-a.mount loaded active mounted /run/a\n\
+                   run-b.mount loaded inactive dead /run/b\n\
+                   \u{25cf} run-c.mount not-found failed failed run-c.mount\n\
+                   run-d.mount loaded deactivating unmounting /run/d\n\
+                   run-e.mount loaded active mounted /run/e\n";
+    let units = units(&[
+        "run-a.mount",
+        "run-b.mount",
+        "run-c.mount",
+        "run-d.mount",
+        "run-f.mount",
+    ]);
+    assert_eq!(still_up(listing, &units), ["run-a.mount", "run-d.mount"]);
+    assert!(still_up("", &units).is_empty());
+}
+
+/// A fake `systemctl` that appends its arguments to `calls` and lists the
+/// mount unit `unit` as mounted for the first `up` calls.
+fn mounts_systemctl(dir: &Path, calls: &Path, unit: &str, up: u32) -> PathBuf {
+    let systemctl = dir.join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{calls}'\n\
+             if [ \"$(wc -l < '{calls}')\" -le {up} ]; then\n\
+               echo '{unit} loaded active mounted /x'\n\
+             fi\n",
+            calls = calls.display()
+        ),
+        0o755,
+    );
+    systemctl
+}
+
+#[test]
+fn the_wait_ends_once_pid_1_lists_the_detached_mount_s_unit_down() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", 2);
+    let detached = [PathBuf::from("/run/initramfs")];
+
+    assert!(wait_for_unmounted(&systemctl, &detached, Vec::new));
+    let listing = MOUNT_UNITS.join(" ");
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        format!("{listing}\n{listing}\n{listing}\n")
+    );
+}
+
+#[test]
+fn a_mount_point_still_mounted_or_none_detached_asks_nothing() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", 99);
+    let detached = [PathBuf::from("/run/initramfs")];
+
+    // A mount stacked below the detached one keeps its unit up.
+    assert!(wait_for_unmounted(&systemctl, &detached, || detached.to_vec()));
+    assert!(wait_for_unmounted(&systemctl, &[], Vec::new));
+    assert!(!calls.exists());
+}
+
+#[test]
+fn a_unit_that_stays_up_or_no_answer_lets_the_way_back_go_on() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = mounts_systemctl(world.path(), &calls, "run-initramfs.mount", u32::MAX);
+    let detached = [PathBuf::from("/run/initramfs")];
+
+    let start = Instant::now();
+    assert!(!wait_for_unmounted(&systemctl, &detached, Vec::new));
+    let took = start.elapsed();
+    assert!(took >= UNMOUNTED_BUDGET, "{took:?}");
+    assert!(took < UNMOUNTED_BUDGET + TOOL_BUDGET, "{took:?}");
+    // Without systemctl the wait gives up at once.
+    let start = Instant::now();
+    assert!(!wait_for_unmounted(
+        &world.path().join("no-systemctl"),
+        &detached,
+        Vec::new
+    ));
+    assert!(start.elapsed() < UNMOUNTED_BUDGET, "{:?}", start.elapsed());
+}
+
 /// A fake `/sys` with block device `dev` named `name` and, when `ext4`, an
 /// ext4 filesystem on it with message limits `burst` and `interval`.
 fn sys(dir: &Path, dev: &str, name: &str, ext4: bool, interval: &str) -> Places {

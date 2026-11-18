@@ -707,6 +707,10 @@ program. The last step before the switch:
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
   not log the line, with the volume's UUID, that it logs when the switch
   unmounts the volume;
+- waits, for at most two seconds, until PID 1 has taken down the units of
+  the mounts the `/run` scrub detached (such as the tmpfs NixOS's shutdown
+  mounts at `/run/initramfs`), so that PID 1 logs their end before the
+  cursor;
 - leaves a line for `systemd-tmpfiles` in `/run/tmpfiles.d`, which removes at
   the decoy's start the empty `/run/nextroot` the switch leaves behind, which
   a boot never has, and the line with it;
@@ -876,7 +880,9 @@ journal that starts late:
 The decoy journal imports what the kernel and PID 1 log after the cursor: PID
 1's kill line, with its name, of a process of the session that stays in
 uninterruptible sleep (on a hung network or FUSE mount, say) past the last
-step's bounded wait; the hidden service manager's last lines, which a plain soft-reboot logs too (the
+step's bounded wait; the `Deactivated successfully.` line of a mount unit
+whose mount the scrub detached, where PID 1 takes in the detach only after
+that two-second wait; the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
 ((sd-close))`, and, where the soft-reboot leaves udevd running (as with
