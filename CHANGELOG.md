@@ -1164,12 +1164,15 @@ of this changelog for that version becomes the release notes word for word, and
   place of an `x-systemd.required-by=`). Where only a line with an option NAILS cannot read may
   pull it in, the warning says that the target may require it, and `nails status` does not list
   the mask among the units a target requires.
-- A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect
-  on what its units pull in NAILS does not read, or an option with a backslash, is masked rather
-  than skipped, so a boot target that requires it is not reached, and activation warns of that,
-  naming the option. Options outside systemd's namespaces, such as those of an NFS or CIFS share,
-  keep their skip, and so do options with a quote, such as an SELinux `context=`. An overlay line
-  that gives `upperdir` more than once, or with no value, is kept off.
+- A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
+  what its units pull in NAILS does not read, or an option with a backslash, is masked rather than
+  skipped, so a boot target that requires it is not reached, and activation warns of that, naming
+  the option. A backslash may hide a comma before `noauto` or `nofail`, so that nothing requires the
+  line: for such a line, other than one for `/usr`, the warning says that the target may require
+  it, and `nails status` does not list the mask among the units a target requires. Options outside
+  systemd's namespaces, such as those of an NFS or CIFS share, keep their skip, and so do options
+  with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once,
+  or with no value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the

@@ -326,9 +326,12 @@ Keep all of it `root`-owned on the hidden volume.
      systemd's own (`x-systemd.`, `x-initrd.`) whose effect on what its
      units pull in NAILS does not read, or one with a backslash, is masked
      rather than skipped, and activation warns that the hidden session will
-     not reach the target that requires it. A quote does not change how
-     systemd splits the options, so it keeps the skip. An overlay entry that
-     gives `upperdir` more than once, or with no value, is kept off.
+     not reach the target that requires it. A backslash may hide a comma
+     before `noauto` or `nofail`, so for an entry with one, other than one for
+     `/usr`, the warning says that the target may require it. A quote does
+     not change how systemd splits the options, so it keeps the skip. An
+     overlay entry that gives `upperdir` more than once, or with no value, is
+     kept off.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session
