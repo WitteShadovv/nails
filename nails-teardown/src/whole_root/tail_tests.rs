@@ -84,9 +84,8 @@ fn each_leftover_s_outermost_service_is_named_once() {
 fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     let world = tempfile::tempdir().unwrap();
     let calls = world.path().join("calls");
-    // journald's socket and its /dev/log socket were listening; the audit
-    // socket was not (the kernel's audit is off), and the syslog socket is
-    // missing.
+    // journald's socket and its /dev/log socket were listening, and the
+    // syslog socket is missing.
     let systemctl = world.path().join("systemctl");
     write_executable(
         &systemctl,
@@ -113,7 +112,7 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
         "list-units --plain --no-legend --state=active -- systemd-journald.socket \
-         systemd-journald-dev-log.socket systemd-journald-audit.socket\n\
+         systemd-journald-dev-log.socket\n\
          stop systemd-journald.socket\n\
          stop systemd-journald-dev-log.socket\n\
          stop systemd-journald-audit.socket\n\
@@ -135,7 +134,7 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     // asks which listen now.
     fs::remove_file(&calls).unwrap();
     assert_eq!(
-        empty_journal_sockets(&systemctl, Some(&["systemd-journald-audit.socket"])),
+        empty_journal_sockets(&systemctl, Some(&["systemd-journald-dev-log.socket"])),
         ["stop syslog.socket"]
     );
     let made = fs::read_to_string(&calls).unwrap();
@@ -143,7 +142,7 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     assert!(
         made.ends_with(
             "clean --what=fdstore systemd-journald.service\n\
-             start systemd-journald-audit.socket\n"
+             start systemd-journald-dev-log.socket\n"
         ),
         "{made}"
     );
@@ -190,7 +189,8 @@ fn only_journald_s_own_listed_sockets_are_opened_again() {
              \n\
              systemd-journald.socket loaded active running Journal Sockets\n"
         ),
-        ["systemd-journald.socket", "systemd-journald-audit.socket"]
+        ["systemd-journald.socket"],
+        "the audit socket stays closed"
     );
     assert!(listed_sockets("").is_empty());
     assert_eq!(

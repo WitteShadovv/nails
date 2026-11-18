@@ -25,8 +25,9 @@
 //!   after its own journald stopped, the audit records of its last units'
 //!   stops among it. [`empty_journal_sockets`] stops those socket units and
 //!   drops that store, which discards what they hold, and opens journald's
-//!   own sockets again, empty, so that the decoy's start finds them listening
-//!   as after a plain soft-reboot.
+//!   own two sockets again, empty, so that the decoy's start finds them
+//!   listening as after a plain soft-reboot. The audit socket stays closed
+//!   ([`REOPENED_SOCKETS`]).
 //!
 //! The switch itself leaves `/run/nextroot` behind, an empty folder where the
 //! decoy root was mounted for it, which a boot never has. It is a mount point
@@ -45,8 +46,10 @@
 //! filesystem other than ext4's unmount line, and the kernel's lines of the
 //! hidden mapping's teardown, which the kernel logs as PID 1 starts the
 //! decoy. journald's sockets are new ones, made at the way back, where a
-//! plain soft-reboot keeps those of the boot; and the stream of a process the
-//! soft-reboot leaves running goes with the store ([`drop_journal_streams`]).
+//! plain soft-reboot keeps those of the boot; where the kernel's audit is on,
+//! the decoy's start opens journald's audit socket anew and logs that, which
+//! a plain soft-reboot does not; and the stream of a process the soft-reboot
+//! leaves running goes with the store ([`drop_journal_streams`]).
 //!
 //! Like the rest of the transition, nothing here logs, and every step is
 //! best effort.
@@ -246,14 +249,15 @@ pub const JOURNAL_SOCKETS: [&str; 5] = [
 
 /// The sockets of [`JOURNAL_SOCKETS`] that a plain soft-reboot carries into
 /// the decoy listening, and that the way back opens again once it has
-/// emptied them: journald's own. A namespace's socket (named after a unit of
-/// the session's) and the syslog socket (stopped by the shutdown before the
-/// step) stay closed.
-pub const REOPENED_SOCKETS: [&str; 3] = [
-    "systemd-journald.socket",
-    "systemd-journald-dev-log.socket",
-    "systemd-journald-audit.socket",
-];
+/// emptied them: journald's own two. A namespace's socket (named after a unit
+/// of the session's) and the syslog socket (stopped by the shutdown before
+/// the step) stay closed, and so does the audit socket: from its opening on
+/// it takes every audit record the kernel makes, past the kmsg cursor's
+/// reach, the kernel's record of PID 1 opening it (`EVENT_LISTENER`, with the
+/// hidden root's systemd as `exe=`) and those of the step itself among them.
+/// The decoy's start opens it again, and logs that.
+pub const REOPENED_SOCKETS: [&str; 2] =
+    ["systemd-journald.socket", "systemd-journald-dev-log.socket"];
 
 /// The service whose descriptor store holds journald's standard-output
 /// streams across its stop and the soft-reboot.
