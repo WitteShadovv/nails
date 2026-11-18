@@ -886,10 +886,10 @@ uninterruptible sleep (on a hung network or FUSE mount, say) past the last
 step's bounded wait; the `Deactivated successfully.` line of a mount unit
 whose mount the scrub detached, where PID 1 has not taken the unit down when
 the last step's wait for it ends: after about two seconds, at once when
-`systemctl` gives no answer or for a mount point whose unit the wait cannot
-name (a unit name of 256 characters or more, which PID 1 shortens with a
-hash), and with no wait at all where there
-is no `systemctl`; the hidden service manager's last lines, which a plain soft-reboot logs too (the
+`systemctl` gives no answer, and with no wait at all where there is no
+`systemctl` (the wait asks PID 1 for each unit by the name PID 1 gives it,
+also for a mount point that is not valid UTF-8 or one whose unit name PID 1
+shortens with a hash); the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
 ((sd-close))`, and, where the soft-reboot leaves udevd running (as with
@@ -3135,6 +3135,15 @@ written by another NAILS version). Nothing knows how to return to the decoy
 then: `deactivate` refuses before it asks anything, with exit 6, and a plain
 `emergency` finds no plan either and does nothing. Power off:
 `nails emergency --poweroff`, which needs no plan.
+
+**The mount table cannot be read** (`nails status` reports the place as unknown
+and names `/proc/self/mountinfo`). Without the table NAILS cannot tell the
+hidden session from the decoy, so nothing that needs it goes on: `activate`,
+`deactivate`, `discard` and `recover` refuse, the last step before a switch
+refuses the switch and on the way back powers off first, and `emergency` with a
+session plan powers off at once (`--reboot` reboots). Run the command again
+where `/proc` is mounted and readable. A mount whose path or options hold a
+byte that is not valid UTF-8 is read as any other, and is no such case.
 
 **The switch is refused** (the soft-reboot comes back to the root it left).
 Right before PID 1 switches, NAILS checks the other root's init the way PID 1
