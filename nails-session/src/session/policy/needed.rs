@@ -13,7 +13,7 @@
 
 use super::{Decision, NEVER_MOUNTED, Origin, Present, Units, gate};
 use crate::session::fstab::{
-    FstabEntry, escape_path, holds_a_backslash, may_be_required_by, mount_unit,
+    FstabEntry, holds_a_backslash, may_be_required_by, mount_unit, unit_name,
 };
 use crate::session::mount_units::is_unit_name;
 use nails_base::hidden_root::separation::unread_fstab_options;
@@ -313,7 +313,7 @@ fn pulled_unit(value: &str) -> String {
     let path = Path::new(value);
     if value.starts_with('/') && !path.components().any(|c| c == Component::ParentDir) {
         return if value.starts_with("/dev/") || value.starts_with("/sys/") {
-            format!("{}.device", escape_path(path))
+            unit_name(path, ".device")
         } else {
             mount_unit(path)
         };

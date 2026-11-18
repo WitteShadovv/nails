@@ -352,3 +352,31 @@ fn what_an_option_pulls_in_is_read_unless_it_holds_a_backslash() {
         assert!(!reads_pulls_of(option), "{option}");
     }
 }
+
+/// A mount point with a byte that is not valid UTF-8, raw or escaped, holds
+/// that byte, as systemd reads the line: its units carry the names PID 1
+/// gives them, never those of a path with the byte replaced. A long name is
+/// shortened with its hash, as PID 1 shortens it.
+#[test]
+fn a_mount_point_that_is_not_utf8_names_pid_1_s_units() {
+    use std::os::unix::ffi::OsStrExt;
+    let root = tempfile::tempdir().unwrap();
+    let entries = parse_in_root(
+        b"/dev/sdb1 /srv/a\xff ext4 defaults 0 2\n/dev/sdc1 /srv/b\\377 ext4 defaults 0 2\n",
+        root.path(),
+    );
+    assert_eq!(entries[0].file.as_os_str().as_bytes(), b"/srv/a\xff");
+    assert_eq!(entries[1].file.as_os_str().as_bytes(), b"/srv/b\xff");
+    assert_eq!(mount_unit(&entries[0].file), "srv-a\\xff.mount");
+    assert_eq!(automount_unit(&entries[1].file), "srv-b\\xff.automount");
+    let long = Path::new("/run/nails-unit-probe").join("a".repeat(250));
+    assert_eq!(
+        mount_unit(&long),
+        format!(
+            "run-nails\\x2dunit\\x2dprobe-{}_01599071334b551b.mount",
+            "a".repeat(205)
+        )
+    );
+    assert_eq!(automount_unit(&long).len(), 255);
+    assert!(automount_unit(&long).ends_with(".automount"));
+}

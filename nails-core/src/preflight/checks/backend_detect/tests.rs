@@ -1713,3 +1713,18 @@ fn a_root_on_a_filesystem_the_decoy_uses_is_left_to_the_hidden_volume_check() {
         ))
     );
 }
+
+/// A bcachefs source that is not valid UTF-8 names devices no lookup can
+/// read: it could not be read, never a filesystem on no device.
+#[test]
+fn a_bcachefs_source_that_is_not_utf8_could_not_be_read() {
+    let fs = MockFilesystem::new();
+    let mount = nails_teardown::mountinfo::parse_mountinfo(
+        b"40 1 8:16 / /mnt rw - bcachefs /dev/sdb:/dev/sd\\377 rw\n".as_slice(),
+    )
+    .remove(0);
+    assert_eq!(
+        graph::filesystem_devices(&fs, &mount),
+        Err(mount.source.clone())
+    );
+}

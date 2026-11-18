@@ -11,8 +11,9 @@
 //! it is missing). The target checks that:
 //!
 //! - every line reads the way libmount 2.42 reads it (the model in
-//!   `nails_fuzz::libmount`): the ID NAILS finds in it, and whether it keeps
-//!   the line once a mount with libmount's fields exists;
+//!   `nails_fuzz::libmount`), byte for byte, valid UTF-8 or not: the ID NAILS
+//!   finds in it, and whether it keeps the line once a mount with libmount's
+//!   fields exists;
 //! - the lines kept are input lines, in order, byte for byte, and keeping
 //!   them again keeps them all;
 //! - without a record of the mounts, the way back keeps what a switch keeps;
@@ -27,6 +28,8 @@ use nails_teardown::mountinfo::{MountEntry, parse_mountinfo};
 use nails_teardown::whole_root::utab::{
     initrd_mounts, named_mounts, restored_lines, surviving_lines,
 };
+use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 const NEXTROOT: &str = "/run/nextroot";
@@ -43,12 +46,8 @@ fuzz_target!(|data: &[u8]| {
     let at_back = parse_mountinfo(back_text);
     let nextroot = Path::new(NEXTROOT);
 
-    // The model reads text; a line that is not valid UTF-8 is read by the
-    // checks below only.
     for line in utab.split(|&b| b == b'\n').take(MODEL_LINES) {
-        if let Ok(line) = std::str::from_utf8(line) {
-            read_like_libmount(line, nextroot);
-        }
+        read_like_libmount(line, nextroot);
     }
 
     let kept = surviving_lines(utab, &at_entry, nextroot);
@@ -93,12 +92,13 @@ fuzz_target!(|data: &[u8]| {
 /// One line, alone, against libmount's reading of it: NAILS names the same
 /// ID, and keeps the line exactly when libmount would join it to a mount
 /// with the fields libmount reads.
-fn read_like_libmount(line: &str, nextroot: &Path) {
+fn read_like_libmount(line: &[u8], nextroot: &Path) {
     if !libmount::producible(line) {
         return;
     }
     let model = libmount::parse_utab_line(line);
-    let utab = format!("{line}\n");
+    let mut utab = line.to_vec();
+    utab.push(b'\n');
 
     // Every ID a lenient reader could find, one mount table line each.
     let mut candidates: Vec<i32> = loose_ids(line);
@@ -109,7 +109,7 @@ fn read_like_libmount(line: &str, nextroot: &Path) {
         .iter()
         .map(|id| format!("{id} 1 0:1 / /x rw - t s o\n"))
         .collect();
-    let named: Vec<i32> = parse_mountinfo(&named_mounts(utab.as_bytes(), table.as_bytes()))
+    let named: Vec<i32> = parse_mountinfo(&named_mounts(&utab, table.as_bytes()))
         .iter()
         .map(|mount| mount.mount_id)
         .collect();
@@ -119,7 +119,7 @@ fn read_like_libmount(line: &str, nextroot: &Path) {
     // A mount with libmount's fields, and one with a lenient reading's.
     let mut mounts: Vec<MountEntry> = model.iter().map(|m| mount_for(m, nextroot)).collect();
     mounts.push(mount_for(&loose_fields(line), nextroot));
-    let kept = !surviving_lines(utab.as_bytes(), &mounts, nextroot).is_empty();
+    let kept = !surviving_lines(&utab, &mounts, nextroot).is_empty();
     let joins = model
         .as_ref()
         .is_some_and(|m| m.id > 0 || m.target.is_some());
@@ -127,59 +127,67 @@ fn read_like_libmount(line: &str, nextroot: &Path) {
 }
 
 /// The numbers after each `ID=` in `line`.
-fn loose_ids(line: &str) -> Vec<i32> {
-    line.match_indices("ID=")
+fn loose_ids(line: &[u8]) -> Vec<i32> {
+    line.windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == b"ID=")
         .filter_map(|(at, _)| {
             let rest = &line[at + 3..];
             let len = rest
-                .char_indices()
-                .take_while(|&(i, c)| c.is_ascii_digit() || (i == 0 && matches!(c, '-' | '+')))
+                .iter()
+                .enumerate()
+                .take_while(|&(i, &c)| c.is_ascii_digit() || (i == 0 && matches!(c, b'-' | b'+')))
                 .count();
-            rest[..len].parse().ok()
+            std::str::from_utf8(&rest[..len]).ok()?.parse().ok()
         })
         .collect()
 }
 
 /// The first value of each key, read leniently: split at spaces and tabs,
 /// octal escapes decoded.
-fn loose_fields(line: &str) -> UtabLine {
+fn loose_fields(line: &[u8]) -> UtabLine {
     let mut fields = UtabLine::default();
-    for word in line.split([' ', '\t']) {
-        let value = |key: &str| word.strip_prefix(key).map(decode);
+    for word in line.split(|&b| b == b' ' || b == b'\t') {
+        let value = |key: &[u8]| word.strip_prefix(key).map(decode);
         if fields.id == 0 {
             fields.id = word
-                .strip_prefix("ID=")
-                .and_then(|v| v.parse().ok())
+                .strip_prefix(b"ID=")
+                .and_then(|v| std::str::from_utf8(v).ok()?.parse().ok())
                 .unwrap_or(0);
         }
-        fields.source = fields.source.take().or_else(|| value("SRC="));
-        fields.target = fields.target.take().or_else(|| value("TARGET="));
-        fields.root = fields.root.take().or_else(|| value("ROOT="));
+        fields.source = fields.source.take().or_else(|| value(b"SRC="));
+        fields.target = fields.target.take().or_else(|| value(b"TARGET="));
+        fields.root = fields.root.take().or_else(|| value(b"ROOT="));
     }
     fields
 }
 
-/// Octal escapes (`\040`) decoded.
-fn decode(text: &str) -> String {
-    nails_teardown::mountinfo::unescape_octal(text)
+/// Octal escapes (`\040`) decoded, byte for byte.
+fn decode(text: &[u8]) -> Vec<u8> {
+    nails_teardown::mountinfo::unescape_octal_bytes(text)
+}
+
+/// `bytes` as a path.
+fn path(bytes: &[u8]) -> PathBuf {
+    Path::new(OsStr::from_bytes(bytes)).to_path_buf()
 }
 
 /// A mount that libmount joins a line with `fields` to: by its ID below the
 /// next root, or at its target in the next root, with its source and root.
 fn mount_for(fields: &UtabLine, nextroot: &Path) -> MountEntry {
     let mount_point = match (&fields.target, fields.id > 0) {
-        (Some(target), false) => below(nextroot, Path::new(target)),
+        (Some(target), false) => below(nextroot, &path(target)),
         _ => nextroot.to_path_buf(),
     };
     MountEntry {
         mount_id: fields.id,
         parent_id: 1,
         dev: "0:1".into(),
-        root: PathBuf::from(fields.root.as_deref().unwrap_or("/")),
+        root: path(fields.root.as_deref().unwrap_or(b"/")),
         mount_point,
         mount_opts: "rw".into(),
         fstype: "t".into(),
-        source: PathBuf::from(fields.source.as_deref().unwrap_or("s")),
+        source: path(fields.source.as_deref().unwrap_or(b"s")),
         super_opts: "rw".into(),
     }
 }

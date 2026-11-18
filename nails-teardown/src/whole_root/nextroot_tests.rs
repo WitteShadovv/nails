@@ -576,3 +576,31 @@ fn a_quiet_root_resolves_links_inside_the_tree() {
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 }
+
+/// Without the mount table nothing shows the mounts below the next root are
+/// private: the step fails rather than take an empty table for a done one.
+#[test]
+fn making_mounts_private_without_a_mount_table_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = make_below_private_in(dir.path(), Err(io::Error::other("no proc"))).unwrap_err();
+    assert_eq!(error.to_string(), "no proc");
+    make_below_private_in(dir.path(), Ok(Vec::new())).unwrap();
+}
+
+/// Without the mount table nothing shows that a tree is gone: the path comes
+/// back as still mounted, so the runtime directory is not removed, where a
+/// writable bind of a decoy filesystem may still sit below it.
+#[test]
+fn a_tree_is_never_taken_for_gone_without_a_mount_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let runtime = dir.path().join("runtime");
+    std::fs::create_dir_all(runtime.join("lower")).unwrap();
+    let unread = || -> io::Result<Vec<PathBuf>> { Err(io::Error::other("no proc")) };
+    assert_eq!(detach_tree_with(&runtime, &unread), vec![runtime.clone()]);
+    remove_runtime_dir_with(&runtime, &unread);
+    assert!(runtime.join("lower").exists());
+    let none = || -> io::Result<Vec<PathBuf>> { Ok(Vec::new()) };
+    assert!(detach_tree_with(&runtime, &none).is_empty());
+    remove_runtime_dir_with(&runtime, &none);
+    assert!(!runtime.exists());
+}

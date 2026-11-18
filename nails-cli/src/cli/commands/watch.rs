@@ -307,7 +307,7 @@ pub fn execute(
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     let alert_env = env.clone();
-    let mut table_alerted = false;
+    let mut table_watch = TableWatch::default();
     watcher::run_loop(
         &watch_config,
         // A probe of a covered hidden root writes nothing and is no failure of
@@ -331,24 +331,13 @@ pub fn execute(
             // keeps writable only what the plan names, the stricter end, and
             // the watch sends one alert that it cannot see the disks instead
             // of judging an empty table.
-            let mounts = match nails_teardown::mountinfo::read_mountinfo() {
-                Ok(mounts) => {
-                    table_alerted = false;
-                    Some(mounts)
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Could not read the mount table");
-                    if !table_alerted {
-                        table_alerted = true;
-                        let env = env.clone();
-                        send_all_in_background(
-                            vec![(unread_table_alert(), "mount-table")],
-                            move |alert| send_immediate(alert, &env),
-                        );
-                    }
-                    None
-                }
-            };
+            let (mounts, alert) = table_watch.read(nails_teardown::mountinfo::read_mountinfo());
+            if let Some(alert) = alert {
+                let env = env.clone();
+                send_all_in_background(vec![(alert, "mount-table")], move |alert| {
+                    send_immediate(alert, &env)
+                });
+            }
             if let Some(plan) = &sweep {
                 let set = disk_guard::sweep(
                     plan,
@@ -553,6 +542,36 @@ fn cover_alert(cover: &MountEntry) -> Notification {
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
         created_at: nails_core::time::Timestamp::now().to_rfc3339(),
+    }
+}
+
+/// The watcher's reading of the mount table, round after round: one alert
+/// when it cannot be read, and another only after it could be read again.
+#[derive(Debug, Default)]
+struct TableWatch {
+    /// Whether the alert went out since the table was last read.
+    alerted: bool,
+}
+
+impl TableWatch {
+    /// The table of this round, `None` where `read` failed, and the alert to
+    /// send for it, if any.
+    fn read(
+        &mut self,
+        read: std::io::Result<Vec<MountEntry>>,
+    ) -> (Option<Vec<MountEntry>>, Option<Notification>) {
+        match read {
+            Ok(mounts) => {
+                self.alerted = false;
+                (Some(mounts), None)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Could not read the mount table");
+                let alert = (!self.alerted).then(unread_table_alert);
+                self.alerted = true;
+                (None, alert)
+            }
+        }
     }
 }
 

@@ -250,10 +250,11 @@ impl Rehearsal {
         Self { config }
     }
 
-    /// The live hidden session this runs in, from the live mount table and plan;
-    /// `None` outside one.
-    fn live_session(&self) -> Option<LiveSession> {
-        live_session_of(crate::session::probe(
+    /// The live hidden session this runs in, from the live mount table and
+    /// plan, `None` outside one; a failure where the mount table cannot be
+    /// read.
+    fn live_session(&self) -> Result<Option<LiveSession>, RehearseFailure> {
+        live_session_or_refuse(crate::session::probe(
             &crate::session::Paths::system(),
             &self.config.hidden_volume_root,
         ))
@@ -269,7 +270,7 @@ impl Rehearsal {
         let state = self
             .load()
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "rehearse_state", e))?;
-        let here = Here::read(self.live_session());
+        let here = Here::read(self.live_session()?);
         Ok(StatusOutcome {
             rehearsal: state.as_ref().map(|state| RehearsalView::of(state, &here)),
             here,
@@ -319,7 +320,7 @@ impl Rehearsal {
                 )));
             }
         }
-        let Some(session) = self.live_session() else {
+        let Some(session) = self.live_session().map_err(PlantError::Fail)? else {
             return Err(PlantError::Fail(RehearseFailure::new(
                 ExitStatus::InvalidState,
                 "not_active",
@@ -418,7 +419,7 @@ impl Rehearsal {
         let (token, state) = self
             .scan_token(options)
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "no_token", e))?;
-        let here = Here::read(self.live_session());
+        let here = Here::read(self.live_session()?);
         if refuses_same_session(
             state.as_ref(),
             &here,
@@ -486,7 +487,7 @@ impl Rehearsal {
 
     /// Remove the rehearsal from the hidden volume.
     pub fn reset(&self) -> Result<ResetOutcome, RehearseFailure> {
-        if self.live_session().is_some() {
+        if self.live_session()?.is_some() {
             return Err(RehearseFailure::new(
                 ExitStatus::InvalidState,
                 "active",
@@ -587,7 +588,7 @@ impl Rehearsal {
                 .map(|device| ScanTarget::classified(&RealFilesystem, device.clone(), &mounts))
                 .collect());
         }
-        let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
+        let swaps = swaps_at(Path::new(PROC_SWAPS))?;
         let root = &self.config.hidden_volume_root;
         let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
         Ok(rehearse::default_scan_targets(
@@ -596,6 +597,25 @@ impl Rehearsal {
             &hidden,
             nails_teardown::loop_device::backing_filesystem,
         ))
+    }
+}
+
+/// The kernel's list of the swaps in use.
+const PROC_SWAPS: &str = "/proc/swaps";
+
+/// The list of swaps in use at `path` (`/proc/swaps`), byte for byte: a swap
+/// file's name need not be UTF-8, and one such name must not hide the swap
+/// partitions a default scan reads. A list that is not there names no swap;
+/// one that is there but cannot be read fails the scan, which could not tell
+/// every device it should read.
+fn swaps_at(path: &Path) -> Result<Vec<u8>, String> {
+    match std::fs::read(path) {
+        Ok(swaps) => Ok(swaps),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!(
+            "cannot read {}, so the swap partitions a scan reads cannot be told: {error}",
+            path.display()
+        )),
     }
 }
 
@@ -620,6 +640,26 @@ fn covered_root(mounts: &[MountEntry], root: &Path) -> Option<RehearseFailure> {
         refusal.code(),
         format!("{} {}", refusal.message(), refusal.hint(None).join(" ")),
     ))
+}
+
+/// [`live_session_of`] the probe's `view`, or the failure of a step that
+/// cannot tell whether it runs in a hidden session, as the mount table could
+/// not be read: a scan could run unrefused in the planting session, a reset
+/// under a mounted overlay, and a plant or status take the hidden session for
+/// the decoy.
+fn live_session_or_refuse(
+    view: std::io::Result<SessionView>,
+) -> Result<Option<LiveSession>, RehearseFailure> {
+    view.map(live_session_of).map_err(|error| {
+        RehearseFailure::new(
+            ExitStatus::Failed,
+            "mount_table",
+            format!(
+                "cannot read the mount table ({error}), so whether a hidden session is active \
+                 cannot be told"
+            ),
+        )
+    })
 }
 
 /// The live hidden session in `view`, `None` outside one. A hidden root whose

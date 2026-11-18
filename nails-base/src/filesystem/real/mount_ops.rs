@@ -77,6 +77,9 @@ pub(super) fn mount_source(mount_point: &Path) -> Result<Option<MountSource>> {
         return Ok(None);
     };
 
+    // Shown only, and searched for words that hint at hidden storage, which
+    // are ASCII: replacing a byte that is not valid UTF-8 makes no word appear
+    // or go.
     let device = entry.source.to_string_lossy().into_owned();
     let dm_name = dm_name_for(&entry.source);
     let label = udev::label_of(
@@ -96,12 +99,15 @@ pub(super) fn mount_source(mount_point: &Path) -> Result<Option<MountSource>> {
 /// The device-mapper name behind a mount source, if it is a dm device.
 ///
 /// `/dev/mapper/<name>` already carries the name; `/dev/dm-N` is resolved
-/// through `/sys/block/dm-N/dm/name`. Anything else is not a dm device.
+/// through `/sys/block/dm-N/dm/name`. Anything else is not a dm device. A
+/// name that is not valid UTF-8 is given with such bytes replaced: it is
+/// shown and searched for ASCII words only, which the replacement leaves as
+/// they are.
 fn dm_name_for(source: &Path) -> Option<String> {
-    let name = source.file_name()?.to_str()?;
     if source.starts_with("/dev/mapper") {
-        return Some(name.to_string());
+        return Some(source.file_name()?.to_string_lossy().into_owned());
     }
+    let name = source.file_name()?.to_str()?;
     if name.starts_with("dm-") && name[3..].chars().all(|c| c.is_ascii_digit()) {
         let dm_name =
             std::fs::read_to_string(Path::new(SYS_BLOCK).join(name).join("dm/name")).ok()?;
@@ -176,6 +182,15 @@ mod tests {
         assert_eq!(
             dm_name_for(Path::new("/dev/mapper/veracrypt-hidden")),
             Some("veracrypt-hidden".to_string())
+        );
+        // A name that is not valid UTF-8 keeps every word the hint check
+        // looks for.
+        use std::os::unix::ffi::OsStrExt;
+        assert_eq!(
+            dm_name_for(Path::new(std::ffi::OsStr::from_bytes(
+                b"/dev/mapper/hidden\xff"
+            ))),
+            Some("hidden\u{fffd}".to_string())
         );
     }
 

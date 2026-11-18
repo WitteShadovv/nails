@@ -76,12 +76,21 @@ pub enum Reset {
     NotSetUp,
     /// It holds no swap area, or its first page cannot be read.
     NoSwapArea,
+    /// The list of swaps in use cannot be read, so whether a swap uses it
+    /// cannot be told: it is left alone.
+    Untold,
 }
 
 /// Reset each zram device that holds a swap area no swap uses (see the module
 /// docs), and say what became of each zram device, by name, in name order.
 pub fn reset_idle_swaps(places: &Places) -> Vec<(String, Reset)> {
-    let in_use = std::fs::read_to_string(&places.swaps).unwrap_or_default();
+    // Read as bytes: a swap file's name need not be UTF-8. A list that is not
+    // there names no swap; one that cannot be read names none in use either.
+    let in_use = match std::fs::read(&places.swaps) {
+        Ok(in_use) => Some(in_use),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Vec::new()),
+        Err(_) => None,
+    };
     let mut devices: Vec<String> = std::fs::read_dir(&places.sys_block)
         .map(|dir| {
             dir.flatten()
@@ -94,7 +103,7 @@ pub fn reset_idle_swaps(places: &Places) -> Vec<(String, Reset)> {
     devices
         .into_iter()
         .map(|name| {
-            let reset = reset_one(places, &name, &in_use);
+            let reset = reset_one(places, &name, in_use.as_deref());
             (name, reset)
         })
         .collect()
@@ -106,14 +115,17 @@ fn is_zram(name: &str) -> bool {
         .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
-/// [`reset_idle_swaps`] for the device `name`, with `in_use` the text of the
-/// swaps list.
-fn reset_one(places: &Places, name: &str, in_use: &str) -> Reset {
+/// [`reset_idle_swaps`] for the device `name`, with `in_use` the swaps list,
+/// or `None` where it cannot be read.
+fn reset_one(places: &Places, name: &str, in_use: Option<&[u8]>) -> Reset {
     let sys = places.sys_block.join(name);
     let set_up = std::fs::read_to_string(sys.join("initstate")).is_ok_and(|s| s.trim() == "1");
     if !set_up {
         return Reset::NotSetUp;
     }
+    let Some(in_use) = in_use else {
+        return Reset::Untold;
+    };
     let node = places.dev.join(name);
     if swaps_use(in_use, &node, name) {
         return Reset::InUse;
@@ -129,13 +141,17 @@ fn reset_one(places: &Places, name: &str, in_use: &str) -> Reset {
 
 /// Whether the swaps list `in_use` (`/proc/swaps`) names the device `name`,
 /// whose node is `node`.
-fn swaps_use(in_use: &str, node: &Path, name: &str) -> bool {
+fn swaps_use(in_use: &[u8], node: &Path, name: &str) -> bool {
     let real = Path::new("/dev").join(name);
     in_use
-        .lines()
+        .split(|&b| b == b'\n')
         .skip(1)
-        .filter_map(|line| line.split_whitespace().next())
-        .any(|path| Path::new(path) == node || Path::new(path) == real)
+        .filter_map(|line| {
+            line.split(|b| matches!(b, b' ' | b'\t'))
+                .find(|field| !field.is_empty())
+        })
+        .map(crate::mountinfo::unescape_octal_path)
+        .any(|path| path == node || path == real)
 }
 
 /// Whether the device at `node` holds a swap area: [`SWAP_SIGNATURE`] ends

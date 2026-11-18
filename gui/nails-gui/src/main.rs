@@ -143,14 +143,13 @@ fn main() -> ExitCode {
         eprintln!("The window could not open: it could not limit itself: {error}");
         return ExitCode::FAILURE;
     }
-    // The window's own reading, which needs no helper: in a hidden session
-    // its Emergency control shows from the start.
-    let in_hidden_session = match (&engine, mountinfo.as_deref()) {
-        (Some(engine), Ok(mountinfo)) => engine
-            .parent()
-            .is_some_and(|root| launch::root_is_hidden_overlay(mountinfo, root)),
-        _ => false,
-    };
+    // The window's own reading, which needs no helper: in a hidden session,
+    // and where the mount table could not be read, its Emergency control
+    // shows from the start.
+    let in_hidden_session = launch::emergency_from_start(
+        engine.as_deref(),
+        mountinfo.as_deref().map_err(String::as_str),
+    );
     match open(connect, engine, in_hidden_session) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

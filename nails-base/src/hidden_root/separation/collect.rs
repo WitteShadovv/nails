@@ -228,8 +228,24 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         .chain(
             mounts
                 .iter()
-                .map(|m| m.source.to_string_lossy().into_owned()),
-        );
+                .filter_map(|m| m.source.to_str().map(str::to_string)),
+        )
+        .collect::<Vec<String>>();
+    // A source that is not valid UTF-8 text cannot be looked up as a name,
+    // and no lookup may rest on a replaced byte. Where the mount's number
+    // shows no device (btrfs gives an anonymous one), a source that would
+    // name one is unreadable, as one whose link cannot be resolved is.
+    // Whether it would is told by its first bytes (`/dev/`, `UUID=`, ...),
+    // which the replacement of other bytes leaves as they are.
+    for mount in mounts {
+        if mount.source.to_str().is_none()
+            && !devices.by_dev.contains_key(&mount.dev)
+            && crate::fstab::spec_device(&mount.source.to_string_lossy()).is_some()
+            && !collected.unreadable.contains(&mount.source)
+        {
+            collected.unreadable.push(mount.source.clone());
+        }
+    }
     // A name whose link or device cannot be resolved may lead to the hidden
     // root's device: it is unreadable, never a name of no device.
     for spec in specs {

@@ -76,6 +76,18 @@ fn escapes_in_the_mount_table_are_undone() {
     assert_eq!(unescape_octal(b"\\777"), b"\\777");
 }
 
+/// The engine mounts each layer with the overlay syntax's own escapes before
+/// a `,`, `:` or `\`, which the kernel prints octal-escaped once more: a
+/// hidden root at such a path is read as the engine reads it.
+#[test]
+fn the_overlay_s_own_escapes_are_undone_too() {
+    let table = "1 0 0:40 / / rw - overlay overlay \
+                 rw,upperdir=/mnt/a\\134\\054b\\134:c\\134\\134d/root/upper\n";
+    assert!(root_is_hidden_overlay(table, Path::new("/mnt/a,b:c\\d")));
+    assert!(!root_is_hidden_overlay(table, Path::new("/mnt/a\\,b")));
+    assert_eq!(unescape_overlay(b"a\\,b\\:c\\\\d\\"), b"a,b:c\\d\\");
+}
+
 /// A mount whose path is not valid UTF-8, anywhere in the table, failed the
 /// read before, and the window refused in the hidden session: the table is
 /// read byte for byte, and an upper with such a byte is matched exactly.
@@ -360,4 +372,19 @@ fn pkexec_is_looked_for_by_its_set_user_id_path_only() {
         .collect();
     let first = su.first().expect("a set-user-ID su");
     assert_eq!(find_pkexec_in(&[&missing, first]), Ok(first.to_path_buf()));
+}
+
+/// The Emergency control shows from the start in a hidden session, and where
+/// the mount table could not be read, which leaves that untold.
+#[test]
+fn the_emergency_shows_from_the_start_where_the_table_cannot_be_read() {
+    let engine = PathBuf::from("/mnt/data/nails");
+    assert!(emergency_from_start(Some(&engine), Ok(HIDDEN.as_bytes())));
+    assert!(!emergency_from_start(Some(&engine), Ok(DECOY.as_bytes())));
+    assert!(!emergency_from_start(None, Ok(HIDDEN.as_bytes())));
+    assert!(emergency_from_start(
+        Some(&engine),
+        Err("Permission denied")
+    ));
+    assert!(emergency_from_start(None, Err("Permission denied")));
 }

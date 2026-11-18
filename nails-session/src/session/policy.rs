@@ -142,9 +142,8 @@
 //! do in that session ([`kept_below_warning`]).
 
 use super::fstab::{
-    FstabEntry, automount_unit, boot_target, checkers, escape_path, holds_a_backslash,
-    may_be_required_by, mount_unit, option_named, reads_pulls_of, required_by, swap_unit,
-    waits_for,
+    FstabEntry, automount_unit, boot_target, checkers, holds_a_backslash, may_be_required_by,
+    mount_unit, option_named, reads_pulls_of, required_by, swap_unit, unit_name, waits_for,
 };
 use nails_base::hidden_root::separation::unread_fstab_options;
 use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts};
@@ -170,7 +169,7 @@ pub fn device_present(device: &Path) -> bool {
     if !device.exists() {
         return false;
     }
-    let unit = format!("{}.device", escape_path(device));
+    let unit = unit_name(device, ".device");
     tools::find(None, "systemctl")
         .and_then(|systemctl| {
             tools::run_output(

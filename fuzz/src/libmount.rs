@@ -11,14 +11,15 @@
 //! One deliberate difference, documented by NAILS: an `ID=` beyond `int`
 //! skips the line here, where libmount would cut it short to another number.
 
-/// The fields of a utab line, values decoded.
+/// The fields of a utab line, values decoded byte for byte: libmount reads
+/// bytes, valid UTF-8 or not.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UtabLine {
     /// The mount ID; 0 for none.
     pub id: i32,
-    pub source: Option<String>,
-    pub target: Option<String>,
-    pub root: Option<String>,
+    pub source: Option<Vec<u8>>,
+    pub target: Option<Vec<u8>>,
+    pub root: Option<Vec<u8>>,
 }
 
 /// Whether libmount can have written `line`. Its `mangle()` writes a space, a
@@ -28,8 +29,8 @@ pub struct UtabLine {
 /// and the two decoders need not agree on it. This takes the escape of any
 /// byte up to a space, of DEL and of the backslash for one: a superset of
 /// what `mangle()` writes, which only compares the decoders on more lines.
-pub fn producible(line: &str) -> bool {
-    let bytes = line.as_bytes();
+pub fn producible(line: &[u8]) -> bool {
+    let bytes = line;
     let mut at = 0;
     while at < bytes.len() {
         if bytes[at] != b'\\' {
@@ -100,7 +101,7 @@ fn number(s: &[u8], start: usize) -> Number {
 /// `unmangle()`: the value from `start` to the next space or tab, octal
 /// escapes decoded; `None` for an empty value, which libmount takes for an
 /// allocation failure and so skips the line.
-fn unmangle(s: &[u8], start: usize) -> Option<(String, usize)> {
+fn unmangle(s: &[u8], start: usize) -> Option<(Vec<u8>, usize)> {
     let len = s[start..]
         .iter()
         .position(|&b| b == b' ' || b == b'\t')
@@ -125,15 +126,15 @@ fn unmangle(s: &[u8], start: usize) -> Option<(String, usize)> {
             at += 1;
         }
     }
-    Some((String::from_utf8_lossy(&out).into_owned(), start + len))
+    Some((out, start + len))
 }
 
 /// The line as libmount reads it, or `None` for one it skips: a blank line,
 /// a comment, or a line `mnt_parse_utab_line` fails on.
-pub fn parse_utab_line(line: &str) -> Option<UtabLine> {
-    let line = line.strip_suffix('\r').unwrap_or(line);
-    let first = line.bytes().position(|b| b != b' ' && b != b'\t')?;
-    let s = &line.as_bytes()[first..];
+pub fn parse_utab_line(line: &[u8]) -> Option<UtabLine> {
+    let line = line.strip_suffix(b"\r").unwrap_or(line);
+    let first = line.iter().position(|&b| b != b' ' && b != b'\t')?;
+    let s = &line[first..];
     if s[0] == b'#' {
         return None;
     }

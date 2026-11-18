@@ -18,12 +18,14 @@
 //!
 //! A path that leads to no block device, or a journal on a device sysfs does
 //! not list, is [`Extra::NotFound`]; an input that cannot be read is
-//! [`Extra::Unreadable`].
+//! [`Extra::Unreadable`], and so is a path that is not valid UTF-8 text: the
+//! names of devices are looked up as text, and no lookup may rest on a
+//! replaced byte.
 
 use super::{DeviceMap, Extra};
 use crate::Filesystem;
 use crate::blockdev;
-use crate::filesystem::mountinfo::{MountEntry, unescape_octal};
+use crate::filesystem::mountinfo::{MountEntry, path_from_bytes, unescape_octal_bytes};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -69,8 +71,14 @@ pub(super) fn extra_devices<F: Filesystem>(
     extra
 }
 
-/// The devices `paths` name, by kernel name; none for no path.
-fn named<F: Filesystem>(fs: &F, paths: Vec<String>) -> Option<Extra> {
+/// The devices `paths` name, by kernel name, or the path that is not valid
+/// UTF-8 text, which no lookup reads ([`Extra::Unreadable`]); none for no
+/// path.
+fn named<F: Filesystem>(fs: &F, paths: Result<Vec<String>, PathBuf>) -> Option<Extra> {
+    let paths = match paths {
+        Ok(paths) => paths,
+        Err(path) => return Some(Extra::Unreadable(path)),
+    };
     if paths.is_empty() {
         return None;
     }
@@ -87,8 +95,9 @@ fn named<F: Filesystem>(fs: &F, paths: Vec<String>) -> Option<Extra> {
 }
 
 /// The paths of an XFS filesystem's log and realtime devices, as its options
-/// name them.
-fn xfs_devices(mount: &MountEntry) -> Vec<String> {
+/// name them, byte for byte once the kernel's octal escapes are undone, or
+/// the first that is not valid UTF-8 text.
+fn xfs_devices(mount: &MountEntry) -> Result<Vec<String>, PathBuf> {
     mount
         .super_opts
         .split(',')
@@ -97,22 +106,28 @@ fn xfs_devices(mount: &MountEntry) -> Vec<String> {
                 .strip_prefix("logdev=")
                 .or_else(|| option.strip_prefix("rtdev="))
         })
-        .map(unescape_octal)
+        .map(|value| {
+            String::from_utf8(unescape_octal_bytes(value))
+                .map_err(|not_text| path_from_bytes(not_text.into_bytes()))
+        })
         .collect()
 }
 
 /// The paths of the devices of a bcachefs filesystem of several, as its
-/// source names them; none for one of one device.
-fn bcachefs_devices(mount: &MountEntry) -> Vec<String> {
-    let source = mount.source.to_string_lossy();
+/// source names them, or the source when it is not valid UTF-8 text; none
+/// for one of one device.
+fn bcachefs_devices(mount: &MountEntry) -> Result<Vec<String>, PathBuf> {
+    let Some(source) = mount.source.to_str() else {
+        return Err(mount.source.clone());
+    };
     if !source.contains(':') {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    source
+    Ok(source
         .split(':')
         .filter(|path| !path.is_empty())
         .map(str::to_string)
-        .collect()
+        .collect())
 }
 
 /// The journals jbd2 lists, by name.

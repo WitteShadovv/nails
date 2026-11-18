@@ -316,3 +316,35 @@ fn a_tag_names_the_link_udev_makes() {
         assert_eq!(spec_device(spec), Some(PathBuf::from(device)), "{spec}");
     }
 }
+
+/// The mount point is a path: its escapes are undone byte for byte, as
+/// libmount undoes them, so a byte that is not valid UTF-8 is the byte, never
+/// a replacement character nor the escape's text. A text field keeps such a
+/// byte as its escape.
+#[test]
+fn a_mount_point_s_escapes_give_its_bytes() {
+    use std::os::unix::ffi::OsStrExt;
+    let entries = parse_fstab("/dev/sd\\377 /mnt/a\\377b ext4 defaults 0 2\n");
+    assert_eq!(entries[0].file.as_os_str().as_bytes(), b"/mnt/a\xffb");
+    assert_eq!(entries[0].spec, "/dev/sd\\377");
+    assert_eq!(escape_path(&entries[0].file), "mnt-a\\xffb");
+}
+
+/// A unit name of 256 characters or more is shortened with its hash, as PID
+/// 1 shortens it (the names PID 1 gave on systemd 255).
+#[test]
+fn a_long_unit_name_is_hashed_as_pid_1_hashes_it() {
+    let path = format!("/run/nails-unit-probe/{}", "a".repeat(250));
+    assert_eq!(
+        unit_name(Path::new(&path), ".mount"),
+        format!(
+            "run-nails\\x2dunit\\x2dprobe-{}_01599071334b551b.mount",
+            "a".repeat(205)
+        )
+    );
+    let short = format!("/run/nails-unit-probe/{}", "c".repeat(222));
+    assert_eq!(
+        unit_name(Path::new(&short), ".mount"),
+        format!("run-nails\\x2dunit\\x2dprobe-{}.mount", "c".repeat(222))
+    );
+}

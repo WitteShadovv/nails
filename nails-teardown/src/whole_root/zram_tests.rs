@@ -89,6 +89,32 @@ fn a_zram_swap_in_use_is_left_alone() {
     assert!(!fake.was_reset("zram0"));
 }
 
+/// A swap file whose name is not valid UTF-8 failed the list read as text,
+/// which then named no swap in use: the list is read as bytes, and one that
+/// cannot be read leaves every device alone.
+#[test]
+fn a_zram_swap_in_use_beside_a_swap_file_that_is_not_utf8_is_left_alone() {
+    let fake = Fake::new();
+    fake.device("zram0", "1\n", Some(&Fake::swap_area(2)));
+    let swaps = fake.root.path().join("proc/swaps");
+    let mut text = fs::read(&swaps).unwrap();
+    text.extend_from_slice(b"/swap\xff file 10 0 -3\n/dev/zram0 partition 3031036 0 100\n");
+    fs::write(&swaps, text).unwrap();
+    assert_eq!(
+        reset_idle_swaps(&fake.places()),
+        [("zram0".to_string(), Reset::InUse)]
+    );
+    assert!(!fake.was_reset("zram0"));
+
+    fs::remove_file(&swaps).unwrap();
+    fs::create_dir(&swaps).unwrap();
+    assert_eq!(
+        reset_idle_swaps(&fake.places()),
+        [("zram0".to_string(), Reset::Untold)]
+    );
+    assert!(!fake.was_reset("zram0"));
+}
+
 #[test]
 fn a_zram_device_without_a_swap_area_is_left_alone() {
     // One never set up, one that holds a filesystem's first page, one whose

@@ -93,6 +93,18 @@ pub enum Prepared {
     Proceed(Box<ReadyActivation>),
 }
 
+/// What the live view stops an activation with before anything is written:
+/// a hidden session that runs already, and a mount table that cannot be
+/// read, without which neither side can be told, as a gate that cannot be
+/// evaluated ([`Prepared::AttachError`]). `None` on the decoy.
+fn stopped_by_view(view: crate::Result<crate::session::SessionView>) -> Option<Prepared> {
+    match view {
+        Ok(view) if view.is_hidden() => Some(Prepared::AlreadyActive),
+        Ok(_) => None,
+        Err(error) => Some(Prepared::AttachError(error)),
+    }
+}
+
 /// Where the attach gate found an activation's hidden root, for what the
 /// activation may claim to have left alone. Only a root it raised no warning
 /// about is storage of its own; on any other the activation's writes may land
@@ -347,12 +359,8 @@ pub fn prepare(
         super::engine::build_nixos_manager(config, state_path, options.overlay_only, env);
     manager.set_verbosity(verbosity);
 
-    // Without the mount table neither side can be told: refused before
-    // anything is written, as a gate that cannot be evaluated is.
-    match manager.session_view() {
-        Ok(view) if view.is_hidden() => return Prepared::AlreadyActive,
-        Ok(_) => {}
-        Err(error) => return Prepared::AttachError(error),
+    if let Some(stop) = stopped_by_view(manager.session_view()) {
+        return stop;
     }
 
     // The platform gate: a host NAILS refuses is declined here, before the state
@@ -430,6 +438,31 @@ mod tests {
             accepted,
             warning,
         }
+    }
+
+    /// A mount table that cannot be read stops the activation before
+    /// anything is written, as an attach gate that cannot be evaluated: it
+    /// is never taken for the decoy.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_stops_the_activation() {
+        let unread = NailsError::io(
+            nails_teardown::mountinfo::SELF_MOUNTINFO,
+            std::io::Error::other("no proc"),
+        );
+        match stopped_by_view(Err(unread)) {
+            Some(Prepared::AttachError(NailsError::IoError { path, .. })) => {
+                assert_eq!(path, Path::new(nails_teardown::mountinfo::SELF_MOUNTINFO));
+            }
+            Some(_) => panic!("stopped otherwise"),
+            None => panic!("taken for the decoy"),
+        }
+        assert!(stopped_by_view(Ok(crate::session::SessionView::Decoy)).is_none());
+        assert!(matches!(
+            stopped_by_view(Ok(crate::session::SessionView::HiddenWithoutPlan(
+                "no plan".to_string()
+            ))),
+            Some(Prepared::AlreadyActive)
+        ));
     }
 
     #[test]

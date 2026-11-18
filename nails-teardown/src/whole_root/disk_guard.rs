@@ -216,9 +216,13 @@ impl Sysfs {
 }
 
 /// The devices the session must keep writable: what backs the decoy root, the
-/// hidden backend, and every mount of the session's own storage below the
-/// hidden root ([`Plan::is_hidden_storage`]) or at a policy target, with
-/// everything they are stacked on and the disks below.
+/// hidden backend, the device the plan records for the hidden volume
+/// ([`Plan::hidden_dev`], when it is a block device's number and the root
+/// is a volume of its own), and every
+/// mount of the session's own storage below the hidden root
+/// ([`Plan::is_hidden_storage`]) or at a policy target, with everything they
+/// are stacked on and the disks below. The plan's own devices are kept so
+/// whatever `mounts` shows, an empty table too.
 pub fn protected(plan: &Plan, mounts: &[MountEntry], sys: &Sysfs) -> BTreeSet<DevNum> {
     let policy: Vec<&Path> = plan
         .policy_mounts
@@ -232,6 +236,15 @@ pub fn protected(plan: &Plan, mounts: &[MountEntry], sys: &Sysfs) -> BTreeSet<De
         .filter_map(mount_device)
         .collect();
     seeds.extend(block_device(&plan.decoy_root.source));
+    // The hidden volume's own device, which a root accepted on decoy storage
+    // does not have: the device it records is the decoy's.
+    seeds.extend(
+        plan.hidden_dev
+            .as_deref()
+            .filter(|_| plan.accepted_decoy_storage.is_none())
+            .and_then(DevNum::parse)
+            .filter(|dev| dev.major != 0),
+    );
     seeds.extend(
         plan.backend
             .iter()
@@ -497,6 +510,34 @@ mod tests {
         // A disk mounted elsewhere, and a sibling partition, are not.
         assert!(!protected.contains(&dev("8:32")));
         assert!(!protected.contains(&dev("8:2")));
+    }
+
+    /// The hidden volume the plan records is kept writable whatever the mount
+    /// table shows: where it cannot be read, an empty one would leave a plain
+    /// partition as the volume to be set read-only under the live session. A
+    /// device recorded for a root accepted on decoy storage is the decoy's.
+    #[test]
+    fn the_recorded_hidden_volume_is_protected_without_a_mount_table() {
+        let (_dir, sys) = sysfs();
+        let mut plan = sample();
+        plan.hidden_root = PathBuf::from("/mnt/data");
+        plan.hidden_dev = Some("8:17".to_string());
+        plan.decoy_root.source = PathBuf::from("/nonexistent/root");
+        plan.backend = Vec::new();
+        plan.policy_mounts = Vec::new();
+        let protected_now = protected(&plan, &[], &sys);
+        for want in ["8:17", "8:16"] {
+            assert!(
+                protected_now.contains(&dev(want)),
+                "{want}: {protected_now:?}"
+            );
+        }
+        assert!(!protected_now.contains(&dev("8:32")));
+        plan.accepted_decoy_storage = Some("the root is a folder of /".to_string());
+        assert!(protected(&plan, &[], &sys).is_empty());
+        plan.accepted_decoy_storage = None;
+        plan.hidden_dev = Some("0:45".to_string());
+        assert!(protected(&plan, &[], &sys).is_empty());
     }
 
     #[test]

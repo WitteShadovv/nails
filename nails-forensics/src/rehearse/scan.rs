@@ -217,7 +217,7 @@ fn push_target(
 /// shows.
 pub fn default_scan_targets(
     mounts: &[MountEntry],
-    swaps: &str,
+    swaps: &(impl AsRef<[u8]> + ?Sized),
     hidden_root: &Path,
     loop_file: LoopFile,
 ) -> Vec<ScanTarget> {
@@ -269,10 +269,16 @@ pub fn default_scan_targets(
             });
         }
     }
-    for line in swaps.lines().skip(1) {
-        let mut fields = line.split_whitespace();
-        if let (Some(device), Some("partition")) = (fields.next(), fields.next()) {
-            push_target(&mut targets, Path::new(device), None, None);
+    // Read as bytes: the kernel gives a swap file's name as it is, which need
+    // not be UTF-8, and one such name must not hide the partitions listed
+    // beside it. A name's space, tab, newline and backslash come escaped.
+    for line in swaps.as_ref().split(|&b| b == b'\n').skip(1) {
+        let mut fields = line
+            .split(|b| matches!(b, b' ' | b'\t'))
+            .filter(|field| !field.is_empty());
+        if let (Some(device), Some(b"partition")) = (fields.next(), fields.next()) {
+            let device = nails_teardown::mountinfo::unescape_octal_path(device);
+            push_target(&mut targets, &device, None, None);
         }
     }
     targets

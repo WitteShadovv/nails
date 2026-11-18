@@ -267,7 +267,8 @@ impl FstabEntry {
     }
 }
 
-/// Decode fstab's octal escapes (`\040` for a space).
+/// Decode fstab's octal escapes (`\040` for a space) in a field read as
+/// text: a byte that is not valid UTF-8 stays written as its escape.
 fn unescape(field: &str) -> String {
     crate::filesystem::mountinfo::unescape_octal(field)
 }
@@ -289,7 +290,8 @@ pub fn parse_fstab_lines(text: &str) -> Vec<(FstabEntry, &str)> {
         .filter_map(|line| {
             let mut fields = line.split_whitespace();
             let spec = unescape(fields.next()?);
-            let file = PathBuf::from(unescape(fields.next()?));
+            // The mount point is a path: its escapes are undone byte for byte.
+            let file = crate::filesystem::mountinfo::unescape_octal_path(fields.next()?);
             let vfstype = fields.next().unwrap_or("auto").to_string();
             let options = fields
                 .next()
@@ -382,37 +384,10 @@ fn encode_devnode_name(value: &str) -> String {
     out
 }
 
-/// systemd's path escaping (`systemd-escape --path`): the name a unit for
-/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). The path is first
-/// simplified as systemd's `path_simplify()` does: repeated slashes and `.`
-/// components go, and so does `..` at the start of an absolute path, which
-/// cannot climb above `/` (`/mnt/./data/` is `mnt-data`). A single file name
-/// escapes as an instance name does (`vg-root` is `vg\x2droot`).
-pub fn escape_path(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    let absolute = text.starts_with('/');
-    let mut kept: Vec<&str> = Vec::new();
-    for component in text.split('/').filter(|c| !c.is_empty() && *c != ".") {
-        if absolute && kept.is_empty() && component == ".." {
-            continue;
-        }
-        kept.push(component);
-    }
-    if kept.is_empty() {
-        return "-".to_string();
-    }
-    let joined = kept.join("/");
-    let mut out = String::new();
-    for (i, byte) in joined.bytes().enumerate() {
-        match byte {
-            b'/' => out.push('-'),
-            b'.' if i == 0 => out.push_str("\\x2e"),
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => out.push(byte as char),
-            other => out.push_str(&format!("\\x{other:02x}")),
-        }
-    }
-    out
-}
+/// systemd's path escaping (`systemd-escape --path`), byte for byte, and the
+/// unit name PID 1 makes from it, a long one shortened with a hash as PID 1
+/// shortens it: one namer for the teardown's wait and the session policy.
+pub use nails_teardown::whole_root::unit_name::{escape_path, unit_name};
 
 #[cfg(test)]
 #[path = "fstab_tests.rs"]

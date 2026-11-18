@@ -724,3 +724,19 @@ fn a_reminder_round_trips_through_json() {
     let back: OpSecReminder = serde_json::from_str(&json).unwrap();
     assert_eq!(back, reminder);
 }
+
+/// A mount table that cannot be read fails the report, which names the
+/// table: an empty one would show a hidden session as the decoy.
+#[test]
+fn a_mount_table_that_cannot_be_read_fails_the_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = command(dir.path())
+        .run_on(Err(std::io::Error::other("no proc")))
+        .unwrap_err();
+    assert!(crate::app::status::is_mount_table_error(&error), "{error}");
+    assert!(
+        command(dir.path())
+            .run_on(Ok(parse_mountinfo("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n")))
+            .is_ok()
+    );
+}

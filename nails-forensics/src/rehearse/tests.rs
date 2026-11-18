@@ -454,6 +454,24 @@ fn classified_matches_a_device_to_its_entry_by_canonical_path() {
     );
 }
 
+/// A swap file whose name is not valid UTF-8 failed the whole list read as
+/// text, and with it every swap partition: the list is read as bytes.
+#[test]
+fn a_swap_file_whose_name_is_not_utf8_hides_no_swap_partition() {
+    let swaps: &[u8] = b"Filename\tType\tSize\tUsed\tPriority\n\
+        /swap\xff file 10 0 -3\n/dev/sdc2 partition 1024 0 -2\n/dev/sd\\134x partition 1 0 -4\n";
+    let targets = default_scan_targets(&mounts(), swaps, Path::new("/mnt/data"), no_loop);
+    assert_eq!(
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
+        vec![
+            PathBuf::from("/dev/sda1"),
+            PathBuf::from("/dev/sdb1"),
+            PathBuf::from("/dev/sdc2"),
+            PathBuf::from("/dev/sd\\x"),
+        ]
+    );
+}
+
 #[test]
 fn an_ntfs_or_fuseblk_mount_is_a_blind_spot_and_each_target_keeps_its_type() {
     // A USB stick under ntfs3 and one under ntfs-3g, which FUSE shows as

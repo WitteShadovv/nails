@@ -37,7 +37,7 @@ mod lines;
 pub use lines::{Field, Unlike, entry_lines};
 pub use nails_base::fstab::{
     FstabEntry, any_named, escape_path, is_bind_option, is_host_share_type, is_virtual_type,
-    option_named, parse_fstab, spec_device,
+    option_named, parse_fstab, spec_device, unit_name,
 };
 
 /// The `/etc/fstab` of the root at `root`, read as that root resolves it
@@ -90,7 +90,10 @@ pub fn parse_in_root_guarded(
     guard: Option<super::mount_units::Guard<'_>>,
 ) -> Vec<FstabEntry> {
     use crate::filesystem::automount::Lookup;
-    let mut entries = parse_fstab(&String::from_utf8_lossy(text));
+    // A byte that is not valid UTF-8 is kept as its octal escape, never
+    // replaced: the mount point then holds the byte itself, as systemd reads
+    // it, and a text field the escape.
+    let mut entries = parse_fstab(&nails_teardown::mountinfo::escaped_text(text));
     for entry in &mut entries {
         // A relative mount point (swap's `none`) comes back as it is.
         let asked = match guard {
@@ -109,20 +112,21 @@ pub fn parse_in_root_guarded(
     entries
 }
 
-/// The `.mount` unit for a mount point.
+/// The `.mount` unit for a mount point, as PID 1 names it ([`unit_name`]).
 pub fn mount_unit(path: &Path) -> String {
-    format!("{}.mount", escape_path(path))
+    unit_name(path, ".mount")
 }
 
-/// The `.automount` unit for a mount point.
+/// The `.automount` unit for a mount point, as PID 1 names it.
 pub fn automount_unit(path: &Path) -> String {
-    format!("{}.automount", escape_path(path))
+    unit_name(path, ".automount")
 }
 
-/// The `.swap` unit for a swap spec, when it names a device or file.
+/// The `.swap` unit for a swap spec, when it names a device or file, as PID 1
+/// names it.
 pub fn swap_unit(spec: &str) -> Option<String> {
     let path = spec_device(spec).or_else(|| spec.starts_with('/').then(|| PathBuf::from(spec)))?;
-    Some(format!("{}.swap", escape_path(&path)))
+    Some(unit_name(&path, ".swap"))
 }
 
 /// The mount options that turn on quota for a filesystem, for which systemd's

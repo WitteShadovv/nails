@@ -92,8 +92,18 @@ impl std::error::Error for ReturnError {}
 /// mounted there. A mount table that cannot be read fails it before
 /// anything is mounted: what is at `nextroot` already could not be told.
 pub fn mount_decoy_root(plan: &mut Plan, nextroot: &Path, run: &Path) -> Result<(), ReturnError> {
-    let live = read_mountinfo()
-        .map_err(|e| ReturnError::Mount(format!("could not read the mount table: {e}")))?;
+    mount_decoy_root_on(plan, nextroot, run, read_mountinfo())
+}
+
+/// [`mount_decoy_root`], with `live` the mount table as it was read.
+fn mount_decoy_root_on(
+    plan: &mut Plan,
+    nextroot: &Path,
+    run: &Path,
+    live: std::io::Result<Vec<crate::mountinfo::MountEntry>>,
+) -> Result<(), ReturnError> {
+    let live =
+        live.map_err(|e| ReturnError::Mount(format!("could not read the mount table: {e}")))?;
     if nextroot::is_mount_point(&live, nextroot) {
         nextroot::detach_tree(nextroot);
     }
@@ -242,6 +252,29 @@ mod tests {
         assert!(!in_hidden_root(&other, &plan));
         let decoy = parse_mountinfo("30 1 8:2 / / rw - ext4 /dev/vda2 rw\n");
         assert!(!in_hidden_root(&decoy, &plan));
+    }
+
+    /// A mount table that cannot be read fails the way back's mount of the
+    /// decoy root before anything is made or mounted at the next root: what
+    /// is there already could not be told.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_mounts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let nextroot = dir.path().join("nextroot");
+        let mut plan = sample();
+        let error = mount_decoy_root_on(
+            &mut plan,
+            &nextroot,
+            dir.path(),
+            Err(std::io::Error::other("no proc")),
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("could not read the mount table"),
+            "{error}"
+        );
+        assert!(!nextroot.exists());
+        assert_eq!(plan, sample());
     }
 
     #[test]

@@ -698,3 +698,56 @@ mod kernel_tests {
         });
     }
 }
+
+/// Without the mount table a step cannot tell whether it runs in a hidden
+/// session: it fails, rather than take the session for the decoy, where a
+/// scan in the planting session would run unrefused and a reset would change
+/// the uppers under a mounted overlay.
+#[test]
+fn a_mount_table_that_cannot_be_read_fails_the_step() {
+    let failure = live_session_or_refuse(Err(std::io::Error::other("no proc")))
+        .expect_err("an unread table is a failure");
+    assert_eq!(failure.code, "mount_table");
+    assert_eq!(failure.exit, ExitStatus::Failed);
+    assert!(failure.message.contains("no proc"), "{}", failure.message);
+    assert_eq!(
+        live_session_or_refuse(Ok(SessionView::Decoy))
+            .map_err(|e| e.message)
+            .unwrap(),
+        None
+    );
+}
+
+/// The list of swaps is read byte for byte: a swap file whose name is not
+/// UTF-8 hides no swap partition from a default scan. A list that is not
+/// there names no swap; one that cannot be read fails the scan.
+#[test]
+fn the_swaps_list_is_read_as_bytes_and_an_unread_one_fails_the_scan() {
+    let dir = tempfile::tempdir().unwrap();
+    let swaps = dir.path().join("swaps");
+    let text: &[u8] = b"Filename\tType\tSize\tUsed\tPriority\n\
+        /swap\xff file 10 0 -3\n/dev/sdc2 partition 1024 0 -2\n";
+    std::fs::write(&swaps, text).unwrap();
+    let read = swaps_at(&swaps).unwrap();
+    assert_eq!(read, text);
+    let mounts =
+        crate::filesystem::mountinfo::parse_mountinfo("1 0 8:1 / / rw - ext4 /dev/sda1 rw\n");
+    let targets = rehearse::default_scan_targets(
+        &mounts,
+        &read,
+        Path::new("/mnt/data"),
+        nails_teardown::loop_device::backing_filesystem,
+    );
+    assert!(
+        targets
+            .iter()
+            .any(|target| target.device == Path::new("/dev/sdc2")),
+        "{targets:?}"
+    );
+    assert_eq!(
+        swaps_at(&dir.path().join("none")).unwrap(),
+        Vec::<u8>::new()
+    );
+    let error = swaps_at(dir.path()).unwrap_err();
+    assert!(error.contains("cannot read"), "{error}");
+}

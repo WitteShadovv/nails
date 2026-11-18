@@ -716,6 +716,31 @@ fn a_mapper_source_whose_devices_cannot_be_listed_says_where() {
     assert_eq!(device_of_mount(&sysfs.0, &mount), None);
 }
 
+/// A source in `/dev` whose name is not valid UTF-8 (a device-mapper name
+/// may hold any byte but `/`) is looked up by no name: it is a place that
+/// could not be read, never a mount on no device. One outside `/dev` names
+/// none.
+#[test]
+fn a_dev_source_that_is_not_utf8_could_not_be_read() {
+    use std::os::unix::ffi::OsStrExt;
+    let sysfs = Sysfs::new();
+    sysfs
+        .device(DM4, "dm-4", "253:4")
+        .file(DM4, "dm/name", "data")
+        .links("/sys", "block", &[("dm-4", DM4)]);
+    let mount =
+        parse_mountinfo(b"40 1 0:45 / /mnt/data rw - btrfs /dev/mapper/d\\377 rw\n".as_slice())
+            .remove(0);
+    assert_eq!(
+        device_of_mount_or_unread(&sysfs.0, &mount),
+        Err(PathBuf::from(std::ffi::OsStr::from_bytes(
+            b"/dev/mapper/d\xff"
+        )))
+    );
+    let tmpfs = parse_mountinfo(b"41 1 0:46 / /run/a rw - tmpfs t\\377 rw\n".as_slice()).remove(0);
+    assert_eq!(device_of_mount_or_unread(&sysfs.0, &tmpfs), Ok(None));
+}
+
 #[test]
 fn a_cascade_classifies_its_veracrypt_and_subdev_layers() {
     let sysfs = Sysfs::new();

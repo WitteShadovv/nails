@@ -89,3 +89,29 @@ fn siphash24_gives_the_reference_value() {
     assert_eq!(siphash24(&message, &key), 0xa129_ca61_49be_45e5);
     assert_eq!(siphash24(&[], &key), 0x726f_db47_dd0e_0e31);
 }
+
+/// Every unit type takes the same escape and the same hash of a long name,
+/// with its own suffix; a hashed name is told as one that may be hashed, a
+/// shorter one is not.
+#[test]
+fn a_long_name_is_hashed_with_its_own_suffix() {
+    let path = Path::new("/run/nails-unit-probe").join("a".repeat(250));
+    assert_eq!(unit_name(&path, ".mount"), mount_unit(&path));
+    for suffix in [".mount", ".automount", ".swap", ".device"] {
+        let name = unit_name(&path, suffix);
+        assert_eq!(name.len(), UNIT_NAME_MAX - 1, "{name}");
+        assert!(name.ends_with(suffix), "{name}");
+        assert!(
+            name.starts_with("run-nails\\x2dunit\\x2dprobe-aaaa"),
+            "{name}"
+        );
+        assert!(may_be_hashed(&name), "{name}");
+    }
+    let short = Path::new("/run/nails-unit-probe").join("c".repeat(222));
+    assert!(!may_be_hashed(&mount_unit(&short)));
+    assert!(!may_be_hashed("x_0123456789abcdef.mount"));
+    assert_eq!(
+        escape_path(Path::new(OsStr::from_bytes(b"/../mnt/./a\xff"))),
+        "mnt-a\\xff"
+    );
+}
