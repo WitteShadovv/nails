@@ -674,17 +674,20 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
             origin: Origin::Needed {
                 lines: vec!["/data/tmp".into()],
                 may: false,
+                by_path: true,
             },
         })
     );
+    // The tmpfs requires the mount only as that of its parent directory,
+    // which systemd 260.5 does not hold up for a masked mount.
     let warning = absent[0].warning().expect("a warning");
     assert_eq!(
         warning,
         "/data is masked rather than skipped, as its device /dev/vdb1 is not there: the hidden \
-         session will not reach local-fs.target, which requires it, and the units only that \
-         target pulls in will not start there. Attach the device before activating, or give \
-         the fstab entry for /data/tmp the nofail option (x-systemd.wanted-by= in place of an \
-         x-systemd.required-by= it gives)"
+         session may not reach local-fs.target, which requires a line that needs it only as the \
+         mount for a path, and the units only that target pulls in may not start there. Attach \
+         the device before activating, or give the fstab entry for /data/tmp the nofail option \
+         (x-systemd.wanted-by= in place of an x-systemd.required-by= it gives)"
     );
 
     for fstab in [
@@ -763,6 +766,7 @@ fn a_noauto_line_is_judged_by_every_line_that_needs_it() {
             origin: Origin::Needed {
                 lines: vec!["/p/r1/b".into()],
                 may: false,
+                by_path: true,
             },
         })
     );
@@ -825,10 +829,11 @@ fn the_warning_for_a_needed_noauto_line_names_the_lines_that_hold_it_up() {
     assert_eq!(
         absent[0].warning().expect("a warning"),
         "/d/n is masked rather than skipped, as its device /dev/vdz4 is not there: the hidden \
-         session will not reach foo.service and local-fs.target, which require it, and the units \
-         only those targets pull in will not start there. Attach the device before activating, \
-         or give the fstab entries for /d/n/a and /d/n/b the nofail option \
-         (x-systemd.wanted-by= in place of an x-systemd.required-by= they give)"
+         session may not reach foo.service and local-fs.target, which require a line that needs \
+         it only as the mount for a path, and the units only those targets pull in may not start \
+         there. Attach the device before activating, or give the fstab entries for /d/n/a and \
+         /d/n/b the nofail option (x-systemd.wanted-by= in place of an x-systemd.required-by= \
+         they give)"
     );
 }
 
@@ -857,6 +862,7 @@ fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached(
             origin: Origin::Needed {
                 lines: vec!["/w/t2".into()],
                 may: true,
+                by_path: false,
             },
         })
     );
@@ -872,16 +878,17 @@ fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached(
     assert!(kept.masks.contains(&"w-a.mount".to_string()), "{kept:?}");
     assert_eq!(kept.required_masks, [], "{kept:?}");
 
-    // Where a line NAILS reads requires it too, the target requires it: the
-    // warning says so, names that line alone, and the mask is recorded.
+    // Where a line NAILS reads requires it too, by name, the target requires
+    // it: the warning says so, names that line alone, and the mask is
+    // recorded.
     let sure = "/dev/vdw1 /w/a ext4 noauto 0 0\n\
                 tmpfs /w/t2 tmpfs comment=foo\\040bar 0 0\n\
-                tmpfs /w/a/t3 tmpfs defaults 0 0\n";
+                tmpfs /w/t3 tmpfs x-systemd.requires=/w/a 0 0\n";
     let absent = decide_fstab(sure, false);
     let warning = absent[0].warning().expect("a warning");
     assert!(
         warning.contains("will not reach local-fs.target, which requires it")
-            && warning.contains("the fstab entry for /w/a/t3 the nofail"),
+            && warning.contains("the fstab entry for /w/t3 the nofail"),
         "{warning}"
     );
     let kept = runtime_units(&parse_fstab(sure), &absent);
@@ -913,6 +920,7 @@ fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached(
         Some(&Origin::Needed {
             lines: vec!["/t".into()],
             may: false,
+            by_path: false,
         })
     );
 }
@@ -1206,6 +1214,7 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_skipped_or_warned_of() {
                 origin: Origin::Needed {
                     lines: vec![tmp.clone().into()],
                     may: true,
+                    by_path: false,
                 },
             }),
             "{fstab}"
@@ -1291,6 +1300,7 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_one_a_target_may_require() {
                 origin: Origin::Needed {
                     lines: vec!["/data/tmp".into()],
                     may: true,
+                    by_path: false,
                 },
             }),
             "{below}"

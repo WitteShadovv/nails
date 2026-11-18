@@ -344,3 +344,53 @@ fn a_noauto_line_s_unit_a_target_links_is_decided_as_before() {
         "{kept:?}"
     );
 }
+
+/// A tmpfs mount unit outside the fstab, linked into local-fs.target.requires,
+/// that requires the mount of the noauto line [`PULLED_LINE`] only as the mount
+/// for a path: `RequiresMountsFor=` a path in it, or its mount point below it.
+/// systemd 260.5 started such a unit without the masked mount and reached
+/// local-fs.target. Its disk there, the mount is skipped as for `Requires=`;
+/// without it, the mount stays masked with a warning that the target may not
+/// be reached, and nothing is recorded.
+#[test]
+fn a_noauto_line_a_unit_requires_only_for_a_path_may_leave_its_target_reached() {
+    for (name, unit) in [
+        (
+            "r-t9.mount",
+            "[Unit]\nRequiresMountsFor=/r/a/x\n[Mount]\nWhat=tmpfs\nWhere=/r/t9\nType=tmpfs\n",
+        ),
+        (
+            "r-a-t.mount",
+            "[Mount]\nWhat=tmpfs\nWhere=/r/a/t\nType=tmpfs\n",
+        ),
+    ] {
+        let decoy = Decoy::new();
+        decoy.write(&format!("/etc/systemd/system/{name}"), unit);
+        decoy.link(
+            &format!("/etc/systemd/system/local-fs.target.requires/{name}"),
+            &format!("../{name}"),
+        );
+        let (_, kept, warnings) = kept(&decoy, PULLED_LINE);
+        assert!(
+            kept.skips.iter().any(|skip| skip.units == ["r-a.mount"]),
+            "{name}: {kept:?}"
+        );
+        assert!(warnings.is_empty(), "{name}: {warnings:?}");
+
+        let (_, kept, warnings) = kept_with(&decoy, PULLED_LINE, false);
+        assert!(
+            kept.masks.iter().any(|mask| mask == "r-a.mount"),
+            "{name}: {kept:?}"
+        );
+        assert!(kept.required_masks.is_empty(), "{name}: {kept:?}");
+        assert_eq!(warnings.len(), 1, "{name}: {warnings:?}");
+        for part in [
+            "r-a.mount is masked rather than skipped, as its device /dev/vdy1 is not there",
+            &format!("{name}, which local-fs.target requires, requires r-a.mount"),
+            "only as the mount for a path, so the hidden session may not reach local-fs.target",
+        ] {
+            assert!(warnings[0].contains(part), "{name}: {part}: {warnings:?}");
+        }
+        assert!(!warnings[0].contains("will not"), "{name}: {warnings:?}");
+    }
+}

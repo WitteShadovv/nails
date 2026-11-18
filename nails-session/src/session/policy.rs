@@ -230,9 +230,10 @@ pub enum Decision {
         masked: Vec<String>,
         /// Why they must not start.
         reason: Cow<'static, str>,
-        /// Whether NAILS only reads that a boot target may require them
-        /// ([`Origin::Needed`] with `may`): where another decision masks
-        /// them, the mask is not recorded as a required one
+        /// Whether NAILS only reads that a boot target may require them, or
+        /// that it requires them only as the mount for a path
+        /// ([`Origin::Needed`] with `may` or `by_path`): where another
+        /// decision masks them, the mask is not recorded as a required one
         /// ([`runtime_units`]).
         may: bool,
     },
@@ -357,6 +358,14 @@ pub enum Origin {
         /// a backslash: the warning says so, and the mask is not recorded as
         /// a required one.
         may: bool,
+        /// Whether the lines that need the mount require it only as the
+        /// mount for a path in it (a mount point below it, a source, a swap
+        /// file, `x-systemd.requires-mounts-for=`), not by name
+        /// (`x-systemd.requires=`): systemd 260.5 started a line below a
+        /// masked mount, or naming it in `x-systemd.requires-mounts-for=`,
+        /// without the mount, so the warning says the target may not be
+        /// reached, and the mask is not recorded as a required one.
+        by_path: bool,
     },
 }
 
@@ -549,6 +558,11 @@ impl Decision {
                 "{boot} may require it, and where {they}, the hidden session will not reach {}, \
                  and the units only {those} in will not start there",
                 if several { "them" } else { "it" }
+            )
+        } else if matches!(origin, Origin::Needed { by_path: true, .. }) {
+            format!(
+                "the hidden session may not reach {boot}, which {require} a line that needs it \
+                 only as the mount for a path, and the units only {those} in may not start there"
             )
         } else {
             format!(

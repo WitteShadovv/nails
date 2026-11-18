@@ -350,7 +350,13 @@ Keep all of it `root`-owned on the hidden volume.
      `x-systemd.requires=` or `x-systemd.wants=`, as systemd has that entry's
      unit require or want the `noauto` mount. Every such entry counts, and
      where a boot target requires one, or may, the `noauto` mount is
-     skipped, or masked with a warning where its device is not there.
+     skipped, or masked with a warning where its device is not there. The
+     warning says that the target will not be reached where an entry names the
+     mount with `x-systemd.requires=`, and that it may not be reached where the
+     entries require it only as the mount for a path (a mount point below it, a
+     source, `x-systemd.requires-mounts-for=`): systemd 260.5 started a tmpfs
+     below a masked mount, and one naming it with
+     `x-systemd.requires-mounts-for=`, without the mount.
      `nofail` with any value counts as `nofail`. An entry kept off that gives
      an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
      what its units pull in NAILS does not read, or one with a backslash, is
