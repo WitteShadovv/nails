@@ -223,7 +223,11 @@ effect on what its units pull in the session does not read, or an option with
 a backslash: what such an option pulls in, NAILS cannot tell, and a skip would
 leave it free to start. A quote alone keeps the skip, as systemd reads the
 options of such an entry as NAILS does. A boot target that requires such an
-entry is then not reached, and activation warns of that, naming the option.
+entry is then not reached, and activation warns of that, naming the option. A
+backslash may hide a comma before `noauto` or `nofail`, so that nothing
+requires the entry: for such an entry, other than one for `/usr`, the warning
+says that the target may require it, and `nails status` does not list the mask
+among the units a target requires.
 The session reads the units and paths `x-systemd.requires=`,
 `x-systemd.wants=`, `x-systemd.requires-mounts-for=`,
 `x-systemd.wants-mounts-for=`, `x-systemd.wanted-by=` and
