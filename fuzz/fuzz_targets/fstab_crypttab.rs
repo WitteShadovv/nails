@@ -18,7 +18,8 @@
 //!   gives its `.mount` and `.automount` units: an automount skipped with its
 //!   mount masked;
 //! - a skip waits for a device only while that device is there, and a mask
-//!   that leaves a boot target unreached names a device that is not;
+//!   that leaves a boot target unreached, or may, names a device that is not
+//!   there, or is of a line with an option NAILS does not read;
 //! - an entry bound or overlaid in the next root has a plain absolute path;
 //! - an entry whose plain absolute mount point lies at or below the hidden
 //!   root is refused, whatever its type and options, a `noauto`, automount or
@@ -244,14 +245,14 @@ fn read_alike(line: &[u8]) {
 fn check(entry: &FstabEntry, decision: &Decision, there: bool) {
     match decision {
         Decision::Mask { unreached, .. } => {
-            // A mask leaves a target unreached only for a device not there,
-            // or for a line with an option NAILS does not read.
+            // A mask leaves a target unreached, or may, only for a device
+            // not there, or for a line with an option NAILS does not read.
             if let Some(unreached) = unreached {
                 match unreached.cause {
                     Unskippable::NoDevice(_) => {
                         assert!(!there, "{entry:?}: {unreached:?} with every device there");
                     }
-                    Unskippable::Unread => assert!(
+                    Unskippable::Unread | Unskippable::MayRequire => assert!(
                         !unread_fstab_options(entry).is_empty(),
                         "{entry:?}: {unreached:?}"
                     ),
