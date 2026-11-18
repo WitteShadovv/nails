@@ -104,8 +104,12 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
         0o755,
     );
 
-    // A unit the system lacks fails alone; the others still go.
-    assert_eq!(empty_journal_sockets(&systemctl), ["stop syslog.socket"]);
+    // A unit the system lacks fails alone; the others still go. Without a
+    // record of the entry, the sockets listening now are opened again.
+    assert_eq!(
+        empty_journal_sockets(&systemctl, None),
+        ["stop syslog.socket"]
+    );
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
         "list-units --plain --no-legend --state=active -- systemd-journald.socket \
@@ -122,9 +126,58 @@ fn the_journal_sockets_are_emptied_and_those_open_before_opened_again() {
     );
     // Without systemctl every call fails, and none opens a socket again.
     assert_eq!(
-        empty_journal_sockets(&world.path().join("no-systemctl")).len(),
+        empty_journal_sockets(&world.path().join("no-systemctl"), None).len(),
         JOURNAL_SOCKETS.len() + 2
     );
+
+    // With the entry's record, those the decoy had listening are opened
+    // again, one the hidden root's shutdown closed among them, and nothing
+    // asks which listen now.
+    fs::remove_file(&calls).unwrap();
+    assert_eq!(
+        empty_journal_sockets(&systemctl, Some(&["systemd-journald-audit.socket"])),
+        ["stop syslog.socket"]
+    );
+    let made = fs::read_to_string(&calls).unwrap();
+    assert!(!made.contains("list-units"), "{made}");
+    assert!(
+        made.ends_with(
+            "clean --what=fdstore systemd-journald.service\n\
+             start systemd-journald-audit.socket\n"
+        ),
+        "{made}"
+    );
+}
+
+#[test]
+fn the_entry_keeps_the_sockets_the_decoy_had_listening() {
+    let world = tempfile::tempdir().unwrap();
+    let calls = world.path().join("calls");
+    let systemctl = world.path().join("systemctl");
+    write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\n\
+             echo 'systemd-journald.socket loaded active listening Journal Sockets'\n\
+             echo 'systemd-journald-dev-log.socket loaded active listening Journal Socket'\n",
+            calls.display()
+        ),
+        0o755,
+    );
+    let record = world.path().join(SOCKETS_NAME);
+    assert!(record_sockets(&systemctl, &record));
+    let text = fs::read_to_string(&record).unwrap();
+    assert_eq!(
+        text,
+        "systemd-journald.socket\nsystemd-journald-dev-log.socket\n"
+    );
+    assert_eq!(
+        listed_sockets(&text),
+        ["systemd-journald.socket", "systemd-journald-dev-log.socket"]
+    );
+    // Without an answer no record stays, an older one included.
+    assert!(!record_sockets(&world.path().join("no-systemctl"), &record));
+    assert!(!record.exists());
 }
 
 #[test]
@@ -169,7 +222,7 @@ fn a_store_journald_cannot_give_up_is_reported() {
     // PID 1 refuses to drop the store of a service that is not dead.
     let systemctl = fake_systemctl(world.path(), &calls, "--what=fdstore");
     assert_eq!(
-        empty_journal_sockets(&systemctl),
+        empty_journal_sockets(&systemctl, Some(&[])),
         ["clean --what=fdstore systemd-journald.service"]
     );
 }

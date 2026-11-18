@@ -635,8 +635,9 @@ program. The last step before the switch:
   streams, which discards what the hidden root sent journald after its own
   journald stopped (the audit records of its last units' stops, the lines a
   unit that stops after journald logs), then starts journald's own sockets
-  again, empty, so the decoy finds them listening as after a plain
-  soft-reboot and its start does not open them anew;
+  again, empty, those the decoy had listening as the session began, so the
+  decoy finds them listening as after a plain soft-reboot and its start does
+  not open them anew;
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
   not log the line, with the volume's UUID, that it logs when the switch
   unmounts the volume;
