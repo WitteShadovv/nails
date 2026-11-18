@@ -11,7 +11,7 @@
 //! `noauto` says, and is kept off like any line the boot mounts
 //! ([`super::decide_all`]).
 
-use super::{Decision, Origin, Present, Units, gate};
+use super::{Decision, NOAUTO_KEPT, Origin, Present, Units, gate};
 use crate::session::fstab::{
     FstabEntry, escape_path, holds_a_backslash, may_be_required_by, mount_unit,
 };
@@ -48,19 +48,20 @@ struct Reach {
     /// the target is reached without the mount.
     line: PathBuf,
     /// Whether the target requires the mount as far as NAILS reads the lines
-    /// on the way: each requires the next, none starts only for an option
-    /// NAILS does not read ([`Need::Unread`], a `noauto` line), and none has
-    /// an option with a backslash, of which NAILS reads neither what has a
-    /// target require the line nor what keeps it from starting
-    /// ([`holds_a_backslash`]).
+    /// on the way: each requires the next as NAILS reads it
+    /// ([`Need::Requires`]), and the line the target requires has no option
+    /// with a backslash, of which NAILS reads neither what has a target
+    /// require the line nor what keeps it out of one ([`holds_a_backslash`]).
     sure: bool,
 }
 
-/// The decision for `entries[at]`, a `noauto` line masked as one nothing
-/// NAILS reads pulls in ([`super::NOAUTO_KEPT`]), where the unit of another line
-/// that the boot starts ([`starts`]) needs its mount ([`need`]): the boot
-/// mounts that line whatever `noauto` says, so it is kept off as a line the
-/// boot mounts is. Every line that needs it is
+/// The decision for `entries[at]`, a `noauto` line with only options NAILS
+/// reads that its decision masks as one nothing requires: the mask of a line
+/// nothing NAILS reads pulls in ([`NOAUTO_KEPT`]), or of one kept off for
+/// another reason (at or below the hidden root, a network filesystem), where
+/// the unit of another line that the boot starts ([`starts`]) needs its mount
+/// ([`need`]): the boot mounts that line whatever `noauto` says, so it is kept
+/// off as a line the boot mounts is. Every line that needs it is
 /// read, and through the lines that require it in turn, every boot target
 /// that requires it, or may ([`boot_targets`]): where one does, or may, it is
 /// skipped if its device is there, and masked with a warning that the target
@@ -79,7 +80,15 @@ pub(super) fn needed_below(
     present: Present<'_>,
 ) -> Option<Decision> {
     let entry = &entries[at];
-    if !decided[at].is_noauto_mask() {
+    let Decision::Mask {
+        reason: kept_for,
+        unreached: None,
+        ..
+    } = &decided[at]
+    else {
+        return None;
+    };
+    if !entry.is_noauto() || !unread_fstab_options(entry).is_empty() {
         return None;
     }
     let needers = needers(entries, decided, at);
@@ -135,8 +144,8 @@ pub(super) fn needed_below(
     // A noauto line starts only where an option NAILS does not read may
     // have it start, and a backslash may hide a noauto.
     let may = how == Need::Unread || line.is_noauto() || holds_a_backslash(line);
-    let reason = format!(
-        "noauto, but the line for {} {}, so the boot {} it",
+    let needs = format!(
+        "the line for {} {}, so the boot {} it",
         line.file.display(),
         if how == Need::Unread {
             "gives an option NAILS cannot read that may pull in its mount"
@@ -145,15 +154,25 @@ pub(super) fn needed_below(
         },
         if may { "may mount" } else { "mounts" }
     );
+    // The reason it was kept off for leads where there is one.
+    let reason = if kept_for == NOAUTO_KEPT {
+        format!("noauto, but {needs}")
+    } else {
+        format!("{kept_for}, and {needs}")
+    };
     // Only a mount starts: a swap is always kept off.
-    Some(gate(
+    let mut decision = gate(
         entry.file.clone(),
         vec![mount_unit(&entry.file)],
         entry,
         &units,
         reason.into(),
         present,
-    ))
+    );
+    if let Decision::Skip { may, .. } = &mut decision {
+        *may = may_require;
+    }
+    Some(decision)
 }
 
 /// What makes a boot target want the fstab `lines` that hold up a `noauto`
@@ -192,12 +211,14 @@ fn needers(entries: &[FstabEntry], decided: &[Decision], at: usize) -> Vec<(usiz
 /// that requires a line that does in turn, as far as such lines lead, each
 /// with the line it requires and whether NAILS reads every step as a
 /// requirement (`sure` for the steps up to `entries[at]`, [`Reach::sure`]).
-/// A line with a backslash in its options counts as one a target may
-/// require, never as a sure step, whatever `nofail`, `noauto` or
-/// `x-systemd.wanted-by=` NAILS reads on it ([`holds_a_backslash`],
-/// [`may_be_required_by`]). `seen` holds the lines read already, and whether
-/// they were read as sure: a line read again as sure is read through once
-/// more.
+/// A target requires a line with a backslash in its options only as far as
+/// NAILS can tell, whatever `nofail`, `noauto` or `x-systemd.wanted-by=` it
+/// reads on it ([`holds_a_backslash`], [`may_be_required_by`]); a line that
+/// requires such a line requires it all the same, and that line requires
+/// what it names before its first option with a backslash ([`need`]). So the
+/// backslash makes only the target's own step a may. `seen` holds the lines
+/// read already, and whether they were read as sure: a line read again as
+/// sure is read through once more.
 fn boot_targets(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -211,7 +232,8 @@ fn boot_targets(
             continue;
         }
         let line = &entries[other];
-        let sure = sure && how == Need::Requires && !line.is_noauto() && !holds_a_backslash(line);
+        // A line another one requires starts, `noauto` or not.
+        let sure = sure && how == Need::Requires;
         if seen
             .iter()
             .any(|&(read, was_sure)| read == other && (was_sure || !sure))
@@ -227,7 +249,7 @@ fn boot_targets(
                 } else {
                     line.file.clone()
                 },
-                sure,
+                sure: sure && !holds_a_backslash(line),
             });
         }
         boot_targets(entries, decided, other, sure, seen, reached);
@@ -251,6 +273,9 @@ fn starts(line: &FstabEntry, decision: &Decision) -> bool {
 
 /// How the unit of the fstab line `line` needs the mount of the line
 /// `entry`, the strongest way it does ([`Need`]); `None` where it does not.
+/// systemd reads the options before the first one with a backslash as the
+/// parser splits them, and may join any after it to that one: an option
+/// there that names the mount only may ([`Need::Unread`]).
 fn need(line: &FstabEntry, entry: &FstabEntry) -> Option<Need> {
     let dir = entry.file.as_path();
     if entry.is_swap() || !dir.is_absolute() {
@@ -264,9 +289,11 @@ fn need(line: &FstabEntry, entry: &FstabEntry) -> Option<Need> {
     if line.spec.starts_with('/') && Path::new(&line.spec).starts_with(dir) {
         needs.push(Need::Requires);
     }
+    let mut after_a_backslash = false;
     for option in &line.options {
         if option.contains('\\') {
             needs.push(Need::Unread);
+            after_a_backslash = true;
             continue;
         }
         // A name alone names nothing: systemd 260.5's fstab generator wrote
@@ -291,6 +318,7 @@ fn need(line: &FstabEntry, entry: &FstabEntry) -> Option<Need> {
         };
         match names_it {
             None => needs.push(Need::Unread),
+            Some(true) if after_a_backslash => needs.push(Need::Unread),
             Some(true) if wanted => needs.push(Need::Wants),
             Some(true) => needs.push(Need::Requires),
             Some(false) => {}

@@ -131,6 +131,7 @@ fn a_native_mount_a_target_requires_is_skipped_with_its_fsck_while_its_disk_is_t
             },
             masked: Vec::new(),
             reason: "not mounted now; the hidden session would mount it read-write".into(),
+            may: false,
         }]
     );
 

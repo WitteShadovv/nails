@@ -25,7 +25,7 @@
 //! | a local filesystem not mounted now, mounted at boot | kept unmounted (and its automount off) |
 //! | a local filesystem not mounted now that is `noauto`, without an automount or a unit named to pull it in, not for `/usr`, and with only options NAILS reads | masked, its automount too, whatever pulls it in ([`Decision::is_noauto_mask`]): a unit outside the fstab that requires its mount (a `Requires=`, a `RequiresMountsFor=`) would have the hidden session mount the disk read-write, and does not start instead. A unit a target links for the line itself is decided as a unit, and its skip, which waits for the line's device, keeps the line off in place of the mask; a skip whose pulls reach it is masked (see [`super::mount_units`]) |
 //! | `noauto` with an option NAILS does not read | masked, its automount too: the option may have the boot mount it. Where NAILS does not read what the option pulls in either, it may have a boot target require the line, which is warned of |
-//! | `noauto` with only options NAILS reads, masked as above, whose mount the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path `x-systemd.requires-mounts-for=` or `wants-mounts-for=` names, a unit or path `x-systemd.requires=` or `wants=` names) | kept unmounted as a line the boot mounts: that unit pulls it in, so the boot mounts it ([`decide_all`]) |
+//! | `noauto` with only options NAILS reads, masked as above or kept off for another reason (at or below the hidden root, a network filesystem), whose mount the unit of a line the boot starts, left to the hidden systemd or put in place, needs (a mount below it, a source, a path `x-systemd.requires-mounts-for=` or `wants-mounts-for=` names, a unit or path `x-systemd.requires=` or `wants=` names) | kept unmounted as a line the boot mounts: that unit pulls it in, so the boot mounts it ([`decide_all`]) |
 //! | a network filesystem | kept unmounted: the hidden session would write to the server |
 //! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
 //! | an overlay entry not mounted now, its upper on a disk | kept unmounted |
@@ -84,10 +84,13 @@
 //! whatever of these NAILS reads, with the warning a masked `noauto` line
 //! gets, that a target may require it, never without a warning, and the mask
 //! is not recorded as a required one ([`mask_unread`]); a line for `/usr`,
-//! which the generator mounts whatever its options say, gets a plain warning
-//! naming the target NAILS reads off the split options. A line with a backslash that needs a `noauto`
-//! line's mount counts as one a target may require, never as one it surely
-//! requires ([`needed::needed_below`]).
+//! which the generator mounts and has its boot target require whatever its
+//! options say ([`required_by`]), gets a plain warning naming that target. A
+//! target that requires a line with a backslash requires it only as far as
+//! NAILS can tell, so such a line that needs a `noauto` line's mount counts
+//! as one a target may require, never as one it surely requires; a line that
+//! surely requires it in turn requires it all the same
+//! ([`needed::needed_below`]).
 //!
 //! A mounted host share or overlay is overlaid rather than left to the hidden
 //! systemd because the next root must already hold its contents when PID 1
@@ -228,6 +231,11 @@ pub enum Decision {
         masked: Vec<String>,
         /// Why they must not start.
         reason: Cow<'static, str>,
+        /// Whether NAILS only reads that a boot target may require them
+        /// ([`Origin::Needed`] with `may`): where another decision masks
+        /// them, the mask is not recorded as a required one
+        /// ([`runtime_units`]).
+        may: bool,
     },
     /// Leave it to the hidden systemd, or leave it alone.
     Leave {
@@ -323,6 +331,11 @@ pub struct Unreached {
 pub enum Origin {
     /// An fstab line: `nofail` on it.
     Fstab,
+    /// An fstab line for `/` or `/usr`, which the fstab generator mounts and
+    /// has its boot target require whatever its options say
+    /// ([`FstabEntry::is_mandatory`]): no option makes the target only want
+    /// it.
+    Mandatory,
     /// A unit a generator made and requires through a link of its own: an
     /// fstab line, also one gone since the decoy's start, or a
     /// `systemd.mount-extra=` of the kernel command line. `nofail` on that
@@ -504,6 +517,13 @@ impl Decision {
         let held;
         let remedy = match origin {
             Origin::Fstab => "give the fstab entry the nofail option",
+            Origin::Mandatory => {
+                held = format!(
+                    "remove its fstab entry: the fstab generator mounts {} whatever its options say",
+                    target.display()
+                );
+                held.as_str()
+            }
             Origin::Generated => {
                 "give the line its generator made it from the nofail option (an fstab entry, or \
                  systemd.mount-extra= on the kernel command line), or run systemctl daemon-reload \
@@ -611,7 +631,11 @@ impl Units {
             automount: entry.is_automount().then(|| automount_unit(&entry.file)),
             required_by: required_by(entry),
             checkers: checkers(entry),
-            origin: Origin::Fstab,
+            origin: if entry.is_mandatory() {
+                Origin::Mandatory
+            } else {
+                Origin::Fstab
+            },
         }
     }
 }
@@ -759,7 +783,7 @@ pub fn kept_below_warning(
 /// options its unit files carry, and whose pulls NAILS reads from them
 /// ([`super::mount_units`]).
 fn unread_options(entry: &FstabEntry, units: &Units) -> Vec<String> {
-    if units.origin == Origin::Fstab {
+    if matches!(units.origin, Origin::Fstab | Origin::Mandatory) {
         unread_fstab_options(entry)
     } else {
         Vec::new()
@@ -849,7 +873,11 @@ fn keep_off(
         .clone()
         .unwrap_or_else(|| mount_unit(&entry.file));
     if let Some(option) = unread_pulls(entry, units) {
-        let kept = vec![mount, automount_unit(&entry.file)];
+        // The generator makes no automount for `/usr`, whatever it gives.
+        let mut kept = vec![mount];
+        if !entry.is_mandatory() {
+            kept.push(automount_unit(&entry.file));
+        }
         return mask_unread(entry, kept, units, &reason, &option);
     }
     if let Some(automount) = units.automount.clone() {
@@ -872,6 +900,7 @@ fn keep_off(
             },
             masked: vec![mount],
             reason,
+            may: false,
         };
     }
     gate(target, vec![mount], entry, units, reason, present)
@@ -916,6 +945,7 @@ fn gate(
             },
             masked: Vec::new(),
             reason,
+            may: false,
         },
     }
 }

@@ -214,14 +214,22 @@ const NETDEV_SWAP_TARGET: &str = "swap.target (remote-fs.target from systemd 261
 /// when nothing requires it: `nofail` (the target only wants the unit),
 /// `noauto` without an automount and without a unit named to pull it in
 /// (nothing pulls it in), `x-systemd.wanted-by=` alone, or an NFS `bg` mount,
-/// which the generator makes `nofail`. It reads the options as the parser
-/// splits them, which systemd does otherwise where one holds a backslash
+/// which the generator makes `nofail`. A line for `/` or `/usr` is required
+/// by its boot target whatever its options say
+/// ([`FstabEntry::is_mandatory`]): systemd 260.5's generator ignored
+/// `noauto`, `nofail`, `x-systemd.automount`, `x-systemd.wanted-by=` and
+/// `x-systemd.required-by=` there and linked `usr.mount` into
+/// `local-fs.target.requires`. It reads the options as the parser splits
+/// them, which systemd does otherwise where one holds a backslash
 /// ([`may_be_required_by`]).
 pub fn required_by(entry: &FstabEntry) -> Option<String> {
     if entry.is_swap() {
         if entry.yes_no_option("noauto", "auto") || entry.is_nofail() {
             return None;
         }
+        return Some(boot_target(entry).to_string());
+    }
+    if entry.is_mandatory() {
         return Some(boot_target(entry).to_string());
     }
     let named = |key: &str| -> Vec<&str> {
@@ -290,10 +298,9 @@ pub fn holds_a_backslash(entry: &FstabEntry) -> bool {
 /// boot, or may: what [`required_by`] reads, or, where it reads nothing and
 /// an option of the line holds a backslash ([`holds_a_backslash`]), the
 /// line's [`boot_target`], which the generator links the unit into where the
-/// `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads is none to it,
-/// and a line for `/` or `/usr` into whatever its options say: it ignored
-/// `noauto`, `nofail`, `x-systemd.automount`, `x-systemd.wanted-by=` and
-/// `x-systemd.required-by=` on `/usr`.
+/// `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads is none to it.
+/// A line for `/` or `/usr` [`required_by`] reads as required by its boot
+/// target whatever its options say.
 pub fn may_be_required_by(entry: &FstabEntry) -> Option<String> {
     required_by(entry).or_else(|| holds_a_backslash(entry).then(|| boot_target(entry).to_string()))
 }
