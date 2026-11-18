@@ -600,11 +600,15 @@ say) stays open after the switch, its key in RAM, until power-off:
 (`backend_left_open` under `--json`). The orderly shutdown stops every hidden
 program. The last step before the switch:
 
-- first ends every process of the session still running, as PID 1 would at
-  the switch, so PID 1 names none of them in its last lines (one that stays
-  in uninterruptible sleep, say on a hung network or FUSE mount, outlives
-  the step's bounded wait, and PID 1 names it), and once PID 1 has reaped
-  them clears the failures their end left. Their units' stop commands run
+- first ends every process of the session still running that PID 1 would
+  kill at the switch, so PID 1 names none of them in its last lines (one that
+  stays in uninterruptible sleep, say on a hung network or FUSE mount,
+  outlives the step's bounded wait, and PID 1 names it), and once PID 1 has
+  reaped them clears the failures their end left. It leaves udevd running for
+  the events of the network restore below: where the soft-reboot leaves udevd
+  running (as with systemd 257 and 255 on Debian 13 and Ubuntu 24.04), PID 1
+  ends udevd and its workers at the switch with the generic lines a plain
+  soft-reboot logs. Their units' stop commands run
   now, so the scrub and the restores below take what they changed;
 - scrubs the top of `/run`: it judges the entries two levels deep (three
   below `/run/systemd`), so a daemon's state deeper down stays, such as
@@ -634,16 +638,22 @@ program. The last step before the switch:
   lines stay, and a line of the decoy's that names no mount the way back
   restores is not given back;
 - ends once more any process of the session that started since;
-- stops journald's socket units and drops journald's store of standard-output
-  streams, which discards what the hidden root sent journald after its own
-  journald stopped (the audit records of its last units' stops, the lines a
-  unit that stops after journald logs), then starts journald's socket and
-  its `/dev/log` socket again, empty, as far as the decoy had them listening
-  as the session began, so the decoy finds them listening as after a plain
-  soft-reboot of the decoy, and its start opens anew only one its own
-  shutdown had closed at the entry. The audit socket stays
-  closed, as it would take every audit record made after it opens, past the
-  kernel-message cursor;
+- drops journald's store of standard-output streams, stops the socket of a
+  journald namespace the session started, and starts journald's socket or its
+  `/dev/log` socket again where the decoy had it listening as the session
+  began and PID 1 has closed it since (with systemd before 258, PID 1 fails a
+  journald socket that receives anything once journald has stopped for the
+  soft-reboot, which drops what it held);
+- empties journald's sockets in place: through PID 1's own descriptors of
+  them, it reads and drops every datagram waiting in the native and
+  `/dev/log` sockets, every connection waiting on the stream socket and every
+  record waiting in the audit socket. That discards what the hidden root sent
+  journald after its own journald stopped (the audit records of its last
+  units' stops, the lines a unit that stops after journald logs), and the
+  sockets stay the ones PID 1 carried into the session, with their labels and
+  their units' start times, as a plain soft-reboot keeps them. Where the
+  kernel does not give the step PID 1's descriptors, the sockets keep what
+  they hold, and nothing says so;
 - sets the message limit of an ext4 hidden volume to zero, so the kernel does
   not log the line, with the volume's UUID, that it logs when the switch
   unmounts the volume;
@@ -797,16 +807,17 @@ journal that starts late:
   back to the boot. What waits in journald's sockets, which the switch keeps
   open, does not reach it: the way back empties them (see
   [What the decoy journal keeps](decoy-requirements.md#what-the-decoy-journal-keeps)).
-- journald's sockets made anew at the way back, which a plain soft-reboot
-  keeps from the boot: their files below `/run/systemd/journal` and the
-  start time `systemctl show -p ActiveEnterTimestamp` gives for their units
-  date from the way back, and where the kernel's audit is on, the decoy's start logs
-  `Listening on` for journald's audit socket, which the way back leaves
-  closed. A process the soft-reboot leaves running (a root storage
-  daemon, a unit with `SurviveFinalKillSignal=yes`) loses its standard
-  output and error to the journal at the entry, where NAILS drops journald's
-  stored streams as well: its later output reaches no journal, and its
-  writes there fail.
+- a journald socket PID 1 closed during a soft-reboot (with systemd before
+  258 it fails one that receives anything once journald has stopped): one the
+  way back starts again is a new socket, whose file below
+  `/run/systemd/journal` and whose unit's start time (`systemctl show -p
+  ActiveEnterTimestamp`) date from the way back, and the decoy's start opens
+  anew, and logs `Listening on` for, one the decoy's own shutdown had closed
+  at the entry, as the hidden start after the entry did. A process the
+  soft-reboot leaves running (a root storage daemon, a unit with
+  `SurviveFinalKillSignal=yes`) loses its standard output and error to the
+  journal at the entry, where NAILS drops journald's stored streams as well:
+  its later output reaches no journal, and its writes there fail.
 - the decoy's root and the mounts its initrd made (NixOS's store bind) as new
   mounts, where a plain soft-reboot keeps them; it unmounts the decoy's other
   mounts and mounts again what its fstab and units name, under new mount IDs
@@ -839,7 +850,10 @@ uninterruptible sleep (on a hung network or FUSE mount, say) past the last
 step's bounded wait; the hidden service manager's last lines, which a plain soft-reboot logs too (the
 soft-reboot service's end and `Soft-rebooting.`, its final kill of the helpers
 it starts after the step to close a descriptor, `Sending SIGKILL to PID N
-((sd-close))`, and, where the kernel's audit is on, the audit records of that
+((sd-close))`, and, where the soft-reboot leaves udevd running (as with
+systemd 257 and 255 on Debian 13 and Ubuntu 24.04), of udevd and its workers,
+`Sending SIGKILL to PID N (systemd-udevd)` and `((udev-worker))`, and, where
+the kernel's audit is on, the audit records of that
 service's start and stop, whose `exe=` names the program that sent them, the
 hidden root's systemd, and the kernel's records of the BPF programs it
 unloads), whatever line a hidden volume that is not ext4 logs as it is

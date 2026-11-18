@@ -403,7 +403,11 @@ fn the_journal_socket_row_is_a_residual_channel_the_way_back_empties() {
         "{:?}",
         row.e2e
     );
-    assert!(row.mitigation.contains("stops journald's socket units"));
+    assert!(
+        row.mitigation
+            .contains("empties journald's sockets in place")
+    );
+    assert!(!row.mitigation.contains("stops journald's socket units"));
 }
 
 #[test]
