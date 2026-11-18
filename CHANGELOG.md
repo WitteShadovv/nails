@@ -1043,12 +1043,13 @@ of this changelog for that version becomes the release notes word for word, and
   decoy's journald what the hidden root sent them after its own journald stopped (the audit records
   of its last units' stops, lines logged through `/dev/log`, standard output or the native socket):
   the last step now stops those socket units, drops journald's stored streams and starts
-  journald's socket and its `/dev/log` socket again, empty, so the decoy's start does not open
-  them anew. The audit socket stays closed, as it would take audit records past the cursor, and
-  where the kernel's audit is on the decoy's start opens it anew. A process a soft-reboot leaves running loses its standard output to the
-  journal, and journald's socket files date from the way back (residue catalog row
-  `journal-socket-carry`). The empty `/run/nextroot` the switch left until power-off, which a boot
-  never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
+  journald's socket and its `/dev/log` socket again, empty, as the decoy had them at the entry, so
+  the decoy's start does not open them anew where a plain soft-reboot would not. The audit socket
+  stays closed, as it would take audit records past the cursor, and where the kernel's audit is on
+  the decoy's start opens it anew. A process a soft-reboot leaves running loses its standard
+  output to the journal, and journald's socket files and their units' start time date from the
+  way back (residue catalog row `journal-socket-carry`). The empty `/run/nextroot` the switch
+  left until power-off, which a boot never has, is removed at the decoy's start. The kernel's lines of a device-mapper hidden volume's
   teardown and PID 1's own last generic lines still follow the cursor (residue catalog row
   `kmsg-import`).
 - The residue report of every activation, and `nails verify`, count the loop device under the

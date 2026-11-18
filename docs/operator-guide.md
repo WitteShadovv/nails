@@ -795,8 +795,9 @@ journal that starts late:
   open, does not reach it: the way back empties them (see
   [What the decoy journal keeps](decoy-requirements.md#what-the-decoy-journal-keeps)).
 - journald's sockets made anew at the way back, which a plain soft-reboot
-  keeps from the boot: their files below `/run/systemd/journal` date from
-  the way back, and where the kernel's audit is on, the decoy's start logs
+  keeps from the boot: their files below `/run/systemd/journal` and the
+  start time `systemctl show -p ActiveEnterTimestamp` gives for their units
+  date from the way back, and where the kernel's audit is on, the decoy's start logs
   `Listening on` for journald's audit socket, which the way back leaves
   closed. A process the soft-reboot leaves running (a root storage
   daemon, a unit with `SurviveFinalKillSignal=yes`) loses its standard
