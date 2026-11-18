@@ -667,7 +667,8 @@ process numbers.
 
 So the way back sets the kernel's process-number counter back
 (`/proc/sys/kernel/ns_last_pid`) as its last step, once every hidden process has
-stopped and before PID 1 starts a single decoy unit. Where to is measured: the
+stopped but udevd's, which it leaves to PID 1, and those the soft-reboot leaves
+running, and before PID 1 starts a single decoy unit. Where to is measured: the
 entry records the number the decoy's boot gave its getty (else logind), the
 switch into the hidden root records the counter as it hands over, and, when the
 way back is armed, the hidden session's own copy of that getty shows how many

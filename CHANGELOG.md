@@ -3017,7 +3017,8 @@ of this changelog for that version becomes the release notes word for word, and
   writes to `/var/log/wtmp`, carried numbers that continued from the decoy's boot and the hidden
   session. Activation records the number the decoy's boot gave its getty (else logind), the hidden
   session's own start shows how many numbers a start uses up to its copy of it, and the way back's
-  last step, once every hidden process has stopped and before the decoy starts a single unit, sets
+  last step, once every hidden process has stopped but udevd's, which it leaves to PID 1, and those
+  the soft-reboot leaves running, and before the decoy starts a single unit, sets
   `/proc/sys/kernel/ns_last_pid` that many below. That assumes a hidden start that runs about as
   many processes up to its getty as the decoy's. The difference adds up over sessions without a
   power-off between them. A getty or logind that started more than a minute after the oldest process

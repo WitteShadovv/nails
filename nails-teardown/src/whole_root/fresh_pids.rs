@@ -11,8 +11,9 @@
 //! disk, next to the low numbers of every earlier boot.
 //!
 //! The way back sets the counter (`/proc/sys/kernel/ns_last_pid`) back as its
-//! very last step ([`lower`]), when every hidden process has stopped and
-//! before PID 1 starts a single decoy unit. The kernel skips a number still in
+//! very last step ([`lower`]), when every hidden process has stopped but
+//! udevd's, which it leaves to PID 1, and those the soft-reboot leaves running,
+//! and before PID 1 starts a single decoy unit. The kernel skips a number still in
 //! use, so nothing can get a number twice. Where to set it is measured
 //! ([`Record`]):
 //!

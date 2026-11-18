@@ -895,7 +895,8 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
 }
 
-/// End what PID 1 would still kill at the switch ([`tail::end_leftovers`])
+/// End what PID 1 would still kill at the switch but udevd's, which it
+/// leaves to PID 1 ([`tail::end_leftovers`], [`tail::LEFT_TO_THE_SWITCH`]),
 /// and forget the failures that left.
 fn end_session_leftovers(env: &Env, plan: &Plan) {
     if let Some(places) = &env.tail {
