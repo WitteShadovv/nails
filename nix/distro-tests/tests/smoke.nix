@@ -433,15 +433,27 @@ distroVm.buildVmTest {
         print(f"{where}: the boot automounts are back ({sorted(boot_automounts)})")
 
 
+    # Whether the image's auditd ran at its boot, until the decoy was made
+    # amnesic (Fedora's does): its log in /var/log/audit is the decoy's own
+    # record from before any session, which the residue report names.
+    audit_log_kept = False
+    AUDIT_LOG_FINDING = "Warn catalog: Audit daemon log present: /var/log/audit, "
+
+
     def assert_clean_baseline(where):
         # The residue report the activation wrote on the hidden volume before
-        # the switch holds no warning and no critical finding.
+        # the switch holds no warning and no critical finding, but the
+        # warning of the audit log an image whose auditd ran keeps.
         names = vm.succeed("ls /mnt/data/reports").split()
         reports = [name for name in names if name.startswith("activation-residue-")]
         assert len(reports) == 1, f"{where}: residue reports {reports}"
         report = vm.succeed(f"cat /mnt/data/reports/{shlex.quote(reports[0])}")
         print(f"=== the residue baseline of {where} ===\n{report}")
-        residue = distro_checks.baseline_residue(report)
+        residue = [
+            finding
+            for finding in distro_checks.baseline_residue(report)
+            if not (audit_log_kept and finding.startswith(AUDIT_LOG_FINDING))
+        ]
         assert not residue, f"{where}: the residue baseline holds residue:\n" + "\n".join(
             residue
         )
@@ -1241,6 +1253,7 @@ distroVm.buildVmTest {
         )
         # Accepting the risk explicitly, or making the decoy amnesic, both make
         # the check pass; the suite exercises the real fix.
+        audit_log_kept = vm.execute("pgrep -x auditd")[0] == 0
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
