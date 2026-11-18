@@ -51,6 +51,7 @@ use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use nails_teardown::whole_root::logind;
+use nails_teardown::whole_root::plan::Skip;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -380,14 +381,17 @@ impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
 /// masked instead ([`mount_units::kept_off`]). A refusal names what to do
 /// about it ([`Decision::remedy`]).
 pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult {
-    judge_fstab_not_looked_up(decisions, unskipped, &|_| false)
+    judge_fstab_not_looked_up(decisions, &[], unskipped, &|_| false)
 }
 
-/// [`judge_fstab`], where `not_looked_up` tells a path the automount guard
-/// did not look up: a refusal of one is left without a fix of its own, since
-/// the check's [`settle`] gives the one that mounts the automount point.
+/// [`judge_fstab`], with `skips`, what the hidden session skips
+/// ([`mount_units::kept_off`]), where `not_looked_up` tells a path the
+/// automount guard did not look up: a refusal of one is left without a fix
+/// of its own, since the check's [`settle`] gives the one that mounts the
+/// automount point.
 fn judge_fstab_not_looked_up(
     decisions: &[Decision],
+    skips: &[Skip],
     unskipped: &[String],
     not_looked_up: &dyn Fn(&Path) -> bool,
 ) -> CheckResult {
@@ -412,7 +416,7 @@ fn judge_fstab_not_looked_up(
     let notable: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, Decision::Leave { .. }))
-        .map(Decision::describe)
+        .map(|d| skipped_noauto(d, skips).unwrap_or_else(|| d.describe()))
         .collect();
     let kept_off_mounts = decisions.iter().any(|d| {
         let units = d
@@ -446,6 +450,27 @@ fn judge_fstab_not_looked_up(
     } else {
         CheckResult::Warn(format!("{summary}. {}", notes.join(" ")))
     }
+}
+
+/// How `check` describes `decision` where it is the mask of a `noauto` line
+/// ([`Decision::is_noauto_mask`]) whose mount the hidden session skips in its
+/// place ([`mount_units::kept_off`]): a unit a boot target requires needs
+/// it, or a skip of the same unit waits for its device. `None` for any other
+/// decision, which is described as it is.
+fn skipped_noauto(decision: &Decision, skips: &[Skip]) -> Option<String> {
+    let Decision::Mask {
+        target,
+        units,
+        reason,
+        ..
+    } = decision
+    else {
+        return None;
+    };
+    let mount = units.first()?;
+    let skipped = skips.iter().any(|skip| skip.units.contains(mount));
+    (decision.is_noauto_mask() && skipped)
+        .then(|| format!("{}: skipped ({reason})", target.display()))
 }
 
 /// The decisions for the decoy's mount, swap and automount units outside its
@@ -589,7 +614,7 @@ impl FstabPolicyCheck {
         };
         let native = decoy_units(dirs, &decisions, mounts, &self.hidden_root);
         decisions.extend(native);
-        let (_, unskipped) =
+        let (kept, unskipped) =
             mount_units::kept_off(dirs, &entries, &decisions, &policy::device_present);
         let skipped = guarded.skipped();
         let root = &self.root;
@@ -597,7 +622,7 @@ impl FstabPolicyCheck {
             let at = root.join(target.strip_prefix("/").unwrap_or(target));
             skipped.iter().any(|skip| skip.path == at)
         };
-        let result = judge_fstab_not_looked_up(&decisions, &unskipped, &not_looked_up);
+        let result = judge_fstab_not_looked_up(&decisions, &kept.skips, &unskipped, &not_looked_up);
         refused_where_not_looked_up(result, &skipped)
     }
 }
