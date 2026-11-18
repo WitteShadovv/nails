@@ -508,26 +508,40 @@ distroVm.buildVmTest {
     def live_tokens(tokens):
         # Which of `tokens` the files of the decoy root hold, read through the
         # decoy's own kernel, which decompresses every extent the decoy reads,
-        # from a read-only bind of / in /run: a read through a read-only mount
-        # moves no access time, and the bind holds the root filesystem alone,
-        # with its btrfs subvolumes. A file grep cannot read fails the read,
-        # except one the running decoy deleted since grep listed it. Lines end
-        # at NUL bytes (-z), so a file of zeros, such as a swap file, is not
-        # held whole as one line.
+        # from read-only binds in /run of each mount of the root's
+        # filesystem: / and each btrfs subvolume the decoy mounts apart, as
+        # Fedora mounts /home and /var. A read through a read-only mount moves
+        # no access time, and each bind holds that mount's filesystem alone,
+        # with the btrfs subvolumes below it. A file grep cannot read fails
+        # the read, except one the running decoy deleted since grep listed it.
+        # Lines end at NUL bytes (-z), so a file of zeros, such as a swap file,
+        # is not held whole as one line.
         view = "/run/live-view"
         errors = "/run/live-view.err"
-        vm.succeed(
-            f"mkdir {view} && mount --bind / {view} && mount -o remount,bind,ro {view}"
-        )
+        targets = vm.succeed(
+            "findmnt -rn -o TARGET,UUID | "
+            + "awk -v u=\"$(findmnt -rno UUID /)\" '$2 == u { print $1 }'"
+        ).split()
+        assert "/" in targets, f"the root's own mount is not among {targets}"
+        views = [f"{view}/{n}" for n in range(len(targets))]
+        for target, bound in zip(targets, views):
+            vm.succeed(
+                f"mkdir -p {bound} && mount --bind {shlex.quote(target)} {bound} "
+                + f"&& mount -o remount,bind,ro {bound}"
+            )
         patterns = " ".join(f"-e {shlex.quote(token)}" for token in tokens)
         rc, out = vm.execute(
             "bash -c "
             + shlex.quote(
-                f"set -o pipefail; grep -rhoazF -D skip {patterns} {view} 2>{errors} "
-                + "| tr '\\0' '\\n' | sort -u"
+                f"set -o pipefail; grep -rhoazF -D skip {patterns} {' '.join(views)} "
+                + f"2>{errors} | tr '\\0' '\\n' | sort -u"
             )
         )
-        failed = vm.succeed(f"cat {errors}; rm {errors}; umount {view} && rmdir {view}")
+        failed = vm.succeed(
+            f"cat {errors}; rm {errors}; "
+            + "".join(f"umount {bound} && rmdir {bound} && " for bound in views)
+            + f"rmdir {view}"
+        )
         unread = [
             line
             for line in failed.splitlines()
