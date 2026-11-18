@@ -69,10 +69,14 @@ fn required_masked(decision: &Decision) -> Option<(&[String], MaskCause, Option<
     else {
         return None;
     };
-    if matches!(origin, Origin::Needed { may: true, .. }) {
+    let units = match origin {
         // NAILS cannot tell that a target requires it.
-        return None;
-    }
+        Origin::Needed { may: true, .. } => return None,
+        // A line that needs it requires its mount, the first of them, and
+        // not an automount, which it does not pull in.
+        Origin::Needed { .. } => &units[..units.len().min(1)],
+        _ => units.as_slice(),
+    };
     match cause {
         Unskippable::NoDevice(device) => Some((units, MaskCause::DeviceAbsent, Some(device))),
         Unskippable::Unread => Some((units, MaskCause::Undetermined, None)),
