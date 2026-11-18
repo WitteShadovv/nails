@@ -933,8 +933,10 @@ logind.
   The check reads text; it does not evaluate Nix. It does not follow a
   mapping defined through a `let` binding, `lib.listToAttrs` or an
   interpolated name (`luks.devices.${"data"}`), nor a path written with a
-  `.` or `..` component or relative to the file (`/mnt/./data`,
-  `../../mnt/data`), and it does not know these names of the storage: the
+  `..` component or relative to the file (`/mnt/x/../data`,
+  `../../mnt/data`); a `.` component or a doubled slash it reads as the
+  kernel does (`/mnt/./data`, `/mnt//data`). It does not know these names of
+  the storage: the
   units systemd names after its device nodes and links (`dev-sdb2.device`,
   `dev-dm\x2d0.device`), and its `<major>:<minor>` outside `/dev/block/`
   (`8:18` in a device-mapper table). Keep such lines out of `/etc/nixos`
@@ -952,25 +954,61 @@ logind.
   folder or a btrfs subvolume of a filesystem the decoy itself mounts another
   part of at `/` or at a system folder (see
   [Attaching the drive](#attaching-the-drive)), the names of the devices that
-  filesystem lies on are the decoy's own: `hardware-configuration.nix` gives
-  them for `/` and `/home`. The check lets be a line that names only such a
-  device, in any of the forms above: its device path, its kernel name and
-  `/dev/block` link, every `/dev/disk/by-*` link udev made for it, its uuid,
+  filesystem lies on are the decoy's own where the decoy's configuration
+  names its own mounts with them, as `hardware-configuration.nix` does for `/`
+  and `/home`. The check lets such a name be in these places only: the
+  string that is the `device` or `label` of a `fileSystems` entry for `/` or
+  a system folder (`/home`, `/srv`, `/var`, `/nix`, `/usr`, `/opt`, `/boot`,
+  `/boot/efi`, `/efi`, a folder below `/var`, `/.snapshots`), the name of a
+  `boot.initrd.luks.devices` entry, and the string that is the `device` of
+  one. There it lets be every form above: the device path, the kernel name
+  and `/dev/block` link, every `/dev/disk/by-*` link udev made, the uuid,
   `PARTUUID`, label and partition label, and on an encrypted decoy the LUKS
-  mapping that filesystem lies on by its name and the partition below it. It
-  passes and says how many lines name that device. It takes those devices
-  from the attach gate's judge, by kernel name and device number, and lets be
-  the names of a device only where the kernel shows it with the same name and
-  number while the check reads them. Still refused, with the flag too: the
-  root's mount point and its units; the folder the root is, as another mount
-  of that filesystem shows it (`/home/alice/vault` for a bind of that folder
-  of `/`); its subvolume as `subvol=` or `subvolid=` names it; a name of any
-  other device the hidden volume is stored on; a place that may give such a
-  name and cannot be read; NAILS's own text and the word `nails`; and a line
-  that names one of these beside the device. Without the flag, and for a root
-  that is the whole filesystem, that the decoy mounts no other part of at `/`
-  or at a system folder, or whose storage NAILS cannot judge, nothing is let
-  be.
+  mapping by its name and the partition below it. The check then passes and
+  says how many lines it let be. The same name anywhere else still fails it:
+  in a `fileSystems` entry for another folder (the filesystem's top mounted
+  at `/btr_pool` for a backup tool, say), in an entry's options, in
+  `boot.resumeDevice`, a udev rule, a service's settings (`services.beesd`),
+  a `let` binding, or a comment outside such an entry. Attribute names count
+  with the case Nix reads them in (`fileSystems`, not `filesystems`).
+
+  The check takes those devices from the attach gate's own decision, which it
+  makes again through the automount guard as `hidden-volume` does, by kernel
+  name and device number. It lets be the names of a device only where the
+  kernel shows it with the same name and number while the check reads them,
+  and nothing where the gate refuses the root, cannot tell, or would have to
+  look the root up behind an automount point.
+
+  Still refused, with the flag too:
+
+  - the root's mount point and its units;
+  - the folder the root is, as another mount of that filesystem shows it
+    (`/home/alice/vault` for a bind of that folder of `/`), also with `.`
+    components or doubled slashes;
+  - the root's own name inside the filesystem, the last part of its path
+    there (`@vault` for the subvolume `@vault`, `vault` for the folder
+    `home/alice/vault`), wherever it stands as a whole part of a path or a
+    whole string, whatever comes before it (`subvol=./@vault`,
+    `subvol=@home/../@vault`, `/btr_pool/@vault`,
+    `/mnt/rootfs/home/alice/vault`, btrbk's `subvolume."@vault"`), or as an
+    attribute name the file defines (`subvolume.vault = { };`);
+  - on btrfs, `subvolid=` with the subvolume's id in any form the kernel
+    reads it (`258`, `0x102`, `0402`, `+258`), and a `subvol=` or `subvolid=`
+    value the check cannot read, such as one an interpolation makes;
+  - a name of any other device the hidden volume is stored on;
+  - a place that may give such a name and cannot be read;
+  - NAILS's own text and the word `nails`.
+
+  Since the root's own name counts wherever it stands whole, a root named
+  like something else in `/etc/nixos` fails too (`vault` beside
+  `/var/lib/vault`): give the folder or subvolume a name that appears in no
+  path, string or attribute name there. The check reads text and does not
+  evaluate Nix: a name Nix builds from parts (`"@va" + "ult"`), a path to the
+  root through a link in the filesystem, and an entry that takes its device
+  from another one without naming it (`inherit (config.fileSystems."/")
+  device;`) are not read. Without the flag, and for a root that is the
+  whole filesystem, that the decoy mounts no other part of at `/` or at a
+  system folder, or whose storage NAILS cannot judge, nothing is let be.
 
 ### Ubuntu
 
@@ -2120,10 +2158,12 @@ none (see below). So does the decoy's own crypttab line where its key file or
 header lies in the root's folder, or where the device the boot mounts for one of
 them is one that filesystem lies on (see below). On NixOS,
 `suspicious-nails-reference` lets be the names the decoy's `/etc/nixos` gives
-the devices that filesystem lies on, as the `hardware-configuration.nix` of
-most installs does for `/` and `/home`, and still refuses the root's mount
-point, its own folder and subvolume, and the names of any other device (see
-[NixOS](#nixos)).
+the devices that filesystem lies on in its `fileSystems` entries for `/` and
+its system folders and in its `boot.initrd.luks.devices` entries, as the
+`hardware-configuration.nix` of most installs does for `/` and `/home`. It
+still refuses such a name anywhere else, the root's mount point, its own
+folder and its name inside the filesystem, and the names of any other device
+(see [NixOS](#nixos)).
 
 Every other line for that filesystem still fails `backend-entries`: a line for
 any other folder, such as `/pool` or `/home/u`, since it may name the hidden

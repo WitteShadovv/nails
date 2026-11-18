@@ -491,9 +491,12 @@ boot opens as LUKS for the LUKS device that filesystem lies on while the decoy
 mounts another part of it at `/` or by such a line. On NixOS, for such a root
 while the decoy mounts another part of that filesystem at `/` or at a system
 folder, `suspicious-nails-reference` lets be the names the decoy's
-`/etc/nixos` gives the devices that filesystem lies on, as
-`hardware-configuration.nix` does for `/` and `/home`, never the root's mount
-point, its own folder or subvolume, or a name of any other device.
+`/etc/nixos` gives the devices that filesystem lies on in its `fileSystems`
+entries for `/` and its system folders and in its `boot.initrd.luks.devices`
+entries, as `hardware-configuration.nix` does for `/` and `/home`. It still
+refuses such a name anywhere else, the root's mount point, the root's own
+folder and its name inside the filesystem where the text gives them (the
+check reads text and does not evaluate Nix), and a name of any other device.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or
