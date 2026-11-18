@@ -45,9 +45,12 @@ macro_rules! own_device_names {
          of a filesystem the decoy itself mounts at / or at a system folder, a name of a device \
          that filesystem lies on passes as the device or label of a fileSystems entry for / or \
          a system folder, or as the name or device of a boot.initrd.luks.devices entry, where \
-         it is written out in one string. It fails anywhere else, and so do the root's mount \
-         point and the names of its folder or subvolume that the check reads, and the names of \
-         any other device."
+         that entry is written as nixos-generate-config writes it: double-quoted strings that \
+         end on their line and hold no ${...}, lists and sets of them, and true, false or a \
+         number as the value of an attribute other than device and label. It fails anywhere \
+         else, comments included, and so do the root's mount point and the names of its folder \
+         or subvolume that the check reads, the names of any other device, and any other \
+         expression in such an entry."
     };
 }
 
@@ -86,8 +89,9 @@ pub enum ReferenceKind {
     /// continue a file name or as an attribute name (`@vault`, `vault`), the
     /// subvolume's id as `subvolid=` gives it in any base, and a value the
     /// scan cannot read where one could name the root: a `subvol=`,
-    /// `subvolid=` or `X-mount.subdir=` value, or a `device` or `label`
-    /// string in a place of the decoy's own.
+    /// `subvolid=` or `X-mount.subdir=` value that is empty or holds an
+    /// interpolation, and any part of an entry of the decoy's own that is no
+    /// plain literal (`lib.mkForce`, a `+`, a parenthesis).
     RootPlace,
     /// The hidden volume's device-mapper name where it names the mapping: a
     /// `luks.devices` entry, crypttab text or a `cryptsetup` line.
@@ -140,9 +144,12 @@ impl ReferenceKind {
                  the decoy uses that folder or subvolume for something else, or the name only \
                  happens to be the same, keep the hidden root in a folder or subvolume whose \
                  name appears nowhere in /etc/nixos as a word of its own, comments included, \
-                 instead. Write a subvol=, subvolid= or X-mount.subdir= value, and the device \
-                 or label of the decoy's own entries, out in full in one string. \
-                 --allow-decoy-storage never lets it be."
+                 instead. Write a subvol=, subvolid= or X-mount.subdir= value out in full, and \
+                 write the decoy's fileSystems entries for / and its system folders and its \
+                 boot.initrd.luks.devices entries as nixos-generate-config does: double-quoted \
+                 strings that end on their line and hold no ${...}, lists and sets of them, and \
+                 true, false or a number as the value of an attribute other than device and \
+                 label, nothing else. --allow-decoy-storage never lets it be."
             }
             ReferenceKind::Storage => concat!(
                 "Remove it from that file long before the next use and rebuild the decoy. If \
@@ -335,10 +342,10 @@ pub fn verify_base_config_clean<F: Filesystem>(
 /// and `/.snapshots` among them), in the name of a
 /// `boot.initrd.luks.devices` entry, or in a string that is the `device` of
 /// one ([`BaseConfigScan::let_be`]). Such a place is told by how the attribute
-/// path of its definition ends, wherever the definition stands. Anywhere
-/// else the name counts, as before: in a `fileSystems` entry for another
-/// folder, in an entry's other attributes, in a `let` binding, in a comment
-/// outside such an entry. A layer of the storage
+/// path of its definition ends, wherever the definition stands, and only a
+/// definition in code outside a `let` block counts. Anywhere else the name
+/// counts, as before: in a `fileSystems` entry for another folder, in an
+/// entry's other attributes, in a `let` binding, in a comment. A layer of the storage
 /// counts as one of those devices only where sysfs gives it now the same
 /// kernel name and the same device number as `own` holds, which the attach
 /// gate's judge read; every other layer's names count as before, and so does
@@ -351,12 +358,18 @@ pub fn verify_base_config_clean<F: Filesystem>(
 /// comments and prose included, or as an attribute name the file defines,
 /// an `X-mount.subdir=` value the scan cannot read, and on btrfs a
 /// `subvolid=` that names its id in any base the kernel reads or is no
-/// number, and a `subvol=` value the scan cannot read. A value it cannot
-/// read is empty, holds an interpolation, or runs to the end of a string a
-/// `+` goes on with (`"subvol=@va" + "ult"`). So does a `device` or `label`
-/// string in a place of the decoy's own that holds an interpolation, that a
-/// `+` joins to something, or that goes on over the next line: the scan
-/// cannot tell what Nix makes of it.
+/// number, and a `subvol=` value the scan cannot read: one that is empty or
+/// holds an interpolation. So does every part that is no plain literal in a
+/// `fileSystems` entry for `/` or a system folder, in a
+/// `boot.initrd.luks.devices` entry, or in the value of `fileSystems` or
+/// `boot.initrd.luks.devices` itself: plain are a `"…"` string that ends on
+/// its line and holds no interpolation (escapes are read), the brackets of
+/// a set or a list, and `true`, `false` or a number as the whole value of an
+/// attribute other than `device` and `label`, as `nixos-generate-config`
+/// writes an entry. Anything else there (a reference, a function call such
+/// as `lib.mkForce`, an operator, a parenthesis, an interpolation, a path,
+/// a `''…''` string, `let`, `with`, `inherit`) counts, since the scan cannot
+/// tell what Nix makes of the entry.
 ///
 /// # Errors
 ///

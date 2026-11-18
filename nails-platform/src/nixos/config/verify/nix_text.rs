@@ -61,12 +61,10 @@ pub(super) enum Pattern {
     /// A btrfs `subvolid=` option whose value is the id, where there is one,
     /// read as the kernel reads it (decimal, `0x` hex or `0` octal, `+`
     /// allowed), or whose value cannot be read as a number
-    /// (`subvolid=${id}`, see [`Pattern::Unread`]).
+    /// (`subvolid=${id}`).
     SubvolId(Option<u64>),
     /// The option `<key>=` (`subvol`, `x-mount.subdir`) whose value cannot
-    /// be read: none, one that holds an interpolation (`subvol=${name}`), or
-    /// one that runs to the end of a string that a `+` joins to something
-    /// (`"subvol=@va" + "ult"`).
+    /// be read: none, or one that holds an interpolation (`subvol=${name}`).
     Unread(String),
 }
 
@@ -81,18 +79,6 @@ pub(super) struct Context {
     /// The attribute names the line defines and the strings it holds in the
     /// value of a definition ([`super::scan::Scanner::places`]).
     pub(super) places: Vec<Place>,
-    /// The text of each string on the line that a `+` joins to something,
-    /// and whether the `+` comes after it ([`super::scan::Scanner::joined`]).
-    pub(super) joined: Vec<(Range<usize>, bool)>,
-}
-
-impl Context {
-    /// Whether a string that a `+` after it goes on with ends at `end`.
-    fn continued_at(&self, end: usize) -> bool {
-        self.joined
-            .iter()
-            .any(|(string, continued)| *continued && string.end == end)
-    }
 }
 
 impl Pattern {
@@ -113,16 +99,11 @@ impl Pattern {
             }),
             Pattern::Component(name) => component(line, name, context),
             Pattern::SubvolId(id) => option_values(line, "subvolid")
-                .find(|value| {
-                    context.continued_at(value.end)
-                        || read_id(&line[value.clone()]).is_none_or(|read| Some(read) == *id)
-                })
+                .find(|value| read_id(&line[value.clone()]).is_none_or(|read| Some(read) == *id))
                 .map(|value| value.start - "subvolid=".len()..value.end),
             Pattern::Unread(key) => option_values(line, key)
                 .find(|value| {
-                    value.is_empty()
-                        || line[value.clone()].windows(2).any(|w| w == b"${")
-                        || context.continued_at(value.end)
+                    value.is_empty() || line[value.clone()].windows(2).any(|w| w == b"${")
                 })
                 .map(|value| value.start - key.len() - 1..value.end),
         }

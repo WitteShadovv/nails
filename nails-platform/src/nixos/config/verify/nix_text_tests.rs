@@ -16,15 +16,8 @@ fn found(pattern: &Pattern, text: &str) -> Option<String> {
             names: scanner.line(line.as_bytes()),
             arguments: shell.line(line.as_bytes()),
             places: scanner.places(),
-            joined: Vec::new(),
         };
         lines.push((line, context));
-    }
-    for joined in scanner.joined() {
-        lines[joined.line]
-            .1
-            .joined
-            .push((joined.text.clone(), joined.continued));
     }
     lines.iter().find_map(|(line, context)| {
         pattern
@@ -438,41 +431,6 @@ fn a_subvolume_id_is_read_as_the_kernel_reads_it() {
     }
     for miss in ["\"subvol=@\"", "\"subvolid=\"", "\"subvol=/\""] {
         assert_eq!(found(&unread, miss), None, "{miss}");
-    }
-}
-
-/// A `subvol=`, `x-mount.subdir=` or `subvolid=` value that runs to the end
-/// of a string a `+` joins to something, on its line or the next, cannot be
-/// read whole; one that ends before the end of its string, or a string
-/// joined only before it, can.
-#[test]
-fn a_value_a_plus_goes_on_with_cannot_be_read() {
-    let subvol = Pattern::Unread("subvol".into());
-    let subdir = Pattern::Unread("x-mount.subdir".into());
-    let id = Pattern::SubvolId(Some(258));
-    for (pattern, hit) in [
-        (&subvol, "(\"subvol=@va\" + \"ult\")"),
-        (&subvol, "(\"subvol=@va\"+\"ult\")"),
-        (&subvol, "(''subvol=@va'' + name)"),
-        (&subvol, "options = [ (\"subvol=@va\"\n  + \"ult\") ];"),
-        (&subvol, "# options = [ (\"subvol=@va\" + \"ult\") ];"),
-        (&subdir, "(\"X-mount.subdir=@va\" + \"ult\")"),
-        (&subdir, "\"X-mount.subdir=${name}\""),
-        (&subdir, "\"X-mount.subdir=\""),
-        (&id, "(\"subvolid=25\" + \"8\")"),
-        (&id, "(\"subvolid=2\" + toString 58)"),
-    ] {
-        assert!(found(pattern, hit).is_some(), "{hit}");
-    }
-    for (pattern, miss) in [
-        (&subvol, "(\"subvol=@home,compress=zstd\" + extra)"),
-        (&subvol, "(prefix + \"subvol=@home\")"),
-        (&subvol, "[ \"subvol=@home\" ] ++ [ \"x\" ]"),
-        (&subdir, "\"X-mount.subdir=home\""),
-        (&id, "(\"subvolid=257,ssd\" + extra)"),
-        (&id, "\"subvolid=257\""),
-    ] {
-        assert_eq!(found(pattern, miss), None, "{miss}");
     }
 }
 
