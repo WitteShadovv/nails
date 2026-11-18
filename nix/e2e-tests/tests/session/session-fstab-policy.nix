@@ -33,6 +33,11 @@
 #     rather than skipped: its mount requires that of its noauto parent
 #     /srv/pa, which a skip would mount. Starting the target fails, and the
 #     parent disk stays unmounted and unchanged;
+#   - a disk at /srv/ra, noauto in the fstab, which a tmpfs mount unit
+#     outside the fstab requires (Requires=srv-ra.mount), linked into
+#     local-fs.target.wants: the line is masked whatever pulls it in, so the
+#     hidden boot does not start the tmpfs, a start of it fails, and the disk
+#     stays unmounted and unchanged;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
@@ -127,6 +132,10 @@ in
           size = 64;
           driveConfig.deviceExtraOpts.serial = "bsrc";
         }
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "ra";
+        }
       ];
       boot.kernelModules = [ "zram" ];
       boot.supportedFilesystems = [ "vfat" ];
@@ -209,6 +218,9 @@ in
     CHILD = "/dev/disk/by-id/virtio-pc"
     CHILD_UNIT = "srv-pa-child.mount"
     BIND_SOURCE = "/dev/disk/by-id/virtio-bsrc"
+    PULLED = "/dev/disk/by-id/virtio-ra"
+    PULLED_UNIT = "srv-ra.mount"
+    PULLER_UNIT = "srv-rt.mount"
     BIND_UNIT = "srv-bdata.mount"
     NOT_READY_RULE = "/run/udev/rules.d/99-spare-not-ready.rules"
     BLK_UNIT = "blk-availability.service"
@@ -267,6 +279,10 @@ in
 
     def parent_hash():
         return machine.succeed(f"sha256sum {PARENT}").split()[0]
+
+
+    def pulled_hash():
+        return machine.succeed(f"sha256sum {PULLED}").split()[0]
 
 
     def backend_entries(config):
@@ -347,6 +363,27 @@ in
     )
     machine.fail("mountpoint -q /srv/pa")
     parent_before = parent_hash()
+    # A noauto disk at /srv/ra, and a tmpfs mount unit outside the fstab that
+    # requires its mount, which local-fs.target wants: started, the tmpfs
+    # has systemd mount the noauto disk first. The decoy's local-fs.target
+    # is reached already, so only the test starts it here.
+    machine.succeed(
+        f"mkfs.ext4 -q {PULLED} && "
+        f"echo '{PULLED} /srv/ra ext4 noauto 0 2' >> /etc/fstab && "
+        "mkdir -p /run/systemd/system/local-fs.target.wants && "
+        f"printf '%s\\n' '[Unit]' 'Requires={PULLED_UNIT}' 'After={PULLED_UNIT}' "
+        "'[Mount]' 'What=tmpfs' 'Where=/srv/rt' 'Type=tmpfs' "
+        f"> /run/systemd/system/{PULLER_UNIT} && "
+        f"ln -s ../{PULLER_UNIT} /run/systemd/system/local-fs.target.wants/{PULLER_UNIT} && "
+        "systemctl daemon-reload"
+    )
+    # Started on the decoy, the tmpfs has systemd mount the noauto disk.
+    machine.succeed(
+        f"systemctl start {PULLER_UNIT} && mountpoint -q /srv/rt && mountpoint -q /srv/ra && "
+        f"systemctl stop {PULLER_UNIT} {PULLED_UNIT}"
+    )
+    machine.fail("mountpoint -q /srv/ra")
+    pulled_before = pulled_hash()
     # A noauto disk at /srv/bsrc, and a bind of a directory on it that
     # local-fs.target requires. systemd has a bind mount require the mounts
     # for its source, so the bind would mount the noauto disk first.
@@ -450,6 +487,10 @@ in
         assert "/srv/later: masked" in out, out
         assert f"{CHILD_UNIT} is masked rather than skipped" in out, out
         assert "srv-pa.mount (the mount of a parent directory)" in out, out
+        assert (
+            "/srv/ra: masked (noauto, but a unit that pulls it in would have the hidden session "
+            "mount it read-write)"
+        ) in out, out
 
     with subtest("check masks a required disk whose device unit is not active"):
         # udev marks the disk not ready: its node is there, but systemd's
@@ -524,6 +565,20 @@ in
         machine.fail("mountpoint -q /srv/pa")
         assert parent_hash() == parent_before, "the hidden session changed the noauto parent disk"
 
+    with subtest("a noauto disk a unit outside the fstab pulls in stays unmounted"):
+        state = machine.succeed(f"systemctl show -p LoadState --value '{PULLED_UNIT}'").strip()
+        assert state == "masked", f"{PULLED_UNIT}: {state}"
+        # The hidden boot pulled the tmpfs in through local-fs.target.wants:
+        # its Requires= on the masked mount kept it from starting.
+        puller = unit_props(PULLER_UNIT, "LoadState", "ActiveState")
+        assert puller == {"LoadState": "loaded", "ActiveState": "inactive"}, puller
+        machine.fail(f"systemctl start {PULLER_UNIT}")
+        machine.fail("mountpoint -q /srv/rt")
+        machine.fail("mountpoint -q /srv/ra")
+        held = machine.succeed(f"lsblk -no MOUNTPOINTS {PULLED}").strip()
+        assert held == "", f"{PULLED} is mounted at {held!r}"
+        assert pulled_hash() == pulled_before, "the hidden session changed the noauto disk"
+
     with subtest("decoy swap is masked and never active"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
         assert state == "masked", f"{SWAP_UNIT}: {state}"
@@ -597,6 +652,8 @@ in
         assert state != "masked", f"the noauto disk's mask leaked into the decoy: {state}"
         state = machine.succeed(f"systemctl show -p LoadState --value '{CHILD_UNIT}'").strip()
         assert state != "masked", f"the child disk's mask leaked into the decoy: {state}"
+        state = machine.succeed(f"systemctl show -p LoadState --value '{PULLED_UNIT}'").strip()
+        assert state != "masked", f"the pulled disk's mask leaked into the decoy: {state}"
         source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
         assert source == LV, f"/srv/files is {source!r} after the way back"
         assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
