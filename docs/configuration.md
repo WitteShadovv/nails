@@ -336,8 +336,8 @@ session plan in `/run`, which is RAM.
 The hidden systemd also starts the mount, swap and automount units a target
 pulls in outside the fstab: a mount unit installed for a target (NixOS's
 `systemd.mounts`, a unit linked in `/etc/systemd/system/local-fs.target.wants`),
-a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
-swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
+a mount the kernel command line names (`systemd.mount-extra=`), a swap unit
+linked in `swap.target.wants`, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
 `.swap` and `.automount` unit linked in a target's `.wants`, `.requires` or
 `.upholds` directory (the initrd's targets aside), including the directories
 systemd reads for every target (`target.wants`) and for the targets whose names
@@ -366,22 +366,29 @@ session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux) is bound
 read-only into the hidden root, as an fstab line for `/efi` would be.
 
 zram-generator does not run in the hidden session: the entry masks it there,
-as it masks the GPT auto-generator, so the hidden session sets up no zram
-device of its own and runs without zram-generator's swap, whatever the hidden
-root's copy of its configuration names. The decoy's own stop at the switch
-turns the decoy's zram swap off, and its start after the way back sets it up
-again. A stop can fail to reset its zram device and leave it set up, which
-the next start of the service manager then cannot set up again; where the
-device holds a swap area that no swap uses, the way back resets it before the
-decoy starts, so the decoy's start sets it up as its cold boot did. The reset
+as it masks the GPT auto-generator, so the hidden session runs without
+zram-generator's swap, whatever the hidden root's copy of its configuration
+names. The decoy's own units turn its zram swap off as the switch stops them,
+and its start after the way back sets it up again; NAILS does not check that
+the swap went off. Any other zram swap unit the hidden systemd would start is
+left to it as RAM-only swap while its zram device keeps its pages in RAM: the
+device is there and `/sys/block/zramN/backing_dev` reads `none`, or the
+kernel gives zram no backing device at all. A zram device with a backing
+device, or one that is not there at activation, gets the decision of disk
+swap: kept off. A zram swap that a service turns on itself, not through a
+swap unit, is not decided. The `swap` check refuses a zram swap with a
+backing device only while it is active.
+
+A stop can fail to reset its zram device and leave it set up, which the next
+start of the service manager then cannot set up again. So once the hidden
+units have stopped, the way back resets every zram device that holds a swap
+area no swap uses, before the decoy starts, so the decoy's start can set it up
+as its cold boot did. That includes a device the decoy itself set up and left
+with its swap off, which the way back leaves reset. A device in use, one never
+set up and one that holds anything but a swap area are left alone. The reset
 logs the device's change of size in the kernel's ring buffer, before the way
-back takes the kernel log's cursor. Any other zram swap unit the hidden systemd
-would start is left to it as RAM-only swap while its zram device keeps its
-pages in RAM: the device is there and `/sys/block/zramN/backing_dev` reads
-`none`, or the kernel gives zram no backing device at all. A zram device with
-a backing device, or one that is not there at activation, gets the decision
-of disk swap: kept off. The `swap` check refuses a zram swap with a backing
-device only while it is active.
+back takes the kernel log's cursor; in the Fedora admission gate's runs the
+decoy's journal still took that line in.
 
 NAILS lists the decoy's unit directories and reads its unit files with
 `O_NOATIME`, which the kernel grants to root, and activation always runs as
@@ -415,7 +422,7 @@ entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
 session; a mask is written in `/run/systemd/system` and in
 `/run/systemd/system.control`, which ranks above `/etc/systemd/system`, so it
 also masks a unit installed there. systemd's GPT auto-generator, which would mount partitions the fstab
-does not list, is masked the same way. `nails check` prints the decision for
+does not list, and zram-generator are masked the same way. `nails check` prints the decision for
 every entry and every unit outside the fstab it reads (the `fstab-policy`
 check). A decoy partition you mount by hand inside the hidden session is
 outside this policy and is written directly.

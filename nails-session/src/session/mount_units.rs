@@ -6,7 +6,7 @@
 //! The hidden systemd starts every unit a target pulls in, not only those
 //! its fstab generator makes: a mount unit installed for a target
 //! (`/etc/systemd/system/local-fs.target.wants/srv-x.mount`, NixOS's
-//! `systemd.mounts`), a swap unit (zram-generator's `dev-zram0.swap`), an
+//! `systemd.mounts`), a swap unit (one linked in `swap.target.wants`), an
 //! automount (systemd's GPT auto-generator's `efi.automount`,
 //! `proc-sys-fs-binfmt_misc.automount`), the mounts the fstab generator makes
 //! from the kernel command line (`systemd.mount-extra=`). The fstab policy
@@ -55,10 +55,10 @@
 //! line. A zram swap is left to the hidden systemd while its
 //! zram device keeps its pages in RAM, with no backing device to write them
 //! back to ([`ram_only_zram`]); one with a backing device, or whose device
-//! NAILS cannot tell about, is decided as a disk swap. The hidden session's
-//! zram-generator sets the device up again from its configuration, which
-//! NAILS does not read. The automount of a filesystem put in place is kept
-//! off, as for an fstab line. A unit the decoy masks is left alone, and one
+//! NAILS cannot tell about, is decided as a disk swap. zram-generator itself
+//! is masked in the hidden root ([`super::hidden_masks::GENERATORS`]), so
+//! the swap it made in the decoy is decided but not set up there. The
+//! automount of a filesystem put in place is kept off, as for an fstab line. A unit the decoy masks is left alone, and one
 //! whose files cannot be read, or that NAILS cannot resolve, is masked.
 //!
 //! A unit skipped in the hidden session starts what it requires and wants:
@@ -75,8 +75,8 @@
 //! reaches a mount, swap or automount the session neither keeps off nor puts
 //! in place, which the hidden systemd would mount from the decoy's disk, or
 //! where NAILS cannot tell all it reaches ([`pulls`], [`deps`]). The
-//! generators run again in the hidden session; what they made in the decoy is
-//! taken as what they make there.
+//! generators the hidden root does not mask run again in the hidden session;
+//! what they made in the decoy is taken as what they make there.
 
 mod deps;
 mod pulls;

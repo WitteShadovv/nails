@@ -323,7 +323,7 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
    decisions. zram-generator does not run in the hidden session, which runs
    without its zram swap; after the way back the decoy's start sets its zram
-   swap up again. Any other zram swap stays on in the hidden session as
+   swap up again. Any other zram swap unit stays on in the hidden session as
    RAM-only swap while its zram device has no backing device, and is kept off
    like disk swap when it has one. A mount unit that only another unit pulls in is not
    decided: the hidden systemd mounts it as the decoy's would, and the session
@@ -335,7 +335,8 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
    there or do nothing: the root filesystem they remount and grow is the root
    overlay in the hidden session. It masks systemd's GPT auto-generator as
-   well, so the generator mounts no partition the fstab does not list. The full
+   well, so the generator mounts no partition the fstab does not list, and
+   zram-generator, so the hidden session runs without zram-generator's swap. The full
    table is in [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry and each unit it reads.
@@ -2981,7 +2982,8 @@ pointed at its store (the decoy then loads no module and no firmware), and
 removes the session's masks in `/run/systemd/system`,
 `/run/systemd/system.control` and `/run/systemd/system-generators`, which
 keep the decoy's swap, its boot-loader units and the other units the hidden
-root does not need masked, and systemd's GPT auto-generator from running. By
+root does not need masked, and systemd's GPT auto-generator and
+zram-generator from running. By
 hand, only a power-off does.
 
 **Do not edit or delete `state.json` by hand** — `recover` resets it once the

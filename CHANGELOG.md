@@ -1112,14 +1112,15 @@ of this changelog for that version becomes the release notes word for word, and
   examiner gives an access time.
 
 - The hidden session no longer runs zram-generator: the entry masks it in the hidden root, as it
-  masks the GPT auto-generator, so the hidden session sets up no zram device of its own and runs
-  without zram-generator's swap. It set the device up again from the hidden root's copy of
+  masks the GPT auto-generator, so the hidden session runs without zram-generator's swap. It set the device up again from the hidden root's copy of
   zram-generator's configuration, which the fstab policy does not read and which can name a disk
   the device writes its pages back to. On Fedora 45 its stop at the emergency way back failed to
   reset the device (`Device or resource busy`), and the decoy then ran without its zram swap, with
   `systemd-zram-setup@zram0.service` failed, until the next power-off. The way back now also resets
-  a zram device that a stop left set up with a swap area no swap uses, before the decoy starts, so
-  that the decoy's start sets its zram swap up as its cold boot did.
+  every zram device set up with a swap area no swap uses, before the decoy starts, so that the
+  decoy's start can set its zram swap up as its cold boot did. That includes one whose reset failed
+  at a stop, and one the decoy set up itself and left with its swap off. A zram swap unit other
+  than zram-generator's is still left on in the hidden session while its device is RAM-only.
 - Where the getty is what it measures by, the way back's process-number set-back keeps the decoy's
   getty in the power-of-two range of the number the decoy's boot gave it, from 128 on, as long as
   the getty lands less than 64 numbers off the number the way back aims at. It aimed at that number
