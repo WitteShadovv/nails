@@ -38,8 +38,9 @@
 # moment: a unit that failed while a switch stopped the old system and that
 # the new system started again is not in it, nor is one that fails and
 # starts again between two listings, nor one that fails after the last. After
-# the second session, which pushes the kernel's process numbers far on, the
-# getty the decoy starts again carries a number in the power-of-two range the
+# the second session, which pushes the kernel's process numbers far on, each
+# console's unit the decoy starts again (a getty, or kmscon on Fedora 45)
+# carries a number in the power-of-two range the
 # decoy's fresh boot gave it, and logind a number below the one the session
 # pushed the counter to. Each switch goes through logind: a program that
 # blocks shutdown makes the activation refuse, a program that holds the
@@ -250,7 +251,13 @@ distroVm.buildVmTest {
             "",
         )
     )
-    blkdeactivate = "argv[]=/usr/sbin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
+    # The unit's stop as systemd shows it. Fedora's lvm2 ships the unit with
+    # /usr/bin/blkdeactivate.
+    blkdeactivate_args = "/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
+
+
+    def runs_blkdeactivate(stop):
+        return any(f"argv[]=/usr/{d}{blkdeactivate_args}" in stop for d in ("sbin", "bin"))
 
     # A decoy service that keeps a PID file in /run the way avahi-daemon does:
     # it removes the file when it stops, and refuses to start while one is
@@ -686,13 +693,16 @@ distroVm.buildVmTest {
 
 
     # The decoy units whose process numbers the scenario reads at the fresh boot
-    # and after the way back. The gettys write theirs into /var/log/wtmp, and
-    # the way back measures by the getty, so theirs must fall in the range a
-    # fresh boot gives them. logind is not measured where a getty runs, and a
-    # soft-reboot starts it in another order, so its number only has to come
-    # from the counter the way back set.
-    NUMBERED_UNITS = ["systemd-logind.service", "getty@tty1.service", "serial-getty@ttyS0.service"]
-    RANGED_UNITS = ["getty@tty1.service", "serial-getty@ttyS0.service"]
+    # and after the way back. The consoles' units, the gettys and Fedora 45's
+    # kmscon in their place, write theirs into /var/log/wtmp, and the way back
+    # measures by the getty, so theirs must fall in the range a fresh boot
+    # gives them. logind is not measured where a getty runs, and a soft-reboot
+    # starts it in another order, so its number only has to come from the
+    # counter the way back set. A unit the image has no unit file for is
+    # passed over.
+    CONSOLE_UNITS = ["getty@tty1.service", "serial-getty@ttyS0.service", "kmsconvt@tty1.service"]
+    NUMBERED_UNITS = ["systemd-logind.service", *CONSOLE_UNITS]
+    RANGED_UNITS = CONSOLE_UNITS
 
 
     def pid_range(pid):
@@ -705,6 +715,8 @@ distroVm.buildVmTest {
         # The main process numbers of the numbered units that run now.
         numbers = {}
         for unit in NUMBERED_UNITS:
+            if vm.execute(f"systemctl cat {unit} >/dev/null 2>&1")[0] != 0:
+                continue
             if vm.execute(f"timeout 60 bash -c 'until systemctl is-active -q {unit}; do sleep 1; done'")[0] != 0:
                 continue
             pid = int(vm.succeed(f"systemctl show -P MainPID {unit}").strip() or "0")
@@ -1292,7 +1304,7 @@ distroVm.buildVmTest {
             state = unit_state("blk-availability.service")
             assert state == {"LoadState": "loaded", "ActiveState": "active"}, state
             stop = blk_availability_stop()
-            assert blkdeactivate in stop, stop
+            assert runs_blkdeactivate(stop), stop
         else:
             print("this image has neither lvm2 nor dmsetup: no blk-availability.service")
 
@@ -1679,7 +1691,7 @@ distroVm.buildVmTest {
             state = unit_state("blk-availability.service")
             assert state == {"LoadState": "loaded", "ActiveState": "active"}, state
             stop = blk_availability_stop()
-            assert blkdeactivate in stop, stop
+            assert runs_blkdeactivate(stop), stop
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
                 unit = distro_checks.escape_path(target) + ".mount"
