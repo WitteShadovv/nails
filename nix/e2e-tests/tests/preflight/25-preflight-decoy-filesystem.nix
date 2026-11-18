@@ -637,16 +637,19 @@ in
             in failed[0]["remediation"]
         ), failed
         assert_exit_code(result, 4)
-        # The folder the root is, as / shows it, refuses as well.
+        # The folder the root is, as / shows it, refuses as well. The check
+        # reports the first line by file, and apps.nix sorts before the
+        # configuration.nix that names the label.
         machine.succeed(
-            "echo '{ services.x.dataDir = \"/var/lib/gate\"; }' > /etc/nixos/gate.nix"
+            "echo '{ services.x.dataDir = \"/var/lib/gate\"; }' > /etc/nixos/apps.nix"
         )
         result = run_command_capture("gate-root-bind-folder", command)
         failed = failed_rows(last_json(result))
         assert [row["name"] for row in failed] == ["suspicious-nails-reference"], failed
-        assert "/etc/nixos/gate.nix, line 1: '/var/lib/gate'" in failed[0]["message"], failed
+        assert "/etc/nixos/apps.nix, line 1: '/var/lib/gate'" in failed[0]["message"], failed
+        assert "One more line does too." in failed[0]["message"], failed
         assert_exit_code(result, 4)
-        machine.succeed("rm /etc/nixos/gate.nix && umount /mnt/rootbind && rm -rf /var/lib/gate")
+        machine.succeed("rm /etc/nixos/apps.nix && umount /mnt/rootbind && rm -rf /var/lib/gate")
 
     with subtest("an encrypted container file on a decoy filesystem only warns"):
         machine.succeed(
