@@ -15,6 +15,7 @@
 }:
 let
   makeRecords = import ./tests/session-records.nix { inherit self pkgs nix-vm-test; };
+  images = import ./images.nix { inherit pkgs; };
   entry = distro: image: release: { inherit distro image release; };
 
   # Recent Debian installs wtmpdb at priority "standard"; the generic cloud
@@ -52,11 +53,29 @@ let
       install = "";
       assertKind = "classic-wtmp";
     };
+
+    # Fedora 44 and 45, booted with SELinux enforcing as the image table pins
+    # them: classic wtmp on systemd 259 and newer, which resets the start time
+    # across a soft-reboot, so a login and a failed login run in the session.
+    # Fedora 44's pam_lastlog2 fails to load, as the admission gate's runs on
+    # it show, so only Fedora 45 writes the login's lastlog2 row.
+    "fedora-44" = makeRecords {
+      entry = images."fedora-44";
+      assertKind = "classic-wtmp-reset";
+      login = true;
+      lastlog2 = false;
+    };
+    "fedora-45" = makeRecords {
+      entry = images."fedora-45";
+      assertKind = "classic-wtmp-reset";
+      login = true;
+    };
   };
 in
 {
   inherit drivers;
-  # Every scenario can run: nix-vm-test pins both images.
+  # Every scenario can run: nix-vm-test pins the Debian and Ubuntu images, and
+  # the image table the Fedora ones.
   runnable = builtins.attrNames drivers;
   # The seconds a run gets, from the boot to its last assertion: an install, a
   # power cycle, a session kept until the kernel has been up past wtmpdb's five

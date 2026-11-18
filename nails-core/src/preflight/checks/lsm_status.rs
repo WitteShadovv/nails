@@ -116,9 +116,9 @@
 //!   is [`UnitDomain::Off`]), and on a host where SELinux runs the check
 //!   fails.
 //!
-//! Fedora, whose hosts run SELinux by default, is not admitted yet: the
-//! `platform` check refuses it, so on the families NAILS admits this applies
-//! only where a host was set up to run SELinux.
+//! Of the families NAILS admits, Fedora runs SELinux by default, enforcing
+//! with the targeted policy, as its admission gate runs it; on the others this
+//! applies only where a host was set up to run SELinux.
 //!
 //! Every SELinux fact is read through the host-fact readers detection uses,
 //! without libselinux; the change time of `/etc/selinux/config` and the boot

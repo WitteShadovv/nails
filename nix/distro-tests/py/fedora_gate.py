@@ -1,10 +1,10 @@
-"""The gate scenario of an enforcing Fedora decoy, before Fedora is admitted.
+"""The gate scenario of an enforcing Fedora decoy: Fedora's admission gate.
 
 ``nix/distro-tests/fedora-gate.nix`` builds one host driver per pinned Fedora
 image (``<image>-gate``, and ``<image>-gate-noda`` with the policy's dontaudit
 rules off, where only NAILS's new denials fail and the others are recorded)
 and calls :func:`run` with the driver's machine. The image boots
-with SELinux enforcing, and NAILS is a test-only build that admits Fedora.
+with SELinux enforcing, and NAILS is the release binary.
 Every ``nails`` command runs from a real operator domain: a login session of
 its own, a transient unit with the login PAM stack, whose pam_selinux gives
 the user its default context (``unconfined_t``), checked with ``id -Z``
@@ -421,9 +421,11 @@ KMSG_TRIES = 5
 # The decoy's own timers and the units each starts, as the PID 1 of the root
 # that runs reports them: whether the timer is persistent, when it last
 # triggered, and when its unit last left and last entered its inactive state.
-# PID 1 keeps no unit's runs across a soft-reboot, so a run it reports after a
-# switch is one of its own start, never one of the root before it. Times are
-# to the second, the guest's wall clock last.
+# PID 1 carries these times across a soft-reboot, so the last run it reports
+# can be one of the root before the switch, or of an earlier start: the gate
+# reads only a run that started from the time a comparison counts from on
+# (:func:`timer_explained`). Times are to the second, the guest's wall clock
+# last.
 DECOY_TIMERS = r"""
 systemctl list-units --all --type=timer --plain --no-legend --no-pager |
 while read -r t _; do
@@ -594,8 +596,8 @@ def _unix_time(value: str) -> float | None:
 def timer_runs(text: str) -> tuple[list[dict[str, Any]], float | None]:
     """The runs of the decoy's own timers in ``text`` (output of
     :data:`DECOY_TIMERS`), and the guest's wall clock at its end. A unit
-    whose inactive state it left at no time has not run in this start of PID
-    1 and is not listed; one still running, or whose last return to its
+    whose inactive state PID 1 never saw it leave has not run since the boot
+    and is not listed; one still running, or whose last return to its
     inactive state came before its last start, ends at ``None``."""
     runs: list[dict[str, Any]] = []
     now = None

@@ -522,14 +522,14 @@ mod kernel_tests {
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(stderr.contains(&format!("platform: {warning}")), "{stderr}");
 
-            host("ID=fedora\nVERSION_ID=44\n");
+            host("ID=arch\nBUILD_ID=rolling\n");
             let row = platform_row();
             assert_eq!(row["status"], "fail", "{row}");
             assert!(
                 row["message"]
                     .as_str()
                     .unwrap_or("")
-                    .starts_with("Fedora is not yet a validated platform"),
+                    .starts_with("Arch is not yet a validated platform"),
                 "{row}"
             );
             // Activation refuses a host it does not support with exit 8, and
@@ -579,7 +579,7 @@ mod kernel_tests {
                 assert_eq!(init.status.code(), Some(8), "{flags:?}: {init:?}");
                 let stderr = String::from_utf8_lossy(&init.stderr);
                 assert!(
-                    stderr.contains("Fedora is not yet a validated platform"),
+                    stderr.contains("Arch is not yet a validated platform"),
                     "{flags:?}: {stderr}"
                 );
                 assert!(entries(target.path()).is_empty(), "{flags:?}");

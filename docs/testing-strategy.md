@@ -117,10 +117,10 @@ udiskie mounts drives by itself and records whether it mounts one unlocked from
 a terminal. The group runs where the whole suite runs (pushes, nightly, the
 `full-e2e` label), and the `affected` selection of a pull request leaves it
 out, so a pull request runs it only with that label, and a behaviour a pull
-request must prove needs a test outside it as well. On Fedora and Arch, which NAILS does not admit yet, a refusal scenario
-checks that NAILS refuses them, that a refused `activate` changes nothing on the
+request must prove needs a test outside it as well. On Arch, which NAILS does not admit yet, a refusal scenario
+checks that NAILS refuses it, that a refused `activate` changes nothing on the
 hidden root, and that nothing on the decoy's disk filesystems or in its journal
-names the refused run. On Debian 13 and Ubuntu 24.04, a records scenario checks
+names the refused run. On Debian 13, Ubuntu 24.04 and Fedora 44 and 45, a records scenario checks
 that a session kept past five minutes of uptime leaves the decoy's login and
 boot records as a power cycle would. CI runs both on hosted KVM runners, nightly
 and on the pull requests that change what they are built from

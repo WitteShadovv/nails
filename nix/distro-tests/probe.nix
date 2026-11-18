@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# A probe boots the stock cloud image of a distribution the smoke suite does not
-# admit yet (Fedora, Arch), without nails, runs the queries of
-# py/probe_facts.py in it, soft-reboots it once and runs the queries that follow
+# A probe boots the stock cloud image of a Fedora or Arch release, without
+# nails, runs the queries of py/probe_facts.py in it, soft-reboots it once and
+# runs the queries that follow
 # the soft-reboot. It writes the facts as <probe>.json, the record the matching
 # probe/<probe>.json fixture holds (see probe/README.md), and the raw output of
 # every query beside it. A probe is a host driver: a maintainer runs it on a
@@ -17,7 +17,8 @@ let
   images = import ./images.nix { inherit pkgs; };
   distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
 
-  # The families the smoke suite does not run yet, so their facts are unknown.
+  # The families whose facts the probes record: Arch, which the smoke suite
+  # does not run yet, and Fedora, whose probe fixtures its admission rests on.
   probeOsIds = [
     "fedora"
     "arch"

@@ -108,18 +108,6 @@ let
       assertKind = "classic-wtmp-reset";
       login = true;
     };
-    # Classic wtmp on systemd 259 and newer, which resets the start time
-    # across a soft-reboot. Fedora 44's pam_lastlog2 fails to load, as the
-    # admission gate's runs on it show, so only Fedora 45 writes lastlog2.
-    fedora-44 = {
-      assertKind = "classic-wtmp-reset";
-      login = true;
-      lastlog2 = false;
-    };
-    fedora-45 = {
-      assertKind = "classic-wtmp-reset";
-      login = true;
-    };
   };
   stagedImages = builtins.attrNames stagedRecords;
   stagedScenarios = lib.listToAttrs (

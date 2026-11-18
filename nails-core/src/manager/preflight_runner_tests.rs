@@ -1433,7 +1433,7 @@ fn an_old_systemd_is_told_how_the_detected_host_upgrades() {
         (
             "ID=fedora\nVERSION_ID=38\n",
             253,
-            "Upgrade to Fedora 44 with `dnf system-upgrade`, at most two releases at a time.",
+            "Upgrade to Fedora 44 or 45 with `dnf system-upgrade`, at most two releases at a time.",
         ),
     ] {
         let row = systemd_version_row(Some(os_release), Some(version));
