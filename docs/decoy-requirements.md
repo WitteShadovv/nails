@@ -914,6 +914,15 @@ logind.
   value (`EnvironmentFile=-/mnt/data/app.env`, `ExecStart=+/mnt/data/bin/app`),
   but not where such a prefix is part of another path (`/srv/-/mnt/data`).
 
+  The check reads each line as the file writes it and again with the escapes
+  of its strings read as Nix reads them, in code and in comments alike. In a
+  `"…"` string `\n`, `\r` and `\t` are a newline, a carriage return and a
+  tab, and a backslash before any other character is that character; in a
+  `''…''` string `'''` is `''`, `''$` is `$` and `''\` escapes the
+  character after it the same way. So `"/mnt/d\ata"` and `''/mnt/d''\ata''`
+  are refused as `/mnt/data` is, while `"/mnt/d\\ata"`, which Nix reads as
+  `/mnt/d\ata`, passes.
+
   A kernel name counts as the kernel gives it while the check runs. The
   numbers of `dm-<n>` and `loop<n>` are handed out as the devices appear, so
   a line that names a device of the decoy that way (`/dev/dm-1`) is refused
@@ -932,7 +941,8 @@ logind.
 
   The check reads text; it does not evaluate Nix. It does not follow a
   mapping defined through a `let` binding, `lib.listToAttrs` or an
-  interpolated name (`luks.devices.${"data"}`), nor a path written with a
+  interpolated name (`luks.devices.${"data"}`), nor a name Nix builds from
+  parts (`"/mnt/da" + "ta"`, `lib.concatStrings`), nor a path written with a
   `..` component or relative to the file (`/mnt/x/../data`,
   `../../mnt/data`); a `.` component or a doubled slash it reads as the
   kernel does (`/mnt/./data`, `/mnt//data`). It does not know these names of
@@ -968,9 +978,11 @@ logind.
   says how many lines it let be. The same name anywhere else still fails it:
   in a `fileSystems` entry for another folder (the filesystem's top mounted
   at `/btr_pool` for a backup tool, say), in an entry's options, in
-  `boot.resumeDevice`, a udev rule, a service's settings (`services.beesd`),
-  a `let` binding, or a comment outside such an entry. Attribute names count
-  with the case Nix reads them in (`fileSystems`, not `filesystems`).
+  `boot.resumeDevice`, a udev rule, a service's own settings
+  (`services.beesd`), a `let` binding, or a comment outside such an entry.
+  A place counts by how the attribute path of its definition ends, wherever
+  the definition stands, also inside another set. Attribute names count with
+  the case Nix reads them in (`fileSystems`, not `filesystems`).
 
   The check takes those devices from the attach gate's own decision, which it
   makes again through the automount guard as `hidden-volume` does, by kernel
@@ -987,28 +999,40 @@ logind.
     components or doubled slashes;
   - the root's own name inside the filesystem, the last part of its path
     there (`@vault` for the subvolume `@vault`, `vault` for the folder
-    `home/alice/vault`), wherever it stands as a whole part of a path or a
-    whole string, whatever comes before it (`subvol=./@vault`,
-    `subvol=@home/../@vault`, `/btr_pool/@vault`,
-    `/mnt/rootfs/home/alice/vault`, btrbk's `subvolume."@vault"`), or as an
-    attribute name the file defines (`subvolume.vault = { };`);
+    `home/alice/vault`), wherever it stands between characters that cannot
+    be part of a file name, in code, strings, comments and prose alike,
+    whatever comes before it (`subvol=./@vault`, `subvol=@home/../@vault`,
+    `/btr_pool/@vault`, `/mnt/rootfs/home/alice/vault`, btrbk's
+    `subvolume."@vault"`), or as an attribute name the file defines
+    (`subvolume.vault = { };`), also written with escapes
+    (`"subvol=@v\ault"`);
   - on btrfs, `subvolid=` with the subvolume's id in any form the kernel
-    reads it (`258`, `0x102`, `0402`, `+258`), and a `subvol=` or `subvolid=`
-    value the check cannot read, such as one an interpolation makes;
+    reads it (`258`, `0x102`, `0402`, `+258`), and a `subvolid=` value that
+    is no number;
+  - a value the check cannot read whole: a `subvol=` or `subvolid=` (both on
+    btrfs) or `X-mount.subdir=` value that is empty, holds an interpolation or
+    runs to the end of a string that a `+` goes on with
+    (`"subvol=@va" + "ult"`),
+    and, in the places where it lets the device's names be, a `device` or
+    `label` string that holds an interpolation, that a `+` joins to
+    something, or that goes on over the next line;
   - a name of any other device the hidden volume is stored on;
   - a place that may give such a name and cannot be read;
   - NAILS's own text and the word `nails`.
 
-  Since the root's own name counts wherever it stands whole, a root named
-  like something else in `/etc/nixos` fails too (`vault` beside
-  `/var/lib/vault`): give the folder or subvolume a name that appears in no
-  path, string or attribute name there. The check reads text and does not
-  evaluate Nix: a name Nix builds from parts (`"@va" + "ult"`), a path to the
-  root through a link in the filesystem, and an entry that takes its device
-  from another one without naming it (`inherit (config.fileSystems."/")
-  device;`) are not read. Without the flag, and for a root that is the
-  whole filesystem, that the decoy mounts no other part of at `/` or at a
-  system folder, or whose storage NAILS cannot judge, nothing is let be.
+  Since the root's own name counts wherever it stands as a word of its own,
+  a root named like something else in `/etc/nixos` fails too (`vault` beside
+  `/var/lib/vault` or in a comment): give the folder or subvolume a name that
+  appears nowhere there. The check reads text and does not evaluate Nix: a
+  name Nix builds from parts outside the values and places above
+  (`lib.concatStrings [ "subvol=@va" "ult" ]`, or `"/srv/@va" + "ult"` as
+  the device of an entry for a folder that is no system folder), a path to
+  the root through a link in the filesystem, and an entry that takes its
+  device from another one without naming it
+  (`inherit (config.fileSystems."/") device;`) are not read. Without the
+  flag, and for a root that is the whole filesystem, that the decoy mounts no
+  other part of at `/` or at a system folder, or whose storage NAILS cannot
+  judge, nothing is let be.
 
 ### Ubuntu
 
