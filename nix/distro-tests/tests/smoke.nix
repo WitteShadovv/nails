@@ -1353,8 +1353,24 @@ distroVm.buildVmTest {
             + f"--property=StandardOutput=file:{log} --property=StandardError=file:{log} "
             + f"{nails_cmd} activate -y"
         )
-        # The residue baseline, the last step before the checks, is written.
-        vm.wait_until_succeeds("ls /mnt/data/reports/activation-residue-*.json", timeout=600)
+        # The residue baseline, the last step before the checks, is written,
+        # or the activation ended before it. Either way what it printed by
+        # then is shown when the baseline is not there.
+        written = "ls /mnt/data/reports/activation-residue-*.json"
+        printed = f"cat {log}; systemctl show -p ExecMainStatus cancelled-activation.service"
+        try:
+            vm.wait_until_succeeds(
+                f"{written} || test \"$(systemctl show "
+                + "-P ExecMainExitTimestampMonotonic cancelled-activation.service)\" != 0",
+                timeout=600,
+            )
+        except Exception:
+            print(vm.execute(printed)[1])
+            raise
+        if vm.execute(written)[0] != 0:
+            raise AssertionError(
+                "the activation ended before its residue baseline:\n" + vm.execute(printed)[1]
+            )
         vm.succeed("systemctl kill --signal=SIGINT cancelled-activation.service")
         vm.wait_until_succeeds(
             "test \"$(systemctl show -P ExecMainExitTimestampMonotonic "
