@@ -332,6 +332,26 @@ def restore_errors(output: str) -> list[str]:
     ]
 
 
+# What btrfs restore prints for an older root btrfs-find-root listed whose own
+# tree the disk no longer holds: a tree root block it reads back at another
+# level than the root item names, as when the block was written again since,
+# and the read of the subvolume that fails for it.
+_GONE_ROOT = re.compile(r"ERROR: root \[\d+ \d+\] level \d+ does not match \d+")
+_GONE_SUBVOLUME = re.compile(r"ERROR: reading subvolume .* failed: \d+")
+
+
+def root_gone(errors: Iterable[str]) -> bool:
+    """Whether the ``errors`` (:func:`restore_errors`) of one older root's
+    restore say only that the disk no longer holds that root's tree: at least
+    one tree root block read back at another level than its root item names,
+    and no error but those and the failed read of a subvolume. An error of
+    any other kind, a file or a folder it could not read, is not."""
+    errors = list(errors)
+    return any(_GONE_ROOT.fullmatch(e) for e in errors) and all(
+        _GONE_ROOT.fullmatch(e) or _GONE_SUBVOLUME.fullmatch(e) for e in errors
+    )
+
+
 def compression(options: str) -> str | None:
     """The algorithm a btrfs mount with `options` (as the mount table shows
     them) compresses new data with: ``zstd``, ``zlib`` or ``lzo``, or None when

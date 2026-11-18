@@ -293,6 +293,27 @@ class RestoreErrorsTest(unittest.TestCase):
         self.assertEqual(bs.restore_errors(notes), [])
         self.assertEqual(bs.restore_errors(""), [])
 
+    # What btrfs restore printed for an older root of a Fedora 45 decoy whose
+    # tree the disk no longer held (the smoke's clean image, generation 13).
+    GONE = [
+        "ERROR: root [2 0] level 0 does not match 1",
+        "ERROR: root [7 0] level 0 does not match 1",
+        "ERROR: root [256 0] level 0 does not match 2",
+        "ERROR: reading subvolume /build/clean-13-x//root failed: 18446744073709551611",
+    ]
+
+    def test_a_root_whose_tree_is_overwritten_is_gone(self) -> None:
+        self.assertTrue(bs.root_gone(self.GONE))
+        self.assertTrue(bs.root_gone(self.GONE[2:3]))
+
+    def test_a_root_it_could_not_read_a_file_of_is_not_gone(self) -> None:
+        self.assertFalse(bs.root_gone([]))
+        self.assertFalse(bs.root_gone(bs.restore_errors(self.OUTPUT)))
+        self.assertFalse(bs.root_gone(self.GONE[3:]))
+        self.assertFalse(
+            bs.root_gone([*self.GONE, "ERROR: copying data for /out//etc/x failed"])
+        )
+
 
 class CompressionTest(unittest.TestCase):
     def test_the_algorithm_of_the_mount(self) -> None:
