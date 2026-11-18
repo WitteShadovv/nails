@@ -461,7 +461,8 @@ class CarriedTest(unittest.TestCase):
             kmsg(21, listening.format("systemd-journald-dev-log.socket", "Log")),
             kmsg(22, listening.format("systemd-oomd.socket", "OOM Killer Socket")),
         ]
-        self.assertEqual(len(fg.reopened_sockets(log, 15)), 2)
+        # The audit socket, which the way back leaves closed, aside.
+        self.assertEqual(len(fg.reopened_sockets(log, 15)), 1)
         self.assertEqual(fg.reopened_sockets(log, 30), [])
 
     def test_the_late_writer_logs_through_each_socket(self) -> None:
