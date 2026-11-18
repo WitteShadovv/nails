@@ -26,7 +26,7 @@ const RUN_UNIT_DIR: &str = "/run/systemd/system";
 const RUN_CONTROL_DIR: &str = "/run/systemd/system.control";
 
 /// The runtime generator directory, which outranks every other, where the
-/// entry masks systemd's GPT auto-generator.
+/// entry masks systemd's GPT auto-generator and zram-generator.
 const RUN_GENERATOR_DIR: &str = "/run/systemd/system-generators";
 
 /// Guidance for an interrupted entry's leftovers, naming the real binary path.
@@ -261,9 +261,9 @@ impl<F: Filesystem> Verifier<F> {
     /// runtime masks (links to `/dev/null`) there, in
     /// `/run/systemd/system.control`, where the entry masks the units the
     /// hidden root does not need, and in `/run/systemd/system-generators`,
-    /// where it masks the GPT auto-generator. A mask may also be the
-    /// administrator's own (`systemctl mask --runtime`, or a link of their
-    /// own), so it only warns. Also the session's skip drop-ins in
+    /// where it masks the GPT auto-generator and zram-generator. A mask may
+    /// also be the administrator's own (`systemctl mask --runtime`, or a link
+    /// of their own), so it only warns. Also the session's skip drop-ins in
     /// `/run/systemd/system`, which only the session writes.
     fn leftover_run_units(&self) -> Vec<Finding> {
         let mut findings = Vec::new();

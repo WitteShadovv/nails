@@ -1026,7 +1026,7 @@ mod kernel_tests {
             let hidden = start(dir.path(), &sh, "agetty");
             let used = hidden.id() - record.at_switch.unwrap();
             record.counter = fresh_pids::counter(&record, Path::new("/proc"));
-            assert_eq!(record.counter, Some(getty.id() - used));
+            assert_eq!(record.counter, Some(fresh_pids::aim(getty.id()) - used));
 
             // The hidden session runs on and stops; the way back sets the
             // counter, and the next process gets a number below where it was.

@@ -64,14 +64,26 @@ pub fn parse_version(text: &str) -> Option<u32> {
 }
 
 /// The version of the running service manager (PID 1), not of the
-/// `systemctl` client: `systemctl show -p Version --value`, falling back to
-/// `systemctl --version`.
+/// `systemctl` client: its `Version` property, falling back to `systemctl
+/// --version`.
+///
+/// The property is asked for alone (`busctl get-property`, the `Get` call).
+/// `systemctl show -p Version` asks for every property of PID 1 and picks one
+/// (`GetAll`), and PID 1 then works out its taint list as well, for which it
+/// reads `/etc/os-release` and `/etc/adjtime` on the decoy disk and updates
+/// their access times.
 pub fn running_version(runner: &dyn ProcessRunner) -> Option<u32> {
-    let show = ProcessCommand::tool("systemctl")
-        .args(["show", "-p", "Version", "--value"])
+    let get = ProcessCommand::tool("busctl")
+        .args([
+            "get-property",
+            "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager",
+            "Version",
+        ])
         .deadline(crate::process::run::SYSTEMCTL_PROBE_BUDGET);
-    if let Ok((true, out, _)) = runner.run_text(&show)
-        && let Some(version) = parse_version(&out)
+    if let Ok((true, out, _)) = runner.run_text(&get)
+        && let Some(version) = busctl_string(&out).and_then(parse_version)
     {
         return Some(version);
     }
@@ -83,6 +95,15 @@ pub fn running_version(runner: &dyn ProcessRunner) -> Option<u32> {
         .ok()
         .and_then(|(ok, out, _)| ok.then(|| parse_version(out.lines().next().unwrap_or(""))))
         .flatten()
+}
+
+/// The value `busctl get-property` prints for a property of type `s`, its
+/// signature and quotes taken off: `s "257.9-1~deb13u1"` is `257.9-1~deb13u1`.
+fn busctl_string(text: &str) -> Option<&str> {
+    text.trim()
+        .strip_prefix("s ")?
+        .strip_prefix('"')?
+        .strip_suffix('"')
 }
 
 /// Whether `unit` is installed in `root`, resolved as if `root` were `/`: on
@@ -118,6 +139,72 @@ pub fn units_in_root(root: &Path, units: &[&str]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_version_property_parses_as_busctl_prints_it() {
+        let parsed = |text: &str| busctl_string(text).and_then(parse_version);
+        assert_eq!(parsed("s \"257.9-1~deb13u1\"\n"), Some(257));
+        assert_eq!(parsed("s \"259\""), Some(259));
+        assert_eq!(parsed("s \"\""), None);
+        assert_eq!(parsed("257.9"), None, "no signature");
+        assert_eq!(parsed("u 257"), None, "not a string");
+    }
+
+    /// A runner that answers `busctl` with `busctl` and `systemctl` with
+    /// `systemctl`, an empty answer as a failure, and records each command.
+    struct Answers {
+        busctl: &'static str,
+        systemctl: &'static str,
+        asked: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl ProcessRunner for Answers {
+        fn run(&self, command: &ProcessCommand) -> crate::Result<std::process::Output> {
+            use std::os::unix::process::ExitStatusExt;
+            let asked = format!("{command:?}");
+            let answer = if asked.contains("Tool(\"busctl\")") {
+                self.busctl
+            } else {
+                self.systemctl
+            };
+            self.asked.borrow_mut().push(asked);
+            let code = if answer.is_empty() { 1 } else { 0 };
+            Ok(std::process::Output {
+                status: std::process::ExitStatus::from_raw(code << 8),
+                stdout: answer.as_bytes().to_vec(),
+                stderr: Vec::new(),
+            })
+        }
+    }
+
+    /// The version comes from PID 1's one property, asked for alone, never
+    /// with `systemctl show`, and from the client's `--version` where that
+    /// fails.
+    #[test]
+    fn the_running_version_asks_pid_1_for_its_version_alone() {
+        let runner = Answers {
+            busctl: "s \"258.1\"\n",
+            systemctl: "systemd 257 (257.9-1)\n",
+            asked: Default::default(),
+        };
+        assert_eq!(running_version(&runner), Some(258));
+        let asked = runner.asked.borrow();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert!(asked[0].contains("\"get-property\""), "{asked:?}");
+        assert!(asked[0].contains("\"Version\""), "{asked:?}");
+
+        let runner = Answers {
+            busctl: "",
+            systemctl: "systemd 257 (257.9-1)\n",
+            asked: Default::default(),
+        };
+        assert_eq!(running_version(&runner), Some(257));
+        let asked = runner.asked.borrow();
+        assert!(
+            asked.iter().all(|call| !call.contains("\"show\"")),
+            "{asked:?}"
+        );
+    }
 
     #[test]
     fn versions_parse_from_every_form_systemd_prints() {

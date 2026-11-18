@@ -54,14 +54,9 @@
         "status": "fail"
       },
       {
-        "message": "Required host tools are missing. Install them and retry:\n  systemctl (apt install systemd)\n  loginctl (apt install systemd)\n  ip (apt install iproute2)",
+        "message": "Required host tools are missing. Install them and retry:\n  systemctl (apt install systemd)\n  loginctl (apt install systemd)",
         "name": "host-tools",
         "status": "fail"
-      },
-      {
-        "message": "The way back finds nft, and iw where a link is a Wi-Fi interface",
-        "name": "network-tools",
-        "status": "pass"
       },
       {
         "message": "Filesystem at /mnt/data supports symbolic links",
@@ -185,7 +180,7 @@
     "ready": false,
     "summary": {
       "failed": 4,
-      "passed": 20,
+      "passed": 19,
       "skipped": 1,
       "warnings": 6
     }

@@ -26,10 +26,12 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub(crate) struct FakeHost {
     reloads: Cell<u32>,
-    /// The next root to look at on the first reload.
+    /// The next root to look at on each reload.
     nextroot: Option<PathBuf>,
-    /// Whether it was a mount point then.
+    /// Whether it was a mount point at the first reload.
     populated_at_first_reload: Cell<Option<bool>>,
+    /// Whether it was a mount point at the last reload.
+    populated_at_last_reload: Cell<Option<bool>>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
     /// The files that stand for the kernel's helper paths.
@@ -83,12 +85,13 @@ impl EntryHost for FakeHost {
         if self.cancel_at_reload && self.reloads.get() == 0 {
             nails_core::cancel::testing::request();
         }
-        if self.reloads.get() == 0
-            && let Some(nextroot) = &self.nextroot
-        {
+        if let Some(nextroot) = &self.nextroot {
             let entries = read_mountinfo().unwrap();
-            self.populated_at_first_reload
-                .set(Some(entries.iter().any(|e| e.mount_point == *nextroot)));
+            let populated = Some(entries.iter().any(|e| e.mount_point == *nextroot));
+            if self.reloads.get() == 0 {
+                self.populated_at_first_reload.set(populated);
+            }
+            self.populated_at_last_reload.set(populated);
         }
         self.reloads.set(self.reloads.get() + 1);
         Ok(())
@@ -813,7 +816,13 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         assert!(paths.binary_copy().is_file());
         assert!(world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
         assert_timeout_guard(&world, true);
-        assert_eq!(host.reloads.get(), 1);
+        // One reload loads the drop-in before anything is mounted, and one at
+        // the end, with the next root in place, has PID 1 take in what the
+        // entry mounted while the decoy's mounts are still noatime.
+        assert_eq!(
+            (host.reloads.get(), host.populated_at_last_reload.get()),
+            (2, Some(true))
+        );
         let plan = Plan::load(&paths.plan()).unwrap();
         assert!(plan.armed_for(Direction::Enter, unix_now()));
         assert_eq!(plan.hidden.init, Path::new("/usr/lib/systemd/systemd"));
@@ -837,10 +846,11 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
             pid_places: None,
+            zram: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
@@ -903,10 +913,11 @@ fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
             pid_places: Some(fresh_pids::Places::under(counter.path())),
+            zram: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
@@ -1349,7 +1360,10 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
                 "systemd-growfs-root.service"
             ]
         );
-        assert_eq!(plan.generator_masks, ["systemd-gpt-auto-generator"]);
+        assert_eq!(
+            plan.generator_masks,
+            ["systemd-gpt-auto-generator", "zram-generator"]
+        );
         let control = paths.run.join(runtime_units::RUNTIME_CONTROL_DIR);
         let generators = paths.run.join(runtime_units::GENERATOR_DIR);
         assert!(!control.exists(), "a unit is masked before the switch");
@@ -1365,10 +1379,11 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
             pid_places: None,
+            zram: None,
             now: unix_now(),
             mounts: read_mountinfo().unwrap(),
             network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
@@ -1385,10 +1400,13 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
                 "{unit}"
             );
         }
-        assert_eq!(
-            std::fs::read_link(generators.join("systemd-gpt-auto-generator")).unwrap(),
-            Path::new("/dev/null")
-        );
+        for generator in &plan.generator_masks {
+            assert_eq!(
+                std::fs::read_link(generators.join(generator)).unwrap(),
+                Path::new("/dev/null"),
+                "{generator}"
+            );
+        }
 
         // The switch failed: the decoy runs again over the same /run.
         entry::rollback(&paths);

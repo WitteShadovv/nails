@@ -20,7 +20,10 @@
 //!    the machine off ([`transition::SWITCH_TIMEOUT_ACTION`]); the entry is
 //!    refused when a guard does not hold once loaded, or where the copy takes
 //!    a label, when PID 1 starts `systemd-soft-reboot.service` in an
-//!    `SELinuxContext=` of its own;
+//!    `SELinuxContext=` of its own. From the reload to the end of step 9 the
+//!    decoy's local disk mounts that keep access times are `noatime`
+//!    ([`quiet_mounts`]), so nothing PID 1 reads on them for the entry gets a
+//!    new access time;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume. Before it is mounted the operator's home
 //!    is made in the fresh-home persona, and in either persona the directories
@@ -65,8 +68,11 @@
 //!    rollback reaches the copies other mount namespaces hold; see
 //!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
 //!    units the way back needs found in the next root;
-//! 9. the plan armed for the entry, where the copy takes a label once it has
-//!    taken it again and the policy has been asked again.
+//! 9. the service manager reloaded once more, so that it has loaded the units
+//!    of everything the entry mounted and wrote ([`settle`]), the mounts given
+//!    their own access-time mode back, and the plan armed for the entry, where
+//!    the copy takes a label once it has taken it again and the policy has
+//!    been asked again.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
 //! must never be left behind, or a later plain reboot would enter it. A
@@ -99,6 +105,8 @@ use nails_teardown::whole_root::{
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+
+use quiet::{give_modes_back, quiet_mounts, restore_recorded, settle};
 
 use super::guards::{GuardHost, check_stop_guards, check_switch_timeout};
 
@@ -421,8 +429,10 @@ fn fhs_init(root: &Path) -> PathBuf {
 
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
 /// drop-in, the masks and skips the entry transition wrote (an entry whose
-/// switch failed) and the runtime directory, and give the kernel back the helper
-/// paths a hidden NixOS activation changed. Returns the mounts still left.
+/// switch failed) and the runtime directory, give the kernel back the helper
+/// paths a hidden NixOS activation changed, and give the decoy's mounts an
+/// entry that died made `noatime` their own access-time mode back
+/// ([`quiet_mounts`]). Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let plan = Plan::load(&paths.plan()).ok();
     let kept = Snapshot::load(&paths.runtime().join(SNAPSHOT_NAME)).unwrap_or_default();
@@ -438,6 +448,7 @@ pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
         );
         skips::remove_skips(&paths.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
+        restore_recorded(plan);
     }
     nextroot::remove_runtime_dir(&paths.runtime());
     if plan.is_some_and(|plan| plan.run_noexec) {
@@ -565,6 +576,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        quiet_mounts: Vec::new(),
         pids: Default::default(),
     }
 }
@@ -617,6 +629,7 @@ fn build(
     if plan.run_noexec {
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
+    let quiet = quiet_mounts(paths, &mut plan)?;
     install_transition(paths, inputs, host, dropin)?;
     crate::cancel::checkpoint()?;
 
@@ -756,12 +769,15 @@ fn build(
     }
 
     crate::cancel::checkpoint()?;
+    settle(host)?;
+    give_modes_back(quiet)?;
     activation_step(ActivationPhase::Arm, building);
     super::program_label::ready_for_entry(
         inputs.program_label,
         host.selinux(),
         &paths.binary_copy(),
     )?;
+    plan.quiet_mounts.clear();
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;
@@ -925,10 +941,11 @@ impl HomeWay {
     }
 }
 
-/// Install the transition drop-in and reload the service manager, and refuse
-/// the entry when a guard does not hold once loaded, or PID 1 starts the
-/// transition's unit outside the domain the copy's label gives it
-/// ([`super::program_label::check_switch_unit`]).
+/// Install the transition drop-in, reload the service manager and ask it
+/// whether the guards hold, and refuse the entry when a guard does not hold
+/// once loaded, or PID 1 starts the transition's unit outside the domain the
+/// copy's label gives it ([`super::program_label::check_switch_unit`]). The
+/// caller holds the decoy's local disk mounts `noatime` ([`quiet_mounts`]).
 fn install_transition(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
@@ -1166,6 +1183,7 @@ fn apply_mounts(
 
 mod hidden_build;
 mod hidden_fstab;
+mod quiet;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

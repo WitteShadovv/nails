@@ -16,22 +16,22 @@ fn answered(kind: Kind, envelope: Value) -> Update {
 }
 
 /// What `nails deactivate` warns of before it asks on a hidden session whose
-/// way back finds no `ip` and no `nft` (the engine's own words).
-const NO_IP: &str = "The return finds no `ip` (iproute2) in the hidden session's system \
-    directories, so the virtual links the session made, the MAC addresses it changed and the \
-    policy-routing rules it added stay on the decoy until power-off. `sudo /mnt/data/nails \
-    deactivate --poweroff` leaves none of them.";
-const NO_NFT: &str = "The return finds no `nft` (nftables) in the hidden session's system \
-    directories, so the nftables tables the session added stay on the decoy until power-off (a \
-    VPN app's table that blocks all traffic outside its tunnel keeps the decoy offline). `sudo \
+/// way back cannot set the process-number counter back, and on one whose
+/// way back finds no getty or logind to measure by (the engine's own words).
+const NO_PIDS: &str = "The return cannot number the decoy's processes from where its own \
+    boot numbered them, so where the decoy keeps classic wtmp, its getty and login records \
+    carry process numbers that continue from this boot. `sudo /mnt/data/nails deactivate \
+    --poweroff` leaves none of them.";
+const UNMEASURED: &str = "The return finds no getty or logind to measure the decoy's process \
+    numbers by, so it numbers the decoy's processes from just below the lowest number its own \
+    userspace held when the session began, and where the decoy keeps classic wtmp, its getty \
+    and login records can carry process numbers that a fresh boot would not give them. `sudo \
     /mnt/data/nails deactivate --poweroff` leaves none of them.";
-/// The warning of an engine whose way back powers off when it cannot put the
-/// network state back.
-const POWERS_OFF_INSTEAD: &str = "The return finds no `iw` in the hidden session's system \
-    directories, so a Wi-Fi interface the session added on one of the decoy's radios (a monitor \
-    or access point interface, or the one iwd makes in place of the decoy's, as it does by \
-    default when it starts) makes the machine power off instead of returning. `sudo \
-    /mnt/data/nails deactivate --poweroff` leaves none of them.";
+/// The warning of an engine whose way back powers off instead of returning:
+/// the session made a link the kernel keeps.
+const POWERS_OFF_INSTEAD: &str = "The way back cannot delete tunl0, which the kernel keeps, so \
+    the machine powers off instead of returning to the decoy. `sudo /mnt/data/nails deactivate \
+    --poweroff` powers off at once.";
 
 fn status(attention: Value) -> Update {
     answered(
@@ -105,10 +105,12 @@ fn a_hidden_session_deactivates_but_not_without_a_way_back_or_its_volume() {
     }
 }
 
-/// The plan of a return the helper gave, recorded on a hidden session's tree
-/// whose way back finds `name`: a link the kernel keeps
-/// (`deactivate-plan-powers-off`), or one it would delete with an `ip` it
-/// does not find (`deactivate-plan-may-power-off`).
+/// The plan of a return the helper gave on a hidden session's tree whose way
+/// back is bound to power off: recorded where the session made a link the
+/// kernel keeps (`deactivate-plan-powers-off`), and the contract's other
+/// case, a power-off that something before the way back may still avoid
+/// (`deactivate-plan-may-power-off`, `certain` false), written by hand: this
+/// engine sends no such reason now, and the window must still say it right.
 fn recorded_plan(name: &str) -> Update {
     let text = match name {
         "deactivate-plan-powers-off" => {
@@ -186,8 +188,8 @@ fn a_return_that_may_power_off_says_so_and_keeps_both_endings() {
 /// apply is answered, which does not repeat why.
 #[test]
 fn a_return_that_may_power_off_says_so_while_the_session_ends() {
-    let said = "The way back finds no ip to delete veth0 with: unless that changes before it \
-        runs, the machine powers off in a few seconds instead of returning to the decoy.";
+    let said = "The way back may find veth0 still there: unless that changes before it runs, \
+        the machine powers off in a few seconds instead of returning to the decoy.";
     let mut model = hidden();
     model.action();
     model.apply(Update::Running(Kind::Plan));
@@ -212,7 +214,7 @@ fn a_return_that_may_power_off_says_so_while_the_session_ends() {
     model.apply(recorded_plan("deactivate-plan-may-power-off"));
     assert_eq!(model.answer(false), Some(Ask::Withdraw));
     model.apply(Update::Withdrawn);
-    asked(&mut model, &[NO_NFT]);
+    asked(&mut model, &[UNMEASURED]);
     assert_eq!(model.alternative(), Some(Ask::Apply));
     assert_eq!(model.page().description, text::RETURNING);
 }
@@ -220,14 +222,14 @@ fn a_return_that_may_power_off_says_so_while_the_session_ends() {
 #[test]
 fn the_question_names_what_the_return_leaves_and_offers_both_endings() {
     let mut model = hidden();
-    asked(&mut model, &[NO_IP, NO_NFT]);
+    asked(&mut model, &[NO_PIDS, UNMEASURED]);
     let question = model.page().question.expect("a question");
     assert_eq!(question.heading, text::DEACTIVATE_QUESTION);
     let lines: Vec<&str> = question.body.lines().collect();
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert_eq!(lines[0], text::DEACTIVATE_CONSEQUENCE);
     assert!(
-        lines[1].starts_with("The return finds no ip (iproute2) in the hidden session's"),
+        lines[1].starts_with("The return cannot number the decoy's processes"),
         "the engine's words, its code quotes dropped: {lines:?}"
     );
     assert!(lines[2].ends_with("sudo /mnt/data/nails deactivate --poweroff leaves none of them."));
@@ -246,7 +248,7 @@ fn a_return_that_would_power_off_instead_is_said_before_the_choice() {
     asked(&mut model, &[POWERS_OFF_INSTEAD]);
     let body = model.page().question.expect("a question").body;
     assert!(
-        body.contains("makes the machine power off instead of returning"),
+        body.contains("the machine powers off instead of returning to the decoy"),
         "{body}"
     );
 }
@@ -254,7 +256,7 @@ fn a_return_that_would_power_off_instead_is_said_before_the_choice() {
 #[test]
 fn return_to_decoy_applies_the_plan_and_the_page_ends_with_the_session() {
     let mut model = hidden();
-    asked(&mut model, &[NO_IP]);
+    asked(&mut model, &[NO_PIDS]);
     assert_eq!(model.alternative(), Some(Ask::Apply));
     let page = model.page();
     assert!(page.question.is_none());
@@ -266,7 +268,7 @@ fn return_to_decoy_applies_the_plan_and_the_page_ends_with_the_session() {
     let device = "cargo-hidden";
     let asks = model.apply(enqueued(
         "return_requested",
-        json!([NO_IP, format!("The hidden backend device {device} could not be marked to close: it stays open after the switch, its key in RAM, until power-off")]),
+        json!([NO_PIDS, format!("The hidden backend device {device} could not be marked to close: it stays open after the switch, its key in RAM, until power-off")]),
         json!([device]),
     ));
     assert!(asks.is_empty());
@@ -288,7 +290,7 @@ fn return_to_decoy_applies_the_plan_and_the_page_ends_with_the_session() {
 #[test]
 fn power_off_asks_for_its_own_plan_and_applies_it_without_a_second_question() {
     let mut model = hidden();
-    asked(&mut model, &[NO_IP]);
+    asked(&mut model, &[NO_PIDS]);
     assert_eq!(
         model.answer(true),
         Some(Ask::Plan(Plan::Deactivate(DeactivateArgs {

@@ -54,7 +54,6 @@ fn build_registry_includes_the_shared_checks() {
         "dma-protection",
         "kernel-modules",
         "lsm-status",
-        "network-tools",
         "package-drift",
         "state",
     ] {
@@ -1464,6 +1463,30 @@ fn the_systemd_version_row_judges_the_version_it_is_given() {
     assert!(current.is_pass(), "{current:?}");
     let unread = systemd_version_row(debian, None);
     assert!(unread.is_fail(), "{unread:?}");
+}
+
+/// The running kernel is judged right after the running systemd, on every
+/// host and in every mode, overlay-only included.
+#[test]
+fn kernel_version_runs_right_after_systemd_version() {
+    let manager = manager_with(MockFilesystem::new());
+    for options in [
+        PreflightOptions::default(),
+        PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        },
+    ] {
+        let names = manager
+            .preflight_registry(&options)
+            .expect("registry builds")
+            .names();
+        let at = names
+            .iter()
+            .position(|name| *name == "systemd-version")
+            .expect("a systemd-version row");
+        assert_eq!(names[at + 1], "kernel-version", "{names:?}");
+    }
 }
 
 #[test]

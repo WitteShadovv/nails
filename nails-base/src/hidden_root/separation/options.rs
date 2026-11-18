@@ -12,9 +12,11 @@
 //! the judge reads `noauto`, `auto`, `x-systemd.automount` and its older
 //! spelling `comment=systemd.automount` by their names ([`fstab_noauto`],
 //! [`crypttab_noauto`]), as it reads `bind` and `rbind`
-//! ([`is_bind_option`](crate::fstab::is_bind_option)). The shared parsers'
-//! own `has_option` matches a whole option, which the judge does not use for
-//! these. The generator mounts a line for `/` or `/usr` whatever `noauto`
+//! ([`is_bind_option`](crate::fstab::is_bind_option)), through the shared
+//! readers of [`crate::fstab`] ([`any_named`], [`last_named`],
+//! [`FstabEntry::is_noauto`]), which the session's fstab policy reads them
+//! with too. Their `has_option` matches a whole option, which neither uses
+//! for these. The generator mounts a line for `/` or `/usr` whatever `noauto`
 //! says, and links one that names a unit by `x-systemd.wanted-by=` or
 //! `x-systemd.required-by=` into that unit, whatever `noauto` says.
 //!
@@ -56,68 +58,19 @@
 //! in: that device holds the filesystem.
 
 use super::known::{reads_every_known, reads_every_known_crypttab};
-use super::paths::as_written;
 use crate::crypttab::CrypttabEntry;
-use crate::fstab::{FstabEntry, option_named};
-use std::path::Path;
-
-/// Whether an option of `options` has one of `names`, alone or with a value.
-fn has_named(options: &[String], names: &[&str]) -> bool {
-    options.iter().any(|option| {
-        names
-            .iter()
-            .any(|name| option_named(option, name).is_some())
-    })
-}
-
-/// Whether the last of `options` named `yes` or `no`, alone or with a value,
-/// is named `yes`, as systemd's `fstab_test_yes_no_option()` reads such a
-/// pair: neither is `no`.
-fn last_is(options: &[String], yes: &str, no: &str) -> bool {
-    options
-        .iter()
-        .rev()
-        .find_map(|option| {
-            if option_named(option, yes).is_some() {
-                Some(true)
-            } else {
-                option_named(option, no).map(|_| false)
-            }
-        })
-        .unwrap_or(false)
-}
-
-/// Whether systemd mounts the fstab line `entry` on demand through an
-/// automount unit: an option named `x-systemd.automount` or
-/// `comment=systemd.automount`, alone or with a value. Never for swap.
-fn automount(entry: &FstabEntry) -> bool {
-    !entry.is_swap()
-        && has_named(
-            &entry.options,
-            &["x-systemd.automount", "comment=systemd.automount"],
-        )
-}
-
-/// Whether systemd's fstab generator mounts the fstab line `entry` whatever
-/// its options say: a line for `/` or `/usr`, which it takes for mandatory.
-fn mandatory(entry: &FstabEntry) -> bool {
-    !entry.is_swap()
-        && as_written(&entry.file).is_some_and(|at| at == Path::new("/") || at == Path::new("/usr"))
-}
+use crate::fstab::{FstabEntry, any_named, last_named, option_named};
 
 /// Whether the boot never mounts the fstab line `entry`, as systemd's fstab
-/// generator reads it: the last of `noauto` and `auto` is `noauto`, by name,
-/// and the line has no automount, which the boot sets up whatever `noauto`
-/// says, names no unit to pull it in
-/// ([`names_units_that_pull_it_in`](FstabEntry::names_units_that_pull_it_in)),
-/// is no line for `/` or `/usr` ([`mandatory`]), and gives only options
-/// NAILS reads, each in a form it reads ([`reads_every_known`]).
+/// generator reads it ([`FstabEntry::is_noauto`]): the last of `noauto` and
+/// `auto` is `noauto`, by name, and the line has no automount, which the boot
+/// sets up whatever `noauto` says, names no unit to pull it in, is no line
+/// for `/` or `/usr`, which the generator takes for mandatory, and gives
+/// only options NAILS reads, each in a form it reads ([`reads_every_known`]).
+/// The session's fstab policy leaves a line alone as never mounted by the
+/// same reading.
 pub(super) fn fstab_noauto(entry: &FstabEntry) -> bool {
-    last_is(&entry.options, "noauto", "auto")
-        && !automount(entry)
-        && !entry.names_units_that_pull_it_in()
-        && !mandatory(entry)
-        && reads_every_known(entry)
+    entry.is_noauto() && reads_every_known(entry)
 }
 
 /// Whether the boot does not open the crypttab line `entry` by itself, as
@@ -125,7 +78,7 @@ pub(super) fn fstab_noauto(entry: &FstabEntry) -> bool {
 /// `noauto`, by name, so `cryptsetup.target` does not pull it in, and the
 /// line gives only options NAILS reads ([`reads_every_known_crypttab`]).
 pub(super) fn crypttab_noauto(entry: &CrypttabEntry) -> bool {
-    last_is(&entry.options, "noauto", "auto") && reads_every_known_crypttab(entry)
+    last_named(&entry.options, "noauto", "auto") && reads_every_known_crypttab(entry)
 }
 
 /// How `systemd-cryptsetup` opens a crypttab line.
@@ -174,7 +127,7 @@ fn crypt_type(entry: &CrypttabEntry) -> CryptType {
 /// systemd's crypttab generator has `systemd-makefs` make swap or a
 /// filesystem on the mapping wherever it finds none.
 pub(super) fn opens_as_luks(entry: &CrypttabEntry) -> bool {
-    crypt_type(entry) == CryptType::Luks && !has_named(&entry.options, &["swap", "tmp"])
+    crypt_type(entry) == CryptType::Luks && !any_named(&entry.options, &["swap", "tmp"])
 }
 
 /// How the boot writes over the device a crypttab line opens, its source.
@@ -200,14 +153,14 @@ pub(super) enum Overwrite {
 /// header from where that option says, and maps the source at the offset the
 /// header gives, whatever lies on it.
 pub(super) fn overwrites(entry: &CrypttabEntry) -> Option<Overwrite> {
-    if has_named(&entry.options, &["swap"]) {
+    if any_named(&entry.options, &["swap"]) {
         Some(Overwrite::Swap)
-    } else if has_named(&entry.options, &["tmp"]) {
+    } else if any_named(&entry.options, &["tmp"]) {
         Some(Overwrite::Filesystem)
     } else if crypt_type(entry) == CryptType::Plain {
         Some(Overwrite::Plain)
     } else {
-        has_named(&entry.options, &["header"]).then_some(Overwrite::Detached)
+        any_named(&entry.options, &["header"]).then_some(Overwrite::Detached)
     }
 }
 
@@ -215,7 +168,7 @@ pub(super) fn overwrites(entry: &CrypttabEntry) -> Option<Overwrite> {
 /// finds no filesystem there: an option named `x-systemd.makefs`, alone or
 /// with a value, as systemd's fstab generator reads it.
 pub(super) fn formats_its_device(entry: &FstabEntry) -> bool {
-    has_named(&entry.options, &["x-systemd.makefs"])
+    any_named(&entry.options, &["x-systemd.makefs"])
 }
 
 #[cfg(test)]

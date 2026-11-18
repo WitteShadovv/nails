@@ -472,6 +472,8 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
         );
         let skipped = skips::remove_skips(&host.run, &plan.skips, &kept);
         kernel_helpers::restore(&plan.kernel_settings);
+        // The decoy's mounts an activation that died made noatime.
+        let _ = crate::noatime::restore(&plan.quiet_mounts);
         nextroot::remove_runtime_dir(&host.runtime_dir);
         dropins || masks || skipped
     })

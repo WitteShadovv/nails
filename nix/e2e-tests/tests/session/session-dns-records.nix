@@ -45,7 +45,8 @@ in
     { lib, pkgs, ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
-      # nft: the way back reads the firewall tables with it.
+      # nft: the test makes and lists firewall tables with it. NAILS itself
+      # asks the kernel over netlink and runs no nft.
       environment.systemPackages = [
         self.packages.${pkgs.stdenv.hostPlatform.system}.nails
         pkgs.nftables

@@ -79,7 +79,6 @@ fn returned() -> HotReport {
 fn bound_over_tunl0() -> Option<PowerOffReason> {
     power_off_reason(&nails_teardown::whole_root::network::Foreseen {
         kernel_kept: vec!["tunl0".to_string()],
-        ..Default::default()
     })
 }
 

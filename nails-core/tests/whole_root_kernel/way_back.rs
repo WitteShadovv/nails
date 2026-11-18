@@ -343,10 +343,11 @@ fn the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place() {
             kmsg: run.join("no-kmsg"),
             systemctl: None,
             pid_places: None,
+            zram: None,
             now: nails_teardown::whole_root::plan::unix_now(),
             mounts: read_mountinfo().unwrap(),
             network: nails_teardown::whole_root::network::Places::system(&run),
-            network_tools: None,
+            network_kernel: None,
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,

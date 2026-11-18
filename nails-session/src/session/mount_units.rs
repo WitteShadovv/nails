@@ -6,7 +6,7 @@
 //! The hidden systemd starts every unit a target pulls in, not only those
 //! its fstab generator makes: a mount unit installed for a target
 //! (`/etc/systemd/system/local-fs.target.wants/srv-x.mount`, NixOS's
-//! `systemd.mounts`), a swap unit (zram-generator's `dev-zram0.swap`), an
+//! `systemd.mounts`), a swap unit (one linked in `swap.target.wants`), an
 //! automount (systemd's GPT auto-generator's `efi.automount`,
 //! `proc-sys-fs-binfmt_misc.automount`), the mounts the fstab generator makes
 //! from the kernel command line (`systemd.mount-extra=`). The fstab policy
@@ -55,10 +55,10 @@
 //! line. A zram swap is left to the hidden systemd while its
 //! zram device keeps its pages in RAM, with no backing device to write them
 //! back to ([`ram_only_zram`]); one with a backing device, or whose device
-//! NAILS cannot tell about, is decided as a disk swap. The hidden session's
-//! zram-generator sets the device up again from its configuration, which
-//! NAILS does not read. The automount of a filesystem put in place is kept
-//! off, as for an fstab line. A unit the decoy masks is left alone, and one
+//! NAILS cannot tell about, is decided as a disk swap. zram-generator itself
+//! is masked in the hidden root ([`super::hidden_masks::GENERATORS`]), so
+//! the swap it made in the decoy is decided but not set up there. The
+//! automount of a filesystem put in place is kept off, as for an fstab line. A unit the decoy masks is left alone, and one
 //! whose files cannot be read, or that NAILS cannot resolve, is masked.
 //!
 //! A unit skipped in the hidden session starts what it requires and wants:
@@ -75,16 +75,19 @@
 //! reaches a mount, swap or automount the session neither keeps off nor puts
 //! in place, which the hidden systemd would mount from the decoy's disk, or
 //! where NAILS cannot tell all it reaches ([`pulls`], [`deps`]). The
-//! generators run again in the hidden session; what they made in the decoy is
-//! taken as what they make there.
+//! generators the hidden root does not mask run again in the hidden session;
+//! what they made in the decoy is taken as what they make there.
 
 mod deps;
 mod pulls;
 pub mod unit_dirs;
 pub mod unit_file;
 
-use super::fstab::{FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit};
+use super::fstab::{
+    FstabEntry, automount_unit, escape_path, is_virtual_type, mount_unit, option_named,
+};
 use super::policy::{self, Decision, KeptOff, Origin, Present, Units, Unreached, Unskippable};
+pub(crate) use deps::is_unit_name;
 use nails_teardown::mountinfo::MountEntry;
 use nails_teardown::whole_root::plan::{MaskCause, Skip};
 use nails_teardown::whole_root::runtime_units::valid_unit_name;
@@ -502,13 +505,23 @@ fn value(unit: &UnitFile, section: &str, key: &str) -> Result<Option<String>, ()
 }
 
 /// The fstab options that only the fstab generator reads, and which mean
-/// nothing in a unit's `Options=`: a unit is pulled in by its links.
+/// nothing in a unit's `Options=`: a unit is pulled in by its links. Each is
+/// matched by its name, alone or with a value, as the generator reads it
+/// ([`option_named`]), and the generator copies it into `Options=` as the
+/// line gives it: `noauto,auto=1` is `Options=noauto,auto=1`.
 fn generator_option(option: &str) -> bool {
-    matches!(
-        option,
-        "noauto" | "auto" | "nofail" | "fail" | "x-systemd.automount" | "comment=systemd.automount"
-    ) || option.starts_with("x-systemd.wanted-by=")
-        || option.starts_with("x-systemd.required-by=")
+    [
+        "noauto",
+        "auto",
+        "nofail",
+        "fail",
+        "x-systemd.automount",
+        "comment=systemd.automount",
+        "x-systemd.wanted-by",
+        "x-systemd.required-by",
+    ]
+    .iter()
+    .any(|name| option_named(option, name).is_some())
 }
 
 /// What the files of the mount or swap unit `name` say about it, as an fstab
@@ -597,7 +610,7 @@ fn mask(
     Decision::Mask {
         target,
         units,
-        reason,
+        reason: reason.into(),
         unreached: required.map(|boot| Unreached {
             target: boot.clone(),
             cause: Unskippable::Unread,
@@ -779,7 +792,7 @@ fn decide_one(
                 device: None,
             },
             masked: Vec::new(),
-            reason,
+            reason: reason.into(),
         }
     } else {
         mask(path, vec![automount], reason, None, native.origin())

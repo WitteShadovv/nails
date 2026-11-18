@@ -92,7 +92,7 @@ class FailedUnitsTest(unittest.TestCase):
                 "systemd-zram-setup@zram0.service",
                 "chronyd.service",
             ],
-            fg.SOFT_REBOOT_FAILURES,
+            {"systemd-zram-setup@zram0.service": "known"},
         )
         self.assertEqual(
             found,
@@ -103,6 +103,110 @@ class FailedUnitsTest(unittest.TestCase):
                 "other": ["chronyd.service"],
             },
         )
+
+
+class DecoyZramFailuresTest(unittest.TestCase):
+    """A zram setup unit failed in a hidden session counts as the decoy's own
+    run only with the invocation ID it had in the decoy before the entry."""
+
+    UNIT = "systemd-zram-setup@zram0.service"
+    BEFORE = f"Id={UNIT}\nInvocationID=0f3a9c\n"
+
+    def test_the_decoy_s_run_failed_at_its_stop_is_allowed(self) -> None:
+        # Fedora 45: the decoy's stop at the switch failed to reset zram0, and
+        # the hidden session shows the decoy's run failed.
+        found = fg.decoy_zram_failures([self.UNIT], self.BEFORE, self.BEFORE)
+        self.assertEqual(list(found), [self.UNIT])
+        problems = fg.failed_units_problems([self.UNIT], found)
+        self.assertEqual(problems["other"], [])
+
+    def test_a_run_of_the_hidden_session_is_not(self) -> None:
+        hidden = f"Id={self.UNIT}\nInvocationID=77e01b\n"
+        self.assertEqual(fg.decoy_zram_failures([self.UNIT], self.BEFORE, hidden), {})
+        problems = fg.failed_units_problems([self.UNIT], {})
+        self.assertEqual(problems["other"], [self.UNIT])
+
+    def test_without_an_invocation_on_either_side_nothing_is_allowed(self) -> None:
+        none = f"Id={self.UNIT}\nInvocationID=\n"
+        for before, hidden in (("", self.BEFORE), (self.BEFORE, ""), (none, none)):
+            self.assertEqual(fg.decoy_zram_failures([self.UNIT], before, hidden), {})
+
+    def test_only_zram_setup_units_and_only_failed_ones(self) -> None:
+        other = "chronyd.service"
+        both = self.BEFORE + f"\nId={other}\nInvocationID=0f3a9c\n"
+        self.assertEqual(
+            list(fg.decoy_zram_failures([other, self.UNIT], both, both)), [self.UNIT]
+        )
+        self.assertEqual(fg.decoy_zram_failures([], both, both), {})
+
+
+class ZramTest(unittest.TestCase):
+    COLD = "\n".join(
+        (
+            "zram0 initstate=1 disksize=3103784960 backing=none "
+            "mm_stat=4096 74 12288 0 12288 0 0 0 0",
+            "/dev/zram0 partition 3103780864 0 100",
+            "Id=systemd-zram-setup@zram0.service",
+            "LoadState=loaded",
+            "ActiveState=active",
+            "Result=success",
+            "",
+            "Id=dev-zram0.swap",
+            "LoadState=loaded",
+            "ActiveState=active",
+            "Result=success",
+        )
+    )
+
+    def test_use_does_not_change_the_shape(self) -> None:
+        used = self.COLD.replace("mm_stat=4096 74", "mm_stat=9999 99").replace(
+            "3103780864 0 100", "3103780864 2621440 100"
+        )
+        self.assertEqual(fg.zram_shape(used), fg.zram_shape(self.COLD))
+
+    def test_a_device_left_set_up_without_its_swap_differs(self) -> None:
+        # The setup failed: the device keeps its size, no swap is on, and the
+        # units are failed and inactive.
+        failed = "\n".join(
+            (
+                "zram0 initstate=1 disksize=3103784960 backing=none mm_stat=0 0 0",
+                "Id=systemd-zram-setup@zram0.service",
+                "LoadState=loaded",
+                "ActiveState=failed",
+                "Result=exit-code",
+                "Id=dev-zram0.swap",
+                "LoadState=loaded",
+                "ActiveState=inactive",
+                "Result=success",
+            )
+        )
+        self.assertNotEqual(fg.zram_shape(failed), fg.zram_shape(self.COLD))
+        # A device of another size, or none, differs as well.
+        other = self.COLD.replace("disksize=3103784960", "disksize=1")
+        self.assertNotEqual(fg.zram_shape(other), fg.zram_shape(self.COLD))
+        self.assertNotEqual(fg.zram_shape(""), fg.zram_shape(self.COLD))
+
+    def test_the_marker_counts(self) -> None:
+        probe = "\n".join(
+            (
+                "VmSwap:\t   20480 kB",
+                "held:",
+                "/dev/zram0=4021",
+                "stopped:",
+                "/dev/zram0=0",
+                "/dev/zram1=grep: /dev/zram1: Permission denied",
+            )
+        )
+        self.assertEqual(
+            fg.zram_marker_counts(probe),
+            {
+                "held /dev/zram0": 4021,
+                "stopped /dev/zram0": 0,
+                "stopped /dev/zram1": None,
+            },
+        )
+        self.assertEqual(fg.zram_marker_counts("/dev/zram0=0"), {"/dev/zram0": 0})
+        self.assertEqual(fg.zram_marker_counts(""), {})
 
 
 class DecoyDiskTest(unittest.TestCase):

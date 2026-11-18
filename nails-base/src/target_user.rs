@@ -34,13 +34,16 @@
 //! not a per-user group, so the old `chown user:user` assumption was wrong.
 //! Callers now have the real gid to `chown` with.
 //!
-//! # musl / NSS limitation
+//! # Local accounts only
 //!
-//! The static musl build resolves only local `/etc/passwd` entries; it does not
-//! consult NSS, so network-directory (LDAP/SSSD) accounts will not resolve, and
-//! neither will the logind fallback for them. This is acceptable for the
-//! single-operator threat model but is noted at the call sites that run under
-//! the musl build.
+//! The passwd database is the local `/etc/passwd`, read with `O_NOATIME` so
+//! that a check or an activation leaves its access time alone, and nothing
+//! else. The static musl build's `getpwuid` and `getpwnam` consult no NSS
+//! either, but ask nscd (`/var/run/nscd/socket`) for an account the file
+//! lacks; this reader does not, so an account only nscd resolves, like other
+//! network-directory (LDAP/SSSD) accounts, will not resolve, and neither will
+//! the logind fallback for it. This is acceptable for the single-operator
+//! threat model, which requires the operator's account in `/etc/passwd`.
 
 use crate::constants::{ENV_TARGET_UID, ENV_TARGET_USER};
 use crate::{NailsError, Result};
@@ -240,34 +243,75 @@ pub(crate) trait SessionOwnerSource {
     fn seat0_active_uid(&self) -> Option<u32>;
 }
 
+/// The passwd database NAILS reads: the local `/etc/passwd` and nothing else.
+const PASSWD_FILE: &str = "/etc/passwd";
+
+/// The local passwd database, read with `O_NOATIME`
+/// ([`open_noatime`](crate::filesystem::real::open_noatime)). musl's
+/// `getpwuid` and `getpwnam` read the same file, but with a plain open, which
+/// on a decoy root mounted `relatime` can set its access time to the moment
+/// of a check or an activation, and ask nscd for an account the file lacks,
+/// which this reader does not.
 struct SystemPasswd;
 
-impl PasswdSource for SystemPasswd {
-    fn by_uid(&self, uid: u32) -> Option<PasswdEntry> {
-        nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid))
-            .ok()
-            .flatten()
-            .map(PasswdEntry::from)
-    }
-
-    fn by_name(&self, name: &str) -> Option<PasswdEntry> {
-        nix::unistd::User::from_name(name)
-            .ok()
-            .flatten()
-            .map(PasswdEntry::from)
+impl SystemPasswd {
+    /// Every entry of the file, in order; none when it cannot be read.
+    fn entries() -> Vec<PasswdEntry> {
+        use crate::filesystem::real::{OpenKind, open_noatime};
+        use std::io::Read;
+        let mut content = Vec::new();
+        let read = open_noatime(Path::new(PASSWD_FILE), OpenKind::File)
+            .map(std::fs::File::from)
+            .and_then(|mut file| file.read_to_end(&mut content));
+        if read.is_err() {
+            return Vec::new();
+        }
+        parse_passwd(&content)
     }
 }
 
-impl From<nix::unistd::User> for PasswdEntry {
-    fn from(user: nix::unistd::User) -> Self {
-        Self {
-            uid: user.uid.as_raw(),
-            gid: user.gid.as_raw(),
-            name: user.name,
-            dir: user.dir,
-            shell: user.shell,
-        }
+impl PasswdSource for SystemPasswd {
+    fn by_uid(&self, uid: u32) -> Option<PasswdEntry> {
+        Self::entries().into_iter().find(|entry| entry.uid == uid)
     }
+
+    fn by_name(&self, name: &str) -> Option<PasswdEntry> {
+        Self::entries().into_iter().find(|entry| entry.name == name)
+    }
+}
+
+/// The entries of a passwd file, in order, as musl reads them: seven fields
+/// split by `:`, a numeric uid and gid. A line that is not such an entry (a
+/// comment, a NIS `+` or `-` line, a broken one) is skipped.
+fn parse_passwd(content: &[u8]) -> Vec<PasswdEntry> {
+    use std::os::unix::ffi::OsStrExt;
+    content
+        .split(|&byte| byte == b'\n')
+        .filter_map(|line| {
+            let fields: Vec<&[u8]> = line.split(|&byte| byte == b':').collect();
+            let [name, _, uid, gid, _, dir, shell] = fields.as_slice() else {
+                return None;
+            };
+            let name = std::str::from_utf8(name).ok()?;
+            if name.is_empty() || name.starts_with(['+', '-', '#']) {
+                return None;
+            }
+            let number = |field: &[u8]| std::str::from_utf8(field).ok()?.parse::<u32>().ok();
+            Some(PasswdEntry {
+                uid: number(uid)?,
+                gid: number(gid)?,
+                name: name.to_string(),
+                dir: PathBuf::from(std::ffi::OsStr::from_bytes(dir)),
+                shell: PathBuf::from(std::ffi::OsStr::from_bytes(shell)),
+            })
+        })
+        .collect()
+}
+
+/// The home of the account `uid` in the local passwd database, read without
+/// updating its access time.
+pub fn home_of_uid(uid: u32) -> Option<PathBuf> {
+    SystemPasswd.by_uid(uid).map(|entry| entry.dir)
 }
 
 struct SystemSessionOwner;

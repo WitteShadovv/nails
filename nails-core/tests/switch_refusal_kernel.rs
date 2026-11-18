@@ -72,10 +72,11 @@ mod kernel_tests {
                 kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
                 pid_places: None,
+                zram: None,
                 now: 1_234,
                 mounts: read_mountinfo().expect("the live mount table"),
                 network: nails_teardown::whole_root::network::Places::system(self.run.path()),
-                network_tools: None,
+                network_kernel: None,
                 power_off: transition::PowerOff {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
@@ -128,6 +129,7 @@ mod kernel_tests {
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),
+            quiet_mounts: Vec::new(),
             pids: Default::default(),
         }
     }

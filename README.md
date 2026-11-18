@@ -133,10 +133,11 @@ model is written down; read it before relying on NAILS.
 | Requirement | Notes |
 |---|---|
 | A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
+| Linux 6.1 or newer | The default kernel of Debian 13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. NAILS keeps the programs it starts as root from changing the decoy's access times, and the service manager while it reads the decoy from changing those on the decoy's local disk mounts, through `mount_setattr` (Linux 5.12). The `kernel-version` check refuses an older kernel, and one whose release it cannot read or tell the version of, and names the running release. |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no tuned logging to a file, no armed kdump, no unattended-upgrades set to install at shutdown, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit, tuned, kdump and install-at-shutdown refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
-| Host tools | `systemctl` and `loginctl` (systemd), `ip` (iproute2), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. The way back runs `ip` and `dmsetup`, so activation is refused while one is missing; `nails check` names it and the package that provides it. Keep `nft` (nftables) on the decoy too, and `iw` on a machine with Wi-Fi: without `nft` the firewall tables a session adds stay on the decoy until power-off, and without `iw` a Wi-Fi interface a session adds, the one iwd makes in place of the decoy's by default when it starts included, makes the way back power off instead of returning, which `check` and `activate` warn about. |
+| Host tools | `systemctl` and `loginctl` (systemd), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. Activation is refused while one is missing; `nails check` names it and the package that provides it. The decoy needs no `ip`, `nft` or `iw`: NAILS asks the kernel itself for the links, rules and firewall tables a session adds, and the way back deletes them the same way. |
 | Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `discard` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
@@ -426,11 +427,15 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
 
-<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check as it was on 2026-10-26: each pre-flight check of that version with PASS, among them the platform row that names the detected release, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
 
-Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
+Captured on 2026-10-26 from the `session-readme-captures` NixOS VM test (run
+40383365802 of the E2E workflow), on a decoy set up as
 [docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
 [docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
+Checks added or changed since then are not in it: NAILS now prints more rows,
+`kernel-version` among them, `host-tools` no longer asks for `ip`, and there is
+no `network-tools` row any more.
 The test VM also has an emulated IOMMU that remaps DMA, so `dma-protection`
 passes there. It warns when the IOMMU is off or in passthrough, or when a
 Thunderbolt or USB4 controller reports no DMA protection, and with Linux 5.14 or
@@ -507,8 +512,9 @@ object is the `data` of a one-line versioned envelope (`schema_version` 2);
   session's afterwards: a virtual link or a Wi-Fi interface on one of the
   decoy's radios that the session added, the MAC address of one of the
   decoy's devices, or a policy-routing rule or nftables table the session
-  added, where activation could list the decoy's own and the way back finds
-  `ip` and `nft`; and when it cannot read the links, rules or tables back. A
+  added, where activation could list the decoy's own; and when it cannot read
+  the links, rules or tables back. It asks the kernel itself for all of it,
+  and runs no `ip`, `nft` or `iw`. A
   hostname or network setting it cannot write back does not count, and
   neither does what it leaves alone. Take VPN connections down and stop
   containers and virtual machines before you deactivate, or end with

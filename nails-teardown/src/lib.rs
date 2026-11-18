@@ -20,6 +20,7 @@
 pub mod cgroup;
 pub mod loop_device;
 pub mod mountinfo;
+pub mod netlink;
 pub mod noatime;
 pub mod proc;
 pub mod shells;

@@ -17,7 +17,10 @@
 //!   environment (see [below](#environment)), never the caller's;
 //! - **which account it runs as**: nails' own, unless the command names an
 //!   unprivileged account with [`ProcessCommand::run_as`];
-//! - **how the child starts**: stdin is closed and stdout/stderr are captured;
+//! - **how the child starts**: stdin is closed and stdout/stderr are captured,
+//!   and, run as root, the child starts in a mount namespace of its own whose
+//!   every mount is `noatime`, so nothing it reads changes an access time on
+//!   the decoy ([`nails_teardown::noatime::spawn_without_access_times`]);
 //! - **how long it may run**: a command may carry a [deadline](ProcessCommand::deadline).
 //!
 //! # Environment
@@ -431,8 +434,11 @@ fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Co
         &crate::runtime_env::current().inherited,
     );
     reset_child_oom_score(&mut child);
-    // After the score reset: the hooks run in order, and the reset may need
-    // the privilege the drop gives up.
+    // Nothing the child reads changes an access time on the decoy: its own
+    // file, its libraries and its data files included.
+    nails_teardown::noatime::spawn_without_access_times(&mut child);
+    // After the score reset and the namespace: the hooks run in order, and
+    // both may need the privilege the drop gives up.
     if let Some(account) = command.account {
         account::drop_before_exec(&mut child, account);
     }

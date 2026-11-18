@@ -625,6 +625,16 @@ soft-reboots with `py/nails_e2e/session.py`:
   with Debian's `blk-availability.service` running, a decoy filesystem on LVM
   that the switch keeps mounted for the way back (the unit's stop is cleared
   for the session and back afterwards);
+- `session-fstab-options`: the lines of the hidden session's own fstab read
+  by their options' names as systemd's fstab generator reads them: a disk
+  whose line says `noauto,auto=1` with a quoted option, one with
+  `noauto,x-systemd.automount=0` and an empty one with `x-systemd.makefs=1`
+  are kept off, and none is mounted, formatted or changed, a `noauto` line
+  with an option NAILS does not read is masked with a reason that names it, a
+  `noauto` line with a tmpfs line below it and one that a tmpfs line names
+  with `x-systemd.requires=` are skipped while the tmpfs lines are mounted,
+  and `check` reads a decoy line with `noauto,auto=1` and a quoted option as
+  one the boot mounts;
 - `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
   soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
   that does not evaluate refusing the entry, and no bootloader or system
@@ -1051,6 +1061,39 @@ a wrong password for root that an unprivileged user gives `su`, its btmp
 record, none of which may be on the decoy after the way back (its lastlog2 and
 btmp as they were, its wtmp without a record on the login's terminal), with
 the same logins on the decoy as the positive control.
+### The access-time scenarios
+
+`access-times.nix` runs `tests/access-times.nix` on Debian 13, with the release
+binary, and on Fedora 44, with the test-only build that admits Fedora's row of
+the family table (`lib/admitted.nix`), as one host driver per image
+(`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
+and a plain soft-reboot does not, on a root mounted `relatime`: before each
+phase it sets the access time of every entry of the decoy disk's filesystems two
+days back, so that each read in the phase updates one, and after it lists the
+entries read and not changed since. It leaves two places unaged whose change
+times NAILS judges, as the aging would have NAILS refuse the entry: apt's
+configuration, which NAILS compares with the start of Debian's
+unattended-upgrades helper (its entries still show a read, as their access times
+are older than a day), and `/etc/selinux/config`, which `lsm-status` compares
+with the boot (a read of it may not show). Two plain soft-reboots of the decoy into
+itself, one before and one after the sessions, each with the hidden root
+mounted as for a session, are the controls: what the decoy's own stop and start
+read. Every read in the window of `nails check` is
+a finding. In two sessions, one left by `deactivate` and one by the emergency, a
+read before the way back started must be one a control's stop made, and a read
+after it one a control's stop or start made. A link that NAILS' own lookups
+follow or read, and udevd's listing of its rule and link directories, which it
+makes whenever it handles a kernel event, are listed and do not fail the
+scenario; every other finding does. Every command of the scenario that
+reads the decoy runs through `lib/noatime-run.c`, a static helper that runs it
+in a mount namespace whose every mount is noatime, so the scenario's own reads
+never count. The run prints its whole report, every phase's reads with their
+times, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
+journal from the activation to the switch, which PID 1 writes at debug level
+for that time, so a read can be lined up with what PID 1 did. An activation,
+`deactivate` or emergency that exits non-zero while the system is not stopping
+has not switched, and the run fails at once with its output. CI runs it in the
+records suite of `distro-e2e.yml`.
 
 ### The refusal of Fedora and Arch
 
@@ -1159,14 +1202,22 @@ operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
 `init_t` (the watcher's, and the sleep guard's in the second session), the
-overlay feature options, the canaries in their uppers, the failed units, a
-login and a failed login that the session's own wtmp and btmp record, a
-`security.selinux` round trip on the hidden volume, and a disk attached in
+overlay feature options, the canaries in their uppers, the failed units (a
+zram setup unit only as the decoy's own run, with the invocation it had before
+the entry, which failed as the switch stopped it), no swap on a zram device
+with zram-generator masked in the hidden root, a marker in a unit whose
+memory the gate asks the kernel to reclaim found on no zram device (the
+session has no swap to move the marker to, and in the gate's runs that request
+failed, so the check that no swap is on a zram device is the one that
+decides), a login and a failed login that the session's own wtmp and btmp
+record, a `security.selinux` round trip on the hidden volume, and a disk attached in
 the session read-only by the disk guard's udev rule, which records it: the
 watcher's sweep, the rule's fallback, runs once an hour in the gate's
 sessions, so it cannot set the disk read-only in the rule's place. The first
-session also plants the rehearsal, whose scan it must refuse. Each session
-starts a unit ordered before journald, without the default dependencies, so
+session also plants the rehearsal, whose scan it must refuse. The second
+leaves zram0 set up with a swap area out of use and the marker on it, as a
+stop whose reset failed leaves a device, for its way back to clean. Each
+session starts a unit ordered before journald, without the default dependencies, so
 that it stops after the hidden journald and logs a line through each of
 journald's sockets as it does (`/dev/log`, its standard output, the native
 socket), and as its last step runs 8000 programs, which push the kernel's
@@ -1196,8 +1247,9 @@ reconcile step's pieces left to their own check; `utab` given back, the bind mou
 mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
 of the session's files on the decoy; the SELinux booleans as they were; the
 failed units: none of NAILS's, none the hidden root masks, and no other but
-one a switch is known to leave failed (the zram swap's, with the swap each
-root ran with recorded) or one the first plain soft-reboot left failed; and
+one the first plain soft-reboot left failed, a zram setup unit never; the zram
+devices, their swap and zram-generator's units as at the cold boot, with the
+session's marker on none of them; and
 the login and boot records changed only by the boot a power cycle adds, with
 no record of a login or a failed login made in the session: wtmp keeps the
 operator's console login, dated before the entry, and lastlog2, where the

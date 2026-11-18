@@ -407,11 +407,158 @@ fn a_measure_may_go_below_the_floor_but_not_to_nothing() {
     ]);
     assert_eq!(counter(&record, &fake.proc()), Some(300));
     // A measure that leaves nothing is none, and the next anchor is tried; one
-    // that leaves 1 counts.
-    record.anchors[0] = getty(TTY1, 300);
-    assert_eq!(counter(&record, &fake.proc()), Some(590 - 109));
-    record.anchors[0] = getty(TTY1, 301);
+    // that leaves 1 counts. A start that used 600 numbers up to its getty:
+    record.at_switch = Some(9331 - 600);
+    assert_eq!(counter(&record, &fake.proc()), Some(590 - (9140 - 8731)));
+    record.anchors[0] = getty(TTY1, 601);
     assert_eq!(counter(&record, &fake.proc()), Some(1));
+}
+
+#[test]
+fn a_number_s_power_of_two_range() {
+    assert_eq!(pid_range(0), None);
+    assert_eq!(pid_range(1), Some((1, 1)));
+    assert_eq!(pid_range(700), Some((512, 1023)));
+    assert_eq!(pid_range(1023), Some((512, 1023)));
+    assert_eq!(pid_range(1024), Some((1024, 2047)));
+    assert_eq!(pid_range(u32::MAX), Some((1 << 31, u32::MAX)));
+}
+
+#[test]
+fn the_aim_keeps_the_margin_inside_the_anchor_s_range() {
+    // Inside the margin the anchor's own number is the aim.
+    assert_eq!(aim(600), 600);
+    assert_eq!(aim(512 + BAND_MARGIN), 512 + BAND_MARGIN);
+    assert_eq!(aim(1023 - BAND_MARGIN), 1023 - BAND_MARGIN);
+    // Near an edge it moves in to the margin: the Fedora 44 getty at 990 is
+    // aimed at 959, one at 520 at 576.
+    assert_eq!(aim(990), 1023 - BAND_MARGIN);
+    assert_eq!(aim(1023), 1023 - BAND_MARGIN);
+    assert_eq!(aim(520), 512 + BAND_MARGIN);
+    assert_eq!(aim(1024), 1024 + BAND_MARGIN);
+    // A range narrower than two margins is aimed at its middle.
+    assert_eq!(aim(200), 191);
+    assert_eq!(aim(3), 2);
+    assert_eq!(aim(1), 1);
+    assert_eq!(aim(0), 0);
+    assert_eq!(aim(u32::MAX), u32::MAX - BAND_MARGIN);
+}
+
+#[test]
+fn the_counter_is_measured_from_the_aim() {
+    // The decoy's getty had 990 at the cold boot, near the top of 512 to 1023,
+    // and the hidden start used 119 numbers up to its own: the counter goes
+    // 119 below the aim, 959, not below 990.
+    let record = Record {
+        floor: Some(700),
+        anchors: vec![getty(TTY1, 990)],
+        at_switch: Some(9031),
+        counter: None,
+    };
+    let fake = FakeProc::with(&[
+        (9040, "systemd-journal", 0, BOOT),
+        (9150, "agetty", TTY1, BOOT),
+    ]);
+    assert_eq!(counter(&record, &fake.proc()), Some(959 - 119));
+}
+
+#[test]
+fn logind_is_measured_from_its_own_number() {
+    // logind had 1000 at the cold boot, 24 below the top of 512 to 1023, and
+    // no getty could be measured. The getty lands off logind by what it was
+    // off at the entry, so the counter goes below logind's own number, not
+    // below the getty's aim: aimed at 959, a getty at 1040 would land near
+    // 999, out of 1024 to 2047.
+    let record = Record {
+        floor: Some(700),
+        anchors: vec![logind(1000)],
+        at_switch: Some(9031),
+        counter: None,
+    };
+    let fake = FakeProc::with(&[
+        (9040, "systemd-journal", 0, BOOT),
+        (9140, "systemd-logind", 0, BOOT),
+    ]);
+    assert_ne!(aim(1000), 1000);
+    assert_eq!(counter(&record, &fake.proc()), Some(1000 - 109));
+
+    // The same near the bottom of a range: logind at 530 is not moved to 576.
+    let record = Record {
+        anchors: vec![logind(530)],
+        ..record
+    };
+    assert_ne!(aim(530), 530);
+    assert_eq!(counter(&record, &fake.proc()), Some(530 - 109));
+}
+
+/// The consoles' numbers in Fedora 44 and 45 admission gate runs before the
+/// aim: the cold boot's, after the first way back (`deactivate`) and after the
+/// second (the emergency), each session starting from the number before it.
+const GATE_RUNS: [(u32, u32, u32); 18] = [
+    (960, 969, 970),
+    (980, 986, 998),
+    (946, 964, 972),
+    (990, 1013, 1025),
+    (947, 955, 964),
+    (991, 1002, 1025),
+    (956, 956, 964),
+    (975, 961, 994),
+    (954, 956, 943),
+    (674, 675, 675),
+    (690, 677, 664),
+    (663, 673, 652),
+    (676, 682, 677),
+    (644, 661, 635),
+    (657, 674, 676),
+    (653, 659, 647),
+    (665, 682, 655),
+    (678, 704, 669),
+];
+
+#[test]
+fn the_measured_spreads_land_in_the_cold_boot_s_range() {
+    // Each way back of those runs landed the console's unit off its number
+    // before the session by up to 35. Aimed as the way back aims now, with the
+    // same offsets, it stays in the cold boot's range after both sessions:
+    // the runs at 990 and 991 that reached 1025 among them.
+    let mut largest = 0;
+    for (cold, first, second) in GATE_RUNS {
+        let (one, two) = (
+            i64::from(first) - i64::from(cold),
+            i64::from(second) - i64::from(first),
+        );
+        largest = largest.max(one.abs()).max(two.abs());
+        let land = |anchor: u32, off: i64| u32::try_from(i64::from(aim(anchor)) + off).unwrap();
+        let back = land(cold, one);
+        let again = land(back, two);
+        assert_eq!(pid_range(back), pid_range(cold), "{cold} -> {back}");
+        assert_eq!(
+            pid_range(again),
+            pid_range(cold),
+            "{cold} -> {back} -> {again}"
+        );
+    }
+    assert!(
+        largest < i64::from(BAND_MARGIN),
+        "the margin covers {largest}"
+    );
+}
+
+#[test]
+fn any_landing_within_the_margin_stays_in_the_range_session_after_session() {
+    // From every anchor of 128 on, a landing off the aim by less than the
+    // margin, either way, keeps the range, and so does the next session's.
+    let off = i64::from(BAND_MARGIN) - 1;
+    for anchor in 128..=1u32 << 16 {
+        for first in [-off, off] {
+            let back = u32::try_from(i64::from(aim(anchor)) + first).unwrap();
+            assert_eq!(pid_range(back), pid_range(anchor), "{anchor} -> {back}");
+            for second in [-off, off] {
+                let again = u32::try_from(i64::from(aim(back)) + second).unwrap();
+                assert_eq!(pid_range(again), pid_range(anchor), "{anchor} -> {again}");
+            }
+        }
+    }
 }
 
 #[test]

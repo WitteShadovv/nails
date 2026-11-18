@@ -163,22 +163,18 @@ WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
   is stopped in order, the top of /run is scrubbed of the hidden session, most
-  of the network state it set up is put back (the addresses and routes it gave
-  the decoy's own devices stay, and so do its nftables tables on a decoy
-  without nft), and the decoy starts again at its own login screen (a display
-  manager set to log an account in automatically logs it in again, as at
-  boot). When a link, MAC address, policy-routing rule or nftables table the
-  return sets out to undo is still the session's afterwards, or it cannot read
-  them back, the machine powers off instead; on a decoy without iw that
-  includes a Wi-Fi interface the session added, iwd's own in place of the
-  decoy's too. The scrub also deletes the runtime journal, which the decoy
-  shares with the hidden session, so a volatile decoy's journal starts again
-  at the return. The hidden volume is unmounted and its encryption mapping
-  closed by the switch itself. Deactivation warns when the return will find no
-  ip or nft, or no iw on a machine with Wi-Fi, and when it is bound to power
-  off: over a link the kernel keeps when it is deleted (the fallback device a
-  tunnel module makes when it loads, tunl0 for ipip), or a link or MAC address
-  of the session's it finds no ip or iw for.
+  of the network state it set up is put back, asked of the kernel itself (the
+  addresses and routes it gave the decoy's own devices stay), and the decoy
+  starts again at its own login screen (a display manager set to log an
+  account in automatically logs it in again, as at boot). When a link, MAC
+  address, policy-routing rule or nftables table the return sets out to undo
+  is still the session's afterwards, or it cannot read them back, the machine
+  powers off instead. The scrub also deletes the runtime journal, which the
+  decoy shares with the hidden session, so a volatile decoy's journal starts
+  again at the return. The hidden volume is unmounted and its encryption
+  mapping closed by the switch itself. Deactivation warns when it is bound to
+  power off: over a link the kernel keeps when it is deleted (the fallback
+  device a tunnel module makes when it loads, tunl0 for ipip).
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy

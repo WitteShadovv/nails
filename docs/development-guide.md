@@ -64,8 +64,9 @@ any other host they skip with a message, under `just kernel-tests` too.
 [testing-strategy.md](testing-strategy.md)). The network way-back tests
 (`nails-core/tests/network_way_back_kernel.rs`) also need `ip`, `nft` with
 nf_tables and the `dummy` link type, which `just kernel-tests` fails without
-too; the `rust` job of `ci.yml` provides them. Like the way back, the tests
-take `ip` and `nft` only from the system locations
+too; the `rust` job of `ci.yml` provides them. The tests make the session's
+state with `ip` and `nft`, which the code under test does not run, and take
+them only from the system locations
 (`/run/current-system/sw/bin`, `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin`),
 never from `PATH`, so a tool from the development shell, a Nix profile or
 `nix shell` does not count. On NixOS, `ip` comes with the system, and `nft`
@@ -73,16 +74,20 @@ only once `pkgs.nftables` is in `environment.systemPackages` (or
 `networking.nftables.enable` is set). Where the kernel does not load the
 dummy module on demand, run `sudo modprobe dummy` first.
 
-Five tests in `privileged_mounts.rs` need real root. Three need `trusted.*`
+Six tests in `privileged_mounts.rs` need real root. Three need `trusted.*`
 xattrs, which a user namespace cannot set: the whiteout and opaque-directory
 test, the test of the `kernel-modules` check against the kernel's own whiteouts
 and opaque directories, and the test of the whole upper-filesystem probe. The
-other two bind loop devices, which only root of the initial namespace may, to
-read the loop driver's record of the file behind one: on a tmpfs, and on a
+other three bind loop devices, which only root of the initial namespace may.
+Two read the loop driver's record of the file behind one: on a tmpfs, and on a
 btrfs filesystem the test makes with `mkfs.btrfs` (btrfs-progs), which must be
 on `PATH`. Both also mount a FUSE filesystem through `/dev/fuse`, which no
-daemon serves. They are `#[ignore]`d and CI runs them in the dedicated
-`privileged-mounts` job of `ci.yml` on every PR, which `gate` aggregates.
+daemon serves. The third mounts such a btrfs filesystem `relatime` and checks
+that a child started with every mount `noatime`, a read under the quiet mounts
+of a reload and a lookup through a quiet copy of the tree change no access
+time, where a plain read and a plain lookup do. They are `#[ignore]`d and CI
+runs them in the dedicated `privileged-mounts` job of `ci.yml` on every PR,
+which `gate` aggregates.
 
 The whole-root session's mechanics have a rootless real-kernel tier of their
 own, `nails-core/tests/whole_root_kernel.rs`. Each test re-runs itself in a

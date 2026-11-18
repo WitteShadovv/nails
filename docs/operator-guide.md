@@ -227,7 +227,11 @@ Keep all of it `root`-owned on the hidden volume.
    guard's files), and permissive mode warns,
    see [the decoy
    requirements](decoy-requirements.md#fail-closed-activation-is-refused)),
-   `systemd-version` (254 or newer), `soft-reboot-units` (the units that
+   `systemd-version` (254 or newer), `kernel-version` (Linux 6.1 or newer,
+   read from the kernel without starting a program: NAILS changes mounts
+   with `mount_setattr`, which Linux 5.12 added; an older kernel than 6.1,
+   or a release it cannot read or tell the version of, fails it, naming the
+   running release and the floor), `soft-reboot-units` (the units that
    implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
    root can be mounted again by device for the way back), `session-state` (no
    session and no leftovers of an interrupted one), `shutdown-inhibitors` (no
@@ -298,6 +302,40 @@ Keep all of it `root`-owned on the hidden volume.
      or not, refuses the activation: the hidden systemd would mount it over the
      hidden volume or inside it. Mount the hidden volume where the decoy
      mounts nothing.
+   - a `noauto` entry is left to the hidden systemd, which never mounts it,
+     only where NAILS reads every option it gives, each read by its name as
+     systemd's fstab generator reads it: `noauto,auto=1` is mounted at boot
+     and `noauto,x-systemd.automount=0` on access, and both are kept off as
+     above. A `noauto` entry with an option outside the lists `backend-entries`
+     reads a plain line by
+     (see [decoy-requirements.md](decoy-requirements.md#attaching-the-drive)),
+     one of them in another form, or an option with a backslash or a quote,
+     is masked, and `nails check` names the option. A `noauto` entry for
+     `/usr` is kept off like any entry the boot mounts, as systemd mounts
+     `/usr` whatever `noauto`, `nofail` and `x-systemd.automount` say; and so
+     is a `noauto` entry whose mount another entry the boot starts needs,
+     where that entry is left to the hidden systemd or put in place: a tmpfs
+     mounted on a directory of it, an entry with its path as its source, or
+     an entry that names its path with `x-systemd.requires-mounts-for=` or
+     `x-systemd.wants-mounts-for=`, or its mount or path with
+     `x-systemd.requires=` or `x-systemd.wants=`, as systemd has that entry's
+     unit require or want the `noauto` mount. Every such entry counts, and
+     where a boot target requires one, or may, the `noauto` mount is
+     skipped, or masked with a warning where its device is not there.
+     `nofail` with any value counts as `nofail`. An entry kept off that gives
+     an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
+     what its units pull in NAILS does not read, or one with a backslash, is
+     masked rather than skipped, and activation warns that the hidden session
+     will not reach the target that requires it. A backslash anywhere in an
+     entry's options means NAILS cannot read them as systemd does, which
+     keeps a comma after a backslash in an option and reads `\054` as one.
+     So the warning for such an entry kept off, other than one for `/usr`,
+     says that the target may require it, whatever `noauto`, `nofail` or
+     `x-systemd.wanted-by=` NAILS reads on it. Such an entry that needs a
+     `noauto` mount counts as one a target may require, never as one it
+     surely requires. A quote does not change how systemd splits the
+     options, so it keeps the skip. An overlay entry that gives `upperdir`
+     more than once, or with no value, is kept off.
 
    An activation without a build (`--overlay-only`, and on Debian and Ubuntu
    every activation) applies the same policy to the fstab the hidden session
@@ -317,10 +355,11 @@ Keep all of it `root`-owned on the hidden volume.
    The decoy's own mount, swap and automount units that a boot target links
    in its `.wants` or `.requires` directory outside the fstab (a NixOS
    `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
-   decisions. zram-generator's swap stays on in the hidden session as RAM-only
-   swap while its zram device has no backing device, and is kept off like
-   disk swap when it has one; NAILS does not read zram-generator's
-   configuration. A mount unit that only another unit pulls in is not
+   decisions. zram-generator does not run in the hidden session, which runs
+   without its zram swap; after the way back the decoy's start sets its zram
+   swap up again. Any other zram swap unit stays on in the hidden session as
+   RAM-only swap while its zram device has no backing device, and is kept off
+   like disk swap when it has one. A mount unit that only another unit pulls in is not
    decided: the hidden systemd mounts it as the decoy's would, and the session
    watcher alerts on its read-write mount. A mount or automount unit of the
    hidden system's own that a boot target links at or below the hidden root
@@ -330,7 +369,8 @@ Keep all of it `root`-owned on the hidden volume.
    `systemd-remount-fs.service` and `systemd-growfs-root.service`, which fail
    there or do nothing: the root filesystem they remount and grow is the root
    overlay in the hidden session. It masks systemd's GPT auto-generator as
-   well, so the generator mounts no partition the fstab does not list. The full
+   well, so the generator mounts no partition the fstab does not list, and
+   zram-generator, so the hidden session runs without zram-generator's swap. The full
    table is in [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry and each unit it reads.
@@ -688,8 +728,8 @@ journal that starts late:
   - the links: it deletes the virtual links the session brought up (a tunnel,
     a dummy, the bridges and virtual ports of containers and virtual machines)
     and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
-    or access point interface, or the one iwd makes in place of the decoy's;
-    this needs `iw` on the decoy, see below). A link counts as the decoy's
+    or access point interface, or the one iwd makes in place of the decoy's).
+    A link counts as the decoy's
     only with the index it had at entry, and a link made again gets a new one,
     so a tunnel the session brought up under the name of one of the decoy's,
     which the decoy's own stop took down, goes too, while a link of the
@@ -703,9 +743,12 @@ journal that starts late:
   - the policy-routing rules (`ip rule`, IPv4 and IPv6) and the nftables
     firewall tables the session added, such as those of a WireGuard full
     tunnel (wg-quick or NetworkManager), a VPN app, a container runtime or
-    libvirt. Activation lists the decoy's own tables with `nft` and the way
-    back lists them again with it, so this needs nftables installed on the
-    decoy (see below);
+    libvirt. Activation lists the decoy's own rules and tables, and the way
+    back lists them again, by asking the kernel itself over netlink: no
+    `ip`, `nft` or `iw` runs, so neither needs them on the decoy. Where
+    nf_tables is not in the kernel at entry, the decoy has no table, and the
+    tables are not asked for, since the question would make the kernel load
+    nf_tables;
   - the network settings for all devices and for new ones
     (`net.ipv4.ip_forward`, `net.ipv4.conf.all.*`, `net.ipv4.conf.default.*`,
     `net.ipv6.conf.all.*` and `net.ipv6.conf.default.*`), such as the
@@ -721,23 +764,16 @@ journal that starts late:
   has another MAC address after the retry, a virtual link or Wi-Fi interface
   the session added that is still there, a policy-routing rule or firewall
   table the session added that is still loaded, or a part it cannot read back
-  (the kernel's list of links, or `ip` or `nft` failing to list the rules or
-  tables). The rules and tables count only where activation listed the decoy's
-  own and the way back finds `ip` and `nft` (see below). That state lives only
-  in the kernel, so a power-off erases it, where a return would hand it to the
-  decoy. A missing tool counts the same way wherever the way back can see what
-  the session left without it: without `ip` a changed MAC address or a link
-  the session made, without `iw` a Wi-Fi interface it added, the one iwd makes
-  in place of the decoy's by default when it starts included, so on a decoy
-  without `iw` a session that runs iwd ends in a power-off. The machine turns
-  off as with `--poweroff`, and the next boot is the plain decoy. Nothing on
-  the screen says why: a line there would tell anyone watching that a hidden
-  session had just ended. A missing tool with nothing to undo (the stock NixOS
-  decoy without `nft`, a session that added no Wi-Fi interface and ran no iwd)
-  returns as before. The network settings, the hostname and the per-link state
-  below `/run` do not count: the way back writes them back and does not power
-  off over them, also when a write fails. Neither does what it leaves alone,
-  listed below.
+  (the kernel's list of the links, rules or tables does not answer, or it
+  cannot tell whether nf_tables is in the kernel). The rules and tables count
+  only where activation listed the decoy's own. That state lives only in the
+  kernel, so a power-off erases it, where a return would hand it to the decoy.
+  The machine turns off as with `--poweroff`, and the next boot is the plain
+  decoy. Nothing on the screen says why: a line there would tell anyone
+  watching that a hidden session had just ended. The network settings, the
+  hostname and the per-link state below `/run` do not count: the way back
+  writes them back and does not power off over them, also when a write fails.
+  Neither does what it leaves alone, listed below.
 
   The decoy's NetworkManager therefore does not adopt a session link as
   connected externally or record a profile for it in
@@ -751,47 +787,30 @@ journal that starts late:
   routes the session gave the decoy's own devices; what it added inside a
   firewall table the decoy already had (a container runtime's chains in a
   table the decoy's own firewall uses) and the firewall rules it made with
-  legacy iptables, outside nftables; every firewall table it added on a decoy
-  without `nft`, where the way back cannot tell the session's tables from the
-  decoy's, so a VPN app's table that blocks all traffic outside its tunnel
-  keeps the decoy offline; the settings of a single device
+  legacy iptables, outside nftables; the nf_tables module and the others
+  the session loaded, which stay loaded; the settings of a single device
   (`net.ipv4.conf.eth0.*`) and the network settings not listed above; any
   link, rule or table the session deleted, which is not made again, and the
   name it gave one of the decoy's links; a Wi-Fi interface of the decoy's
   that software in the session replaced with one of its own, as iwd does by
   default when it starts and airmon-ng does when it starts monitor mode: the
-  way back deletes the replacement (without `iw` it cannot, and powers off
-  instead) but does not make the decoy's interface again, so the decoy has no
-  Wi-Fi on that radio; the policy-routing rules the session added where `ip`
-  (iproute2) is not installed; and the MAC address the session gave a device
+  way back deletes the replacement but does not make the decoy's interface
+  again, so the decoy has no Wi-Fi on that radio; and the MAC address the
+  session gave a device
   that was plugged in, or unplugged and plugged in again, during the session,
   which makes it a new link. The decoy's NetworkManager goes on using such an
   address unless the decoy's profile sets one, so it can reach the decoy disk
   (in a DHCP lease, for one). The way back also leaves alone a part of the
   network state that activation could not read in full, rather than take the
-  decoy's for the session's: activation lists the decoy's own firewall tables
-  with the decoy's `nft`, so a session that starts on a decoy without it
-  leaves every table it adds even where the way back finds an `nft` later.
+  decoy's for the session's: the IPv6 rules where the kernel would not list
+  them (a kernel without IPv6), and the firewall tables where activation could
+  not tell whether nf_tables was in the kernel (neither its `/sys/module`
+  directory nor the kernel's list of its symbols could be read).
 
-  `check` and `activate` warn before a session when the decoy has no `nft`,
-  or has a Wi-Fi interface and no `iw` (the `network-tools` check), and name
-  the package to install ([the decoy
-  requirements](decoy-requirements.md#nixos) say how on NixOS). They warn and
-  do not refuse, since a stock NixOS decoy has no `nft`.
-  Before it asks, `deactivate` warns when the way back's last step will find
-  no `ip` (iproute2), no `nft` (nftables) or, on a machine with a Wi-Fi
-  interface, no `iw`, in the hidden session's system directories or, on NixOS,
-  the decoy's system: without `ip` the policy-routing rules the session added
-  stay, and a virtual link it made or a MAC address it changed makes the
-  machine power off instead of returning; without `nft` the nftables tables it
-  added stay; and without `iw` a Wi-Fi interface it added on the decoy's
-  radios, the one iwd makes in place of the decoy's included, makes the
-  machine power off instead. It also says first when the way back is bound to
-  power off over what is there now: a link the kernel keeps when it is deleted
-  (the fallback device a tunnel module makes when it loads, `tunl0` for
-  `ipip`), which never goes, or a link or MAC address of the session's it
-  finds no `ip` or `iw` for, unless that changes before it runs; a plain
-  `emergency` says the same in its report. Beyond that, the step runs with no
+  Before it asks, `deactivate` says when the way back is bound to power off
+  over what is there now: a link the kernel keeps when it is deleted (the
+  fallback device a tunnel module makes when it loads, `tunl0` for `ipip`),
+  which never goes; a plain `emergency` says the same in its report. Beyond that, the step runs with no
   output after the session has ended, so nothing tells you what it left, or
   why it powered off: take a VPN connection down with its own tool
   (`wg-quick down`, `nmcli connection down`, the app's disconnect), end
@@ -914,6 +933,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
 | Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead, see [How it works](#how-it-works): off) | the decoy's login screen, or its desktop with autologin (`--poweroff`, or a way back that powers off instead: off; `--reboot`: a full reboot) | the decoy, unchanged |
 | Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
+| Gives the decoy's mounts an interrupted activation left `noatime` their own access-time mode back | — | on the decoy: Yes | Yes |
 | Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
 ### When to use each
@@ -1245,14 +1265,111 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   happens only with that parameter set: it is off by default, also in the
   kernels NixOS, Debian and Ubuntu ship.
 - **Reads on the decoy.** `check` reads the decoy's configuration and state and
-  runs some of the decoy's own tools to ask what they report, such as
-  `systemctl` for the systemd version. On a decoy root mounted without
-  `noatime`, a read or a program start can update an access time.
-  `upper-fs-capability` reads the SELinux label of the decoy's `/`, which
-  changes no access time, and `lsm-status` reads `/etc/selinux/config`, as
-  root without changing its access time, and looks up when it last changed,
+  runs three of the decoy's own programs to ask what they report: `systemctl`
+  (the systemd version, the units), `busctl` (the service manager's
+  properties) and `loginctl` (the sessions). Activation does the same and
+  more. `upper-fs-capability` reads the SELinux label of the decoy's `/`,
+  which changes no access time, and `lsm-status` reads `/etc/selinux/config`,
+  as root without changing its access time, and looks up when it last changed,
   which changes nothing. The questions it asks the loaded policy go through
-  selinuxfs, `/proc` and `/run`, none of them on the decoy disk.
+  selinuxfs, `/proc` and `/run`, none of them on the decoy disk. On a decoy
+  root mounted without `noatime`, a read updates an access time that is older
+  than a day, or older than the file's last change, to the moment of the read,
+  so run as root NAILS keeps its reads off them:
+  - it reads the decoy's files and lists its directories with `O_NOATIME`,
+    the operator's entry in `/etc/passwd` included;
+  - it starts each of those programs in a mount namespace of its own whose
+    every mount of a disk is `noatime`, so neither the program's file nor its loader,
+    libraries and data files, nor what it reads, get a new access time, while
+    its question reaches the system as before;
+  - it asks the service manager for its version alone (`busctl
+    get-property`): `systemctl show` asks for every property of the service
+    manager, which then works out its taint list as well and reads
+    `/etc/os-release` and `/etc/adjtime` for it;
+  - from the moment activation has the service manager reload its units to
+    the end of its preparation, the decoy's local disk mounts that keep access
+    times (which ones, below) are `noatime`: the reload makes PID 1 run every
+    generator and read every unit file again, each mount activation makes
+    shows to PID 1 as a unit (a bind of the root's device makes it read
+    `blockdev@.target`), and a drop-in activation writes makes it list the
+    unit directories again. Activation ends its preparation with a second
+    reload, so PID 1 has taken all of it in before each mount gets its own
+    mode back. A bind made meanwhile takes `noatime` from the mount it copies,
+    and gets that mount's mode back then only where the bind itself lies in
+    this window. None of the binds activation leaves in place does: each lies
+    below the next root's overlay at `/run/nextroot`, so a bind of a changed
+    mount that activation makes there, such as the hidden volume's or a decoy
+    filesystem's, stays `noatime` after activation, in the hidden session too.
+    The mounts the window changes are those of local disk filesystems (ext4,
+    xfs, btrfs, f2fs,
+    vfat and the other local disk filesystems NAILS lists) whose mount points
+    a lookup reaches through local filesystems alone: local disk filesystems,
+    the kernel's in-memory ones such as tmpfs and proc, and read-only images
+    such as squashfs. NAILS decides which they are from `/proc/self/mountinfo`
+    alone. A FUSE mount (`fuse`, `fuse.*`, `fuseblk`), a network or cluster
+    filesystem's (NFS, SMB, 9p, virtiofs and the like), a mount of any type
+    NAILS does not list as local (an overlay, an automount point, an unknown
+    type), and every mount inside one of them, by the mount table's parents,
+    or below its mount point are left out of this window, which changes none
+    of them, as earlier releases changed the access-time mode of none of the
+    decoy's mounts. The window never looks them up, opens or stats them, nor
+    anything inside them, so a dead or hung FUSE daemon neither makes it
+    refuse nor makes it wait. Activation itself still resolves the operator's
+    home inside the decoy root, which looks up each name on the way to it, on
+    such a mount too. Access times on a FUSE or network mount are its daemon's
+    or its server's to keep, which a mount flag on this side does not change.
+    A mount that another mount covers, so that a lookup of its mount point
+    leads elsewhere or nowhere, is left as it is, since no lookup reaches it.
+    Activation refuses, naming the mount and its type, where it cannot look up
+    a mount it must change or make it `noatime`. It refuses as well where it
+    runs in a user namespace of its own, which may not change the system's
+    mounts. Before it changes a mount it writes the mount and its mode to the
+    session plan: where activation is killed before it gives the modes back,
+    `nails recover` gives them back (see [Interrupted
+    activation](#specific-situations));
+  - it asks the kernel itself for the network state over netlink: no `ip`,
+    `nft` or `iw` runs. It asks for the firewall tables only where nf_tables
+    is in the kernel already, and deletes a Wi-Fi interface only where
+    cfg80211 is: asking otherwise makes the kernel load the module, and the
+    decoy's modprobe then reads its settings and the module's file;
+  - on the way back it looks at the decoy root, its init, its release file
+    and its boot records, through a detached copy of its mounts whose every
+    mount is `noatime`, before the decoy starts.
+
+  What still gets a new access time:
+  - every symbolic link a lookup of NAILS' own follows or reads on the decoy
+    root during `check` and activation, such as `/bin`, `/sbin` and `/lib` on
+    a merged `/usr`, `/etc/os-release` and the links in the unit directories
+    (the units enabled, the masks): no open flag covers a link on the way;
+  - the files modprobe and udevd read for the overlay module's first load,
+    where it is not loaded yet (see above);
+  - what the service manager reads during activation on a mount the quiet
+    mounts leave out (see above): a mount of a type NAILS does not list as
+    local, or a disk mounted inside or below a FUSE, network, overlay,
+    automount or unknown mount;
+  - the directories udevd lists for its rules and link files, which it does
+    whenever it handles a kernel event, whatever made the event, every three
+    seconds at most;
+  - what the privilege tool reads when it starts NAILS: `sudo`, `doas` or
+    `pkexec` reads its own file and libraries, its configuration, the PAM
+    stack and the account databases, so their access times show the moment
+    of the check or the activation. NAILS starts after them and cannot keep
+    that off. Start NAILS from a shell that is root already, or mount the
+    decoy root `noatime`;
+  - without root, all of it: an unprivileged `check` reads the files it does
+    not own with their access times updated, and starts the programs as they
+    are. Run `check` with `sudo`.
+
+  The access-time scenario of the distribution tests checks this on a Debian
+  13 decoy mounted `relatime`, and on a Fedora 44 one with a test build that
+  admits Fedora: it ages every entry of the decoy disk but apt's
+  configuration and `/etc/selinux/config`, whose change times NAILS judges,
+  runs `check` and two sessions with their ways back for an operator account
+  named as `sudo` names it (without starting `sudo`), lists the links and
+  udevd's directories, and fails on any other read of the decoy disk that a
+  plain soft-reboot of the decoy does not make, though it may not see a read
+  of `/etc/selinux/config`. Mount the decoy root `noatime` to leave no access
+  time at all, the links' included.
 - **No lookup that would mount an automount point.** A lookup that passes an
   automount point that nothing is mounted on yet mounts it: a direct or
   offset one, such as the one systemd makes for an `x-systemd.automount` line
@@ -2958,7 +3075,8 @@ pointed at its store (the decoy then loads no module and no firmware), and
 removes the session's masks in `/run/systemd/system`,
 `/run/systemd/system.control` and `/run/systemd/system-generators`, which
 keep the decoy's swap, its boot-loader units and the other units the hidden
-root does not need masked, and systemd's GPT auto-generator from running. By
+root does not need masked, and systemd's GPT auto-generator and
+zram-generator from running. By
 hand, only a power-off does.
 
 **Do not edit or delete `state.json` by hand** — `recover` resets it once the
@@ -2975,7 +3093,11 @@ root; clean up anyway.
 built `/run/nextroot`). `nails status` reports an interrupted entry and exits 7
 with "run `nails recover`". Run it. Residue: whatever the build wrote stays in the
 upper on the hidden volume; the decoy is untouched. Ctrl+C during activation
-rolls the entry back by itself.
+rolls the entry back by itself. An activation killed while it held the decoy's
+mounts `noatime` (see [What `check` touches](#what-check-touches)) leaves them so:
+`findmnt` shows `noatime` where the fstab says otherwise, and the decoy records
+no access time meanwhile. `nails recover` gives each mount the mode it had,
+from the session plan; a reboot does too.
 
 **Deactivation refuses or fails** in the hidden session. Use `nails emergency`:
 with the session plan it returns to the decoy where it can prepare the way back
@@ -3378,8 +3500,8 @@ real hardware:
   whose driver refuses the change in the same way, not on such an adapter or
   card;
 - the way back deleting a Wi-Fi interface the session added on one of the
-  decoy's radios (a monitor or access point interface): tested against a
-  simulated `iw` and radio, not a real card;
+  decoy's radios (a monitor or access point interface): unit-tested against a
+  fake kernel, not over nl80211 on a real card or a simulated radio;
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);

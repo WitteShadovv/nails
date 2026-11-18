@@ -24,11 +24,17 @@
 //!    root, which a soft-reboot starts much as it starts the decoy again;
 //! 3. the way back, armed in the hidden session, reads how many numbers the
 //!    hidden start used up to its own copy of the anchor, and sets the counter
-//!    that many below the decoy's anchor ([`counter`]), so the decoy's anchor
-//!    gets about the number its own boot gave it, as far as the hidden start
-//!    runs as many processes up to its anchor as the decoy's start does. The
-//!    difference adds up over sessions without a power-off between them,
-//!    since each entry anchors on the number the last way back gave.
+//!    that many below its aim for the decoy's anchor ([`counter`]): for the
+//!    getty, the decoy's number of it moved at least [`BAND_MARGIN`] inside
+//!    the edges of that number's power-of-two range ([`aim`]); for logind,
+//!    its own number. The decoy's anchor lands off the aim by the difference
+//!    between the numbers the decoy's start and the hidden start pass up to
+//!    it, kernel threads and numbers still in use included; where the getty
+//!    is the anchor and that difference is less than the margin, the getty
+//!    lands in the range of its number at the entry, from 128 on. Each entry
+//!    anchors on the number the last way back gave, so the difference adds up
+//!    over sessions without a power-off between them, but each aim moves the
+//!    getty in from the edges of the range again.
 //!
 //! A process counts as one a start ran only when it started at most
 //! [`START_WINDOW`] after the first process of that start still running: the
@@ -91,6 +97,14 @@ const ANCHOR_SPAN: u32 = 2048;
 /// How many numbers a start of the service manager may use up to its anchor
 /// for the measure to count.
 const START_SPAN: u32 = 4096;
+
+/// How far inside the edges of its power-of-two range the way back aims the
+/// decoy's getty ([`aim`]). The decoy's start after a way back need not run
+/// as many processes up to its anchor as the hidden start did, and the kernel
+/// skips the numbers still in use, so the anchor lands off the aim by some
+/// numbers either way: on the Fedora 44 and 45 admission gate the consoles'
+/// units landed up to 35 off their number before the session.
+pub const BAND_MARGIN: u32 = 64;
 
 /// The clock ticks a second in which `/proc/<pid>/stat` gives a process's
 /// start (`USER_HZ`, what `sysconf(_SC_CLK_TCK)` returns): 100 on every
@@ -310,12 +324,37 @@ pub fn record(proc: &Path) -> Record {
     }
 }
 
+/// The power-of-two range `[2^k, 2^(k+1) - 1]` the number `pid` falls in, as
+/// the forensic oracle keys a process number. `None` for 0.
+pub fn pid_range(pid: u32) -> Option<(u32, u32)> {
+    let low = 1u32 << pid.checked_ilog2()?;
+    Some((low, low - 1 + low))
+}
+
+/// The number the way back aims the decoy's getty at, from its number at the
+/// entry: that number, but at least [`BAND_MARGIN`] inside the edges of its
+/// power-of-two range ([`pid_range`]), or the middle of a range of no more
+/// than twice the margin's numbers. From 128 on, a getty that lands off its aim by less than
+/// the margin stays in the range its number at the entry was in, after one
+/// session and after each further one without a power-off between them,
+/// since each entry anchors on the number the last way back gave.
+pub fn aim(anchor: u32) -> u32 {
+    let Some((low, high)) = pid_range(anchor) else {
+        return anchor;
+    };
+    if high - low < 2 * BAND_MARGIN {
+        return low + (high - low) / 2;
+    }
+    anchor.clamp(low + BAND_MARGIN, high - BAND_MARGIN)
+}
+
 /// The counter the way back sets, measured in the hidden session under the
 /// procfs at `proc` when it is armed: for the first anchor the hidden start
 /// also ran (the same `comm` on the same terminal, started with the first
 /// process above the switch's counter still running, [`START_WINDOW`]), the
-/// decoy's number of it less the numbers the hidden start used up to its own
-/// copy. `None` when no anchor can be measured, which leaves the floor.
+/// number the way back aims the decoy's anchor at ([`target`]) less the
+/// numbers the hidden start used up to its own copy. `None` when no anchor can be
+/// measured, which leaves the floor.
 pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
     let at_switch = record.at_switch?;
     let live: Vec<Process> = processes(proc)
@@ -333,8 +372,20 @@ pub fn counter(record: &Record, proc: &Path) -> Option<u32> {
         if used > START_SPAN {
             return None;
         }
-        anchor.pid.checked_sub(used).filter(|&c| c >= 1)
+        target(anchor).checked_sub(used).filter(|&c| c >= 1)
     })
+}
+
+/// The number the way back sets the counter below for `anchor`: the getty's
+/// [`aim`], or logind's own number. A way back that measures by logind lands
+/// the getty off logind by what it was off at the entry, so moving logind's
+/// aim would move the getty, whose number is not measured, by as much.
+fn target(anchor: &Anchor) -> u32 {
+    if anchor.comm == ANCHORS[0] {
+        aim(anchor.pid)
+    } else {
+        anchor.pid
+    }
 }
 
 /// The device and inode of the file `path` names, following a link: the

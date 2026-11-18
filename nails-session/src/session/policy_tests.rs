@@ -185,7 +185,7 @@ fn a_required_unit_whose_device_is_not_there_is_masked_with_a_warning() {
         Decision::Mask {
             target: "/data".into(),
             units: vec!["data.mount".into()],
-            reason: "not mounted now; the hidden session would mount it read-write",
+            reason: "not mounted now; the hidden session would mount it read-write".into(),
             unreached: Some(Unreached {
                 target: "local-fs.target".into(),
                 cause: Unskippable::NoDevice("/dev/sdb1".into()),
@@ -377,7 +377,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
     let mask = |target: &str, units: &[&str]| Decision::Mask {
         target: target.into(),
         units: units.iter().map(|unit| unit.to_string()).collect(),
-        reason: KEPT_BELOW,
+        reason: KEPT_BELOW.into(),
         unreached: None,
     };
     let cases = [
@@ -391,7 +391,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                     Some("/dev/mapper/data"),
                 ),
                 masked: Vec::new(),
-                reason: KEPT_BELOW,
+                reason: KEPT_BELOW.into(),
             },
         ),
         (
@@ -404,7 +404,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                     Some("/dev/vdb1"),
                 ),
                 masked: Vec::new(),
-                reason: KEPT_BELOW,
+                reason: KEPT_BELOW.into(),
             },
         ),
         (
@@ -413,7 +413,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 target: "/mnt/data/ram".into(),
                 skip: skip(&["mnt-data-ram.mount"], &[], None),
                 masked: Vec::new(),
-                reason: KEPT_BELOW,
+                reason: KEPT_BELOW.into(),
             },
         ),
         (
@@ -426,7 +426,7 @@ fn every_entry_of_the_hidden_fstab_at_or_below_the_hidden_root_is_kept_off() {
                 target: "/mnt/data/archive".into(),
                 skip: skip(&["mnt-data-archive.automount"], &[], None),
                 masked: vec!["mnt-data-archive.mount".into()],
-                reason: KEPT_BELOW,
+                reason: KEPT_BELOW.into(),
             },
         ),
         (

@@ -57,9 +57,9 @@ What runs in this tier:
 | `nails-cli/tests/early_dispatch.rs` and the `kernel_tests` module of `nails-cli/src/cli/early_tests.rs` | `emergency` detaching a leftover next root before it reads the configuration; in a PID namespace of its own, only a child of PID 1 counting as started by PID 1, which the check of the program's domain asks |
 | `nails-cli/tests/maintenance_cli.rs` and the `kernel_tests` modules of `rehearse_cli.rs`, `cli_contract.rs`, `activate_gate.rs`, `helper_stdio.rs`, `nails-cli/src/cli/helper/switch_tests.rs` and `maintain_tests.rs` (the window's helper, when the `gui` feature is on), `nails-cli/src/cli/logging/tests.rs` and `nails-cli/src/cli/commands/init/tests.rs` | The real binary's write paths (state, lock, rehearsal state, log file, the init layout) on a tmpfs hidden root, through the real attach gate: the binary they spawn inherits the namespace, so no test hook stands in for a mounted volume. `activate_gate.rs` also mounts a second tmpfs over the root and checks that neither receives a file, and that `activate --json` writes exactly one envelope of its schema to stdout. The helper's tests run a discard, an activation, init, a rehearsal plant and a configuration change through it and compare each answer with the CLI's envelope and exit code for the same command, and check that a window closing its pipe before the point of no return cancels the activation and that a configuration change writes only with its token and while the file is still what its plan read |
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
-| `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace: the real `ip` deleting the session's links (one made again under the name of a decoy link included) and its policy-routing rules, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the real `nft` deleting the session's firewall tables while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
+| `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace, over netlink: the session's links (made with the real `ip`, one made again under the name of a decoy link included) and its policy-routing rules deleted, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the session's firewall tables (made with the real `nft`) deleted while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
-| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, the `kernel-modules` check against what the kernel leaves in an upper, the whole upper-filesystem probe as `check` runs it, with the label copy the host asks for and with the SELinux label required, and the loop driver's record of the file behind a real loop device, on a tmpfs and on btrfs, which tells the session's own storage below the hidden root; all but the whiteout test, the kernel-modules test, the two probe tests and the two loop tests run rootless |
+| `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, the `kernel-modules` check against what the kernel leaves in an upper, the whole upper-filesystem probe as `check` runs it, with the label copy the host asks for and with the SELinux label required, a child started with every mount `noatime`, a read under the quiet mounts of a reload and a lookup through a quiet copy of the tree leaving the access times of a file and of a link alone on btrfs mounted `relatime`, and the loop driver's record of the file behind a real loop device, on a tmpfs and on btrfs, which tells the session's own storage below the hidden root; all but the whiteout test, the kernel-modules test, the two probe tests, the two loop tests and the access-time test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |
 | `kernel_tests` modules in the crates | Unit-level checks that need a real mount table or process |
 
@@ -69,13 +69,14 @@ whiteouts and opaque directories need real root: the test of both, and the
 test of the `kernel-modules` check, which reads the opaque directories the
 kernel makes in an upper. So does the upper-filesystem probe as a whole, whose
 first step sets a `trusted.*` xattr. A loop device can be bound by root of the
-initial namespace alone. Those six tests,
+initial namespace alone. Those seven tests,
 `privileged_mounts::whiteout_and_opaque_hide_lower_entries_without_deleting_them`,
 `privileged_mounts::the_kernel_modules_check_reads_the_kernels_own_whiteouts_and_opaque_directories`,
 `privileged_mounts::the_upper_fs_probe_as_root_passes_and_leaves_nothing`,
 `privileged_mounts::the_upper_fs_probe_as_root_copies_the_decoy_roots_label_where_one_is_required`,
-`privileged_mounts::the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file`
-and `privileged_mounts::a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows`,
+`privileged_mounts::the_loop_driver_names_the_filesystem_that_holds_a_loop_device_s_file`,
+`privileged_mounts::a_loop_device_s_file_on_btrfs_is_found_by_the_path_the_driver_shows`
+and `privileged_mounts::quiet_children_mounts_and_trees_change_no_access_time`,
 stay `#[ignore]`d and run in CI's `privileged-mounts` job. The probe's steps
 after the xattr run rootless in the `kernel_tests` module of
 `nails-core/src/preflight/checks/upper_fs_probe/tests.rs`: its trial upper
@@ -135,8 +136,9 @@ permanent address back, and is up, after `deactivate` and after a plain
 
 A way back that leaves a link, MAC address, rule or table it set out to undo as
 the session left it powers off instead of returning, and writes nothing on the
-screen. The decision and the power-off itself are unit tests (a fake `ip`,
-`nft` and `systemctl`, and a stand-in for the kernel's power-off); a
+screen. The decision and the power-off itself are unit tests (a fake kernel
+for the network state, a fake `systemctl`, and a stand-in for the kernel's
+power-off); a
 real-kernel test runs that way back with a file bound over `/dev/console` and
 finds it empty; the whole path is tested in a VM, by
 `session-wayback-poweroff`: a session that loads `ipip`, whose fallback device
@@ -227,7 +229,7 @@ The doubles in use, and what backs them: `MockFilesystem`
 `MockProcessRunner` (`nails-base/src/process/run/mock.rs`, backed by tests that
 run a real `sh`) and `FakeJournalReader` (`nails-forensics/src/verify/journal.rs`,
 not yet backed by a capture). A test that writes a program for itself or the
-code under test to run (a stub `ip`, `systemctl` or `dmsetup`, a fake init)
+code under test to run (a stub `systemctl` or `dmsetup`, a fake init)
 writes it with `write_executable` from `nails_base::test_support`
 (`crate::test_support` inside `nails-teardown`), and a test that copies one,
 such as the built binary, copies it with `copy_executable` from the same module.

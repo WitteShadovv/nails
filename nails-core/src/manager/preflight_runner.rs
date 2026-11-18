@@ -187,14 +187,13 @@ pub fn build_registry<F: Filesystem>(
         BinaryLocationCheck, DecoyNixTraceCheck, DecoyPersistenceCheck, DmaProtectionCheck,
         HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
         InspectedShell, LocateDatabaseCheck, LsmStatusCheck, MemoryWipeCheck, MountNamespaceCheck,
-        NetworkToolsCheck, NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck,
-        PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpgradeRunCheck,
-        UpperFsCapabilityCheck,
+        NixOSBuildTargetCheck, OfflineUpdateCheck, OuterVolumeCheck, PlatformCheck,
+        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SwapCheck, SymlinkSupportCheck, UpgradeRunCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
-        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, ShutdownInhibitorsCheck,
-        SoftRebootUnitsCheck, SystemdVersionCheck,
+        DecoyRootCheck, FstabPolicyCheck, KernelVersionCheck, SessionStateCheck,
+        ShutdownInhibitorsCheck, SoftRebootUnitsCheck, SystemdVersionCheck,
     };
 
     let _ = fs;
@@ -239,6 +238,12 @@ pub fn build_registry<F: Filesystem>(
         inputs.systemd_version,
         inputs.host_profile.clone(),
     )));
+    // NAILS starts the programs it runs as root, and keeps PID 1's reads on
+    // the decoy's local disk mounts during the entry, without access times
+    // through mount_setattr (Linux 5.12): a kernel before Linux 6.1, the
+    // oldest NAILS supports, is refused, as is one whose release cannot be
+    // read or told.
+    registry.add_check(Box::new(KernelVersionCheck::new()));
     registry.add_check(Box::new(SoftRebootUnitsCheck::new(
         paths.root.clone(),
         layered,
@@ -285,15 +290,9 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(LsmStatusCheck::new(inputs.unit_domains.clone())));
 
     // Resolves every host tool nails spawns from the detected platform's search
-    // list before anything is built: the way back's `ip` among them, and its
-    // `dmsetup` when the hidden volume is (or may be) on device-mapper.
+    // list before anything is built: the way back's `dmsetup` among them when
+    // the hidden volume is (or may be) on device-mapper.
     registry.add_check(Box::new(HostToolsCheck::new(hidden_root.clone())));
-
-    // Warns (never fails) when the way back will find no `nft` to delete the
-    // firewall tables a session adds, or, where a link is a Wi-Fi interface,
-    // no `iw` to delete one a session adds on the decoy's radio, looking where
-    // the way back looks. Read-only.
-    registry.add_check(Box::new(NetworkToolsCheck::new(paths.clone())));
 
     registry.add_check(Box::new(SymlinkSupportCheck::new(hidden_root.clone())));
 

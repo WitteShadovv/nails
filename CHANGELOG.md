@@ -20,6 +20,14 @@ of this changelog for that version becomes the release notes word for word, and
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
   `config/nails.toml` next to it), delete the key if it is reported, and pass
   `--allow-persistent-decoy` on the activations that need the override.
+- NAILS now requires Linux 6.1 or newer. On an older kernel `check` fails the new `kernel-version`
+  row (exit 4) and `activate` refuses, and so they do where the running kernel's release cannot be
+  read or its version told; the row names the running release and the floor. The check reads the
+  release from the kernel (`uname`) and starts no program. NAILS starts the programs it runs as root
+  with every mount `noatime` and makes the decoy's local disk mounts `noatime` while the service
+  manager reads them, both through `mount_setattr` (Linux 5.12). The default kernel of Debian
+  13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. On a NixOS decoy that
+  boots an older long-term kernel, boot a newer one before you activate with the new binary.
 - A decoy whose fstab mounts another disk or a RAM filesystem at or below the hidden root, a
   `noauto` line included, can no longer activate: `check` fails `fstab-policy` (exit 4) and
   `activate` refuses, where 0.3.0-rc.3 left the line to the hidden systemd. (A line that mounts the
@@ -1128,6 +1136,80 @@ of this changelog for that version becomes the release notes word for word, and
   262142, a time a crafted btrfs image can hold: such a time is given in seconds since 1970, as the
   examiner gives an access time.
 
+- The hidden session no longer runs zram-generator: the entry masks it in the hidden root, as it
+  masks the GPT auto-generator, so the hidden session runs without zram-generator's swap. It set the device up again from the hidden root's copy of
+  zram-generator's configuration, which the fstab policy does not read and which can name a disk
+  the device writes its pages back to. On Fedora 45 its stop at the emergency way back failed to
+  reset the device (`Device or resource busy`), and the decoy then ran without its zram swap, with
+  `systemd-zram-setup@zram0.service` failed, until the next power-off. The way back now also resets
+  every zram device set up with a swap area no swap uses, before the decoy starts, so that the
+  decoy's start can set its zram swap up as its cold boot did. That includes one whose reset failed
+  at a stop, and one the decoy set up itself and left with its swap off. A zram swap unit other
+  than zram-generator's is still left on in the hidden session while its device is RAM-only.
+- Where the getty is what it measures by, the way back's process-number set-back keeps the decoy's
+  getty in the power-of-two range of the number the decoy's boot gave it, from 128 on, as long as
+  the getty lands less than 64 numbers off the number the way back aims at. It aimed at that number
+  itself, so a getty whose number sat just below a power of two could land above it: on Fedora 44,
+  after the emergency way back, getty@tty1 and its `wtmp` records got 1025 where the cold boot gave
+  it 990 and 991. Where the getty's number sits less than 64 from an edge of its range, the way back
+  now aims 64 inside that edge, and at the middle of a range of 128 numbers or fewer. Where it
+  measures by logind, it still aims at logind's own number.
+- The fstab policy reads each option of a line by its name, alone or with a value, as systemd's
+  fstab generator reads it, with the readers `backend-entries` uses. It took a line with
+  `noauto,auto=1`, `noauto,auto=0` or `noauto,x-systemd.automount=0` for one the boot never
+  mounts: on such a line of the hidden session's own fstab, which an activation without a build
+  decides, the hidden systemd mounted the disk read-write, and `nails check` did not list such a
+  line of the decoy's fstab. It skipped a mount with `x-systemd.makefs=1` and left its makefs
+  free, which formats a disk it finds empty, and read `nofail=1`, `nofail=0`, `fail=1`,
+  `_netdev=1`, `bg=1` and a quota option with a value such as `usrjquota=aquota.user` otherwise
+  than systemd. `nofail` with any value is now `nofail`.
+- A `noauto` line is now left alone only where NAILS reads every option it gives, by the lists
+  `backend-entries` reads a plain line by. One with any other option, a known one in another form
+  (`x-systemd.after=`, `X-mount.subdir=`, `nofail=1`), or an option with a backslash or a quote is
+  masked with its automount, and `nails check` names the option. systemd splits the options at
+  every comma, as NAILS does, and only a backslash or a `\054` makes it split them otherwise (it
+  mounted `noauto,auto=x\,noauto` and `noauto,comment=x\054auto` at boot); a quote is unread as
+  `libmount` keeps a comma between quotes. Where the option holds a backslash, or is one of
+  systemd's own whose effect NAILS does not read, it may have a boot target require the line, and
+  activation and `nails check` warn that such a target is then not reached. A `noauto` line for
+  `/usr` is kept off like any line the boot mounts, as systemd mounts `/usr` whatever `noauto`
+  says, and `nofail` and `x-systemd.automount` mean nothing there either.
+- A `noauto` line whose mount another line needs is kept off, where the boot starts that other
+  line and it is left to the hidden systemd or put in place: a line below its mount point, one with
+  it as its source, or one that names it with `x-systemd.requires-mounts-for=`,
+  `x-systemd.wants-mounts-for=`, `x-systemd.requires=` or `x-systemd.wants=`. systemd has that
+  line's unit require or want the `noauto` mount, so the boot mounts it all the same, and NAILS
+  left it to the hidden systemd, which would mount the disk read-write for a `tmpfs` line below it
+  or one that names it. A line whose pulls NAILS cannot read (an option with a backslash, or
+  `x-systemd.requires=` with no value) keeps it off too. Every line that needs it is read: where a
+  boot target requires, or may require, one of them or a line that requires one in turn, it is
+  skipped if its device is there and masked with a warning if not, and where none does, it is
+  masked. The warning names the lines the target requires on the way, which `nofail` lets it be
+  reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`). A line on the
+  way that may pull it in only through an option NAILS cannot read, or that has a backslash anywhere
+  in its options, counts as one a target may require, never as one it surely requires: systemd keeps
+  a comma after a backslash in an option and reads `\054` as one, so it may read a `noauto`,
+  `nofail` or `x-systemd.wanted-by=` there that NAILS does not, or not read one that NAILS does (it
+  linked a `tmpfs` line with `comment=x\,nofail` into `local-fs.target.requires`, and read
+  `comment=x\054nofail` as `nofail`). Where only such lines lead to a target, the warning says that
+  the target may require the mount, and `nails status` does not list the mask among the units a
+  target requires.
+- A line kept off that gives an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
+  what its units pull in NAILS does not read, or an option with a backslash, is masked rather than
+  skipped, so a boot target that requires it is not reached, and activation warns of that, naming
+  the option. A backslash anywhere in a line's options means NAILS cannot read them as systemd
+  does, which keeps a comma after a backslash in an option and reads `\054` as one: it linked the
+  mounts of `comment=x\,nofail` and `comment=x\,x-systemd.wanted-by=foo.service` and the swap of
+  `sw,comment=x\,noauto` into their targets' `.requires`, which NAILS took for lines nothing
+  requires and masked without a warning, and read `comment=x\054noauto` as `noauto`. Such a line
+  kept off, other than one for `/usr`, is now masked with the warning that its target may require
+  it, whatever `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads on it, and `nails status`
+  does not list the mask among the units a target requires. A line for `/usr`, which systemd mounts
+  whatever its options say, gets a plain warning that a target is not reached, naming the target
+  NAILS reads from the split options, which may not be the one systemd uses. Options outside
+  systemd's namespaces, such as those of an NFS or CIFS share, keep their skip, and so do options
+  with a quote, such as an SELinux `context=`. An overlay line that gives `upperdir` more than once,
+  or with no value, is kept off.
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
   VeraCrypt file container opened with `cryptsetup open`, which attaches a loop device for the
@@ -2666,6 +2748,54 @@ of this changelog for that version becomes the release notes word for word, and
   own mount gone. `docs/decoy-requirements.md` says where GNOME, KDE Plasma and udiskie keep the
   setting, which is not verified for every release. A VM test records whether udiskie mounts a drive
   that cryptsetup unlocked, and in it udiskie did.
+- On a decoy root mounted `relatime`, `nails check`, activation and the way back no longer leave the
+  moment they ran in the access times of the decoy's programs, libraries, data files and unit files.
+  The network record and the way back ask the kernel over netlink for the links, rules and firewall
+  tables instead of starting the decoy's `ip`, `nft` and `iw`, and never make the kernel load
+  nf_tables or cfg80211: where `nft` made it load nf_tables, the decoy's modprobe read its settings
+  and the module's file. Run as root, NAILS starts `systemctl`, `busctl` and `loginctl` in a mount
+  namespace whose every mount of a disk is `noatime`. From the service manager's reload at entry,
+  which reads every unit file again, to a second reload at the end of the entry, so that the units
+  of the entry's mounts and the drop-ins it writes are read then too, every mount of a local disk
+  filesystem (ext4, xfs, btrfs, f2fs, vfat and the other local disk filesystems NAILS lists) that
+  keeps access times is `noatime`, where a lookup of its mount point goes through local filesystems
+  alone: local disk filesystems, the kernel's in-memory ones and read-only images such as squashfs.
+  NAILS decides that from the mount table alone. FUSE mounts
+  (`fuse`, `fuse.*`, `fuseblk`), network and cluster filesystems (NFS, SMB, 9p, virtiofs and the
+  like), mounts of every type NAILS does not list as local (an overlay, an automount point, an
+  unknown type), and every mount inside one of them or below its mount point are left out of this
+  window, which changes none of them, as earlier releases changed the access-time mode of none of
+  the decoy's mounts. The window never looks them up, opens or stats them, nor anything inside them,
+  so a dead or hung FUSE daemon neither makes it refuse nor makes it wait. Activation itself still
+  resolves the operator's home inside the decoy root, which looks up each name on the way to it, on
+  such a mount too. A bind made while the window is open takes `noatime` from the mount it copies
+  and gets that mount's mode back only where the bind lies in the window, which none of the binds
+  activation leaves in place does: they lie below the next root's overlay at `/run/nextroot`, so the
+  binds of changed mounts activation makes there, such as the hidden volume's, stay `noatime` in the
+  hidden session.
+  Access times on a FUSE or network mount are its daemon's or its server's to keep, which a mount
+  flag on this side does not change. Activation refuses where it cannot look up a mount it must
+  change or make it `noatime`, and names that mount and its type. It writes those mounts and their
+  modes to the session plan first, and `nails recover`, a rollback and the emergency on the decoy
+  give them their modes back where an activation was killed before it could. NAILS reads
+  the operator's account from `/etc/passwd` with `O_NOATIME`, where musl's `getpwuid` read it with
+  access times on. It asks nscd nothing, which musl's lookup did for an account missing from the
+  file, so an account only nscd resolves no longer resolves; the operator's account belongs in
+  `/etc/passwd` (Requirements in README.md). Netlink lists the kernel marks as changed while it sent them are asked for
+  again and count as unread after three tries. NAILS asks the service
+  manager for its version alone, where `systemctl show` made it work out its taint list and read
+  `/etc/os-release` and `/etc/adjtime`. The way back looks at the decoy's init, release file and
+  boot records through a `noatime` copy of the decoy root's mounts, where it followed the decoy's
+  `/var/lib/wtmpdb/wtmp.db` link with access times on. So the decoy needs no `ip`, `nft` or `iw` any
+  more: `host-tools` no longer requires `ip`, the `network-tools` warnings of `check` and `activate`
+  are gone, and so are `deactivate`'s warnings about a missing tool. A symbolic link a lookup of
+  NAILS' own follows still gets a new access time, as do the files of the overlay module's first
+  load, what `sudo`, `doas` or `pkexec` reads to start NAILS, and what an unprivileged `check` reads
+  (What `check` touches in docs/operator-guide.md). The new access-time scenario of the
+  distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one with a test build, and fails
+  on any other read by `check`, an activation or a way back, for an operator account, that a plain
+  soft-reboot does not make, though it may not see a read of `/etc/selinux/config`, which it does
+  not age.
 - A switch into or out of a hidden session that hangs until `soft-reboot.target`'s job timeout
   (30 minutes) now powers the machine off. systemd ended such a switch by force
   (`JobTimeoutAction=soft-reboot-force` in every series from 254 to 262), which never runs

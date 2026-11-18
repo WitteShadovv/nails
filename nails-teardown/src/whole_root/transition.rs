@@ -29,13 +29,15 @@
 //!   the rule, the drop-ins and the masks, scrub `/run`
 //!   ([`crate::whole_root::run_scrub`]), put the decoy's records back and, once
 //!   the hidden units have stopped, put the decoy's network state back
-//!   ([`crate::whole_root::network`]), give the decoy's `utab` lines back to
-//!   the decoy mounts the way back restored, leave the line that removes the
-//!   empty `/run/nextroot` at the decoy's start, end what process of the
-//!   session started since, empty journald's sockets in place, and
-//!   quiet an ext4 hidden volume's unmount line ([`crate::whole_root::tail`]), write the kmsg cursor and,
-//!   last, set the kernel's process-number counter back to where the decoy's
-//!   own boot numbered its units ([`crate::whole_root::fresh_pids`]).
+//!   ([`crate::whole_root::network`]), reset the zram devices that hold a
+//!   swap area out of use ([`crate::whole_root::zram`]), give the decoy's
+//!   `utab` lines back to the decoy mounts the way back restored, leave the
+//!   line that removes the empty `/run/nextroot` at the decoy's start, end
+//!   what process of the session started since, empty journald's sockets in
+//!   place, and quiet an ext4 hidden volume's unmount line
+//!   ([`crate::whole_root::tail`]), write the kmsg cursor and, last, set the
+//!   kernel's process-number counter back to where the decoy's own boot
+//!   numbered its units ([`crate::whole_root::fresh_pids`]).
 //!   When what it sets out to undo of the network state is still the
 //!   session's afterwards (a decoy device keeps another MAC address, a link,
 //!   rule or table of the session's is still there, or a part cannot be read
@@ -98,7 +100,7 @@ use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, tail, utab,
+    switch_refusal, tail, utab, zram,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -378,13 +380,15 @@ pub struct Env {
     /// Where the way back sets the process-number counter
     /// ([`fresh_pids::lower`]); `None` leaves it alone.
     pub pid_places: Option<fresh_pids::Places>,
+    /// Where the way back resets the zram devices that hold a swap area out
+    /// of use ([`zram::reset_idle_swaps`]); `None` leaves them alone.
+    pub zram: Option<zram::Places>,
     /// Where the way back reads and writes the network state
     /// ([`network::Places::system`]).
     pub network: network::Places,
-    /// The tools the way back puts the network state back with, or `None` to
-    /// find them where [`network::restore`] does when it runs: in the system
-    /// directories, once `/run/current-system` names the decoy's system.
-    pub network_tools: Option<network::NetTools>,
+    /// What the way back asks to put the network state back, or `None` for
+    /// the running kernel, over netlink, as [`network::restore`] does.
+    pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
     /// How the way back powers off when it cannot put the network state back.
     pub power_off: PowerOff,
     /// Where the way back ends the session's last processes, empties
@@ -438,7 +442,8 @@ impl Env {
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
             pid_places: Some(fresh_pids::Places::system()),
-            network_tools: None,
+            zram: Some(zram::Places::system()),
+            network_kernel: None,
             power_off: PowerOff::system(),
             tail: Some(tail::Places::system()),
             selinux: &selinux::KERNEL,
@@ -474,10 +479,13 @@ pub enum Outcome {
         /// Entries it could not remove.
         failed: usize,
         /// The network state the way back could not put back, and the parts
-        /// it left alone ([`network::restore`]).
-        network: network::Kept,
+        /// it left alone ([`network::restore`]), boxed so the outcome stays
+        /// small.
+        network: Box<network::Kept>,
         /// What became of the process-number counter ([`fresh_pids::lower`]).
         pids: fresh_pids::Lowered,
+        /// What became of each zram device ([`zram::reset_idle_swaps`]).
+        zram: Vec<(String, zram::Reset)>,
         /// What did not succeed of emptying journald's sockets and store
         /// ([`tail::settle_journal_sockets`], [`tail::drain_journal_sockets`]).
         journal: Vec<String>,
@@ -784,14 +792,22 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // Now that the hidden units have stopped, reset every zram device that
+    // holds a swap area no swap uses (one whose reset failed at a stop, or the
+    // decoy's own left with its swap off), before the kmsg cursor is taken.
+    let zram_reset = env
+        .zram
+        .as_ref()
+        .map(zram::reset_idle_swaps)
+        .unwrap_or_default();
     // Now that the hidden network units have stopped, give the decoy its
     // network state back: delete the links, rules and firewall tables the
     // session made, set each device's recorded address, the hostname and the
     // network settings back, and put the service manager's per-link runtime
     // state back. A no-op without a record. What could not be put back goes
     // into the outcome, as nothing here may log.
-    let network_kept = match &env.network_tools {
-        Some(tools) => network::restore_with(&env.network, tools, network.as_deref()),
+    let network_kept = match &env.network_kernel {
+        Some(kernel) => network::restore_with(&env.network, kernel.as_ref(), network.as_deref()),
         None => network::restore(&env.network, network.as_deref()),
     };
     // What the restore could not undo, or cannot tell it undid, lives only in
@@ -869,8 +885,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     Outcome::Returned {
         removed: report.removed.len(),
         failed: report.failed.len(),
-        network: network_kept,
+        network: Box::new(network_kept),
         pids,
+        zram: zram_reset,
         journal,
     }
 }

@@ -5,6 +5,8 @@
 //!
 //! - `systemd-version`: systemd >= 254 (`systemctl soft-reboot`); an older one
 //!   is refused with how the host's distribution upgrades to a newer one;
+//! - `kernel-version`: Linux 6.1 or newer ([`super::kernel_version`]),
+//!   refused with the running release and the floor;
 //! - `soft-reboot-units`: the two units that implement it are installed;
 //! - `decoy-root`: the decoy root can be mounted again by device for the way
 //!   back;
@@ -53,6 +55,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use super::kernel_modules::KernelModulesCheck;
+pub use super::kernel_version::KernelVersionCheck;
 
 /// Judge a systemd version on `host`: one too old fails with how the host's
 /// distribution upgrades to a release that is new enough.

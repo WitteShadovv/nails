@@ -192,9 +192,63 @@ gets a fixed decision before the switch:
 | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
 | an overlay entry not mounted now, its upper on a disk | kept unmounted |
 | an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
-| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); any other unit that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
+| a `noauto` entry without an automount, and without `x-systemd.wanted-by=` or `x-systemd.required-by=`, which take `noauto` back, not for `/usr`, with only options NAILS reads (see below), and that no other entry of the fstab pulls in (see the next rows) | left alone: no boot target pulls it in. A skipped unit whose pulls reach it is masked instead (see below); a unit outside the fstab that pulls it in, such as a service with `RequiresMountsFor=` on it, mounts it read-write, as one of the [disks mounted during the session](#disks-mounted-during-the-session) |
+| a `noauto` entry with an option NAILS does not read, one it reads in another form (`noauto,x-systemd.after=…`, `noauto,X-mount.subdir=…`, `noauto,nofail=1`), or an option with a backslash or a quote | masked, with its automount: the option may have the boot mount it. `nails check` names the option. Where it is an option with a backslash, or one of systemd's own whose effect NAILS does not read (see below), it may also have a boot target require the entry, and activation and `nails check` warn that such a target is then not reached |
+| a `noauto` entry whose mount another entry needs, one the boot starts (not `noauto` itself) and that is left to the hidden systemd (a tmpfs, an overlay with its upper in RAM, a host share) or put in place: a mount point below it (a tmpfs on a directory of it), a source, a path `x-systemd.requires-mounts-for=` or `x-systemd.wants-mounts-for=` names, or its mount or mount point named by `x-systemd.requires=` or `x-systemd.wants=` | kept unmounted: systemd has that entry's unit require or want the `noauto` mount, so the boot mounts it. Where NAILS cannot read what such an entry names (an option with a backslash, or `x-systemd.requires=` or `x-systemd.wants=` with no value), it is kept unmounted too. Every entry that needs it counts: where a boot target requires, or may require, one of them or an entry that requires one of them in turn, it is skipped if the device is there and masked with a warning if not, and it is masked where entries only want it or targets only want them. The warning names the entries the target requires on the way, which `nofail` lets it be reached without (`x-systemd.wanted-by=` in place of an `x-systemd.required-by=`, which `nofail` does not change). An entry on the way that may pull it in only through an option NAILS cannot read, or that has a backslash anywhere in its options, counts as one a target may require, never as one it surely requires (see below). Where only such entries lead to a target, the warning says that the target may require it, and `nails status` does not list the mask among the units a target requires |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | any entry whose mount point is the hidden volume root or lies below it: the hidden volume itself, a disk, a `noauto` or automount entry, a tmpfs | refused, and the activation with it |
+
+Each option of an entry is read by its name, alone or with a value, as
+systemd's fstab generator reads it: of `noauto` and `auto` the last one given
+wins whatever its value, so `noauto,auto=1` and `noauto,auto=0` are mounted at
+boot, `x-systemd.automount=0` sets up an automount, `nofail` with any value
+(`nofail=1`, `nofail=0`) is `nofail`, `_netdev=1` makes a network filesystem,
+and `x-systemd.makefs=1` has the mount pull in a makefs. A line for `/usr` is
+mounted whatever `noauto`, `nofail` and `x-systemd.automount` say. An entry
+counts as one the boot never mounts only where NAILS also reads every option it
+gives, each in the form it gives it, by the lists the `backend-entries` check
+reads a plain line by (see
+[decoy-requirements.md](decoy-requirements.md#attaching-the-drive)): any other
+option may change whether the boot mounts it. systemd splits the options at
+every comma, as NAILS does, quotes or not. Only a backslash, after which
+systemd keeps a comma in the option, or a `\054`, which it reads as a comma,
+makes it split them otherwise: it mounted `noauto,auto=x\,noauto` and
+`noauto,comment=x\054auto` at boot. An option with a quote stays unread all
+the same, as `libmount`, which `mount` reads the fstab with, keeps a comma
+between quotes in one option.
+
+An entry the policy keeps off anyway, swap too, is masked rather than skipped
+where it gives an option of systemd's own (`x-systemd.` or `x-initrd.`) whose
+effect on what its units pull in the session does not read, or an option with
+a backslash: what such an option pulls in, NAILS cannot tell, and a skip would
+leave it free to start. A quote alone keeps the skip, as systemd reads the
+options of such an entry as NAILS does. A boot target that requires such an
+entry is then not reached, and activation warns of that, naming the option.
+A backslash anywhere in an entry's options means NAILS cannot read them as
+systemd does, which keeps a comma after a backslash in an option and reads
+`\054` as one: the `noauto`, `nofail` or `x-systemd.wanted-by=` NAILS reads
+there may be none to systemd, and one NAILS does not read may hide in another
+option. So such an entry the policy keeps off, other than one for `/usr`, is
+masked with the warning that its target may require it, whatever of these
+NAILS reads on it, never without a warning, and `nails status` does not list
+the mask among the units a target requires. An entry for `/usr`, which systemd
+mounts whatever its options say, gets a plain warning that a target is not
+reached, naming the target NAILS reads from the split options, which may not be
+the one systemd uses.
+The session reads the units and paths `x-systemd.requires=`,
+`x-systemd.wants=`, `x-systemd.requires-mounts-for=`,
+`x-systemd.wants-mounts-for=`, `x-systemd.wanted-by=` and
+`x-systemd.required-by=` name, the units `x-systemd.automount`,
+`x-systemd.makefs`, `x-systemd.growfs`, `x-systemd.pcrfs` and
+`x-systemd.validatefs` pull in, and that `x-systemd.before=`,
+`x-systemd.after=`, the timeouts, `x-systemd.rw-only`,
+`x-systemd.device-bound`, `x-systemd.graceful-option=` and `x-initrd.mount`
+pull in nothing. systemd reads no other option for what a unit pulls in,
+other than flags the session reads by their names too (`noauto`, `nofail`,
+`_netdev`, `bg`, `loop`, the quota options), so an entry with `X-mount.subdir=`
+or `jqfmt=`, or an NFS or CIFS share with `hard`, `vers=` or `credentials=`,
+keeps its skip. An overlay entry that gives `upperdir` more than once, or with
+no value, is kept unmounted.
 
 The hidden volume is bound at its own path in the hidden session, so the hidden
 systemd would mount a filesystem the decoy's fstab names at or below
@@ -336,8 +390,8 @@ session plan in `/run`, which is RAM.
 The hidden systemd also starts the mount, swap and automount units a target
 pulls in outside the fstab: a mount unit installed for a target (NixOS's
 `systemd.mounts`, a unit linked in `/etc/systemd/system/local-fs.target.wants`),
-a mount the kernel command line names (`systemd.mount-extra=`), zram-generator's
-swap, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
+a mount the kernel command line names (`systemd.mount-extra=`), a swap unit
+linked in `swap.target.wants`, the GPT auto-generator's ESP automount. Activation reads every `.mount`,
 `.swap` and `.automount` unit linked in a target's `.wants`, `.requires` or
 `.upholds` directory (the initrd's targets aside), including the directories
 systemd reads for every target (`target.wants`) and for the targets whose names
@@ -365,15 +419,29 @@ refuses the activation. The GPT auto-generator does not run in the hidden
 session, but the ESP it mounted in the decoy (at `/efi` on Arch Linux) is bound
 read-only into the hidden root, as an fstab line for `/efi` would be.
 
-zram-generator's swap is left to the hidden systemd as RAM-only swap while its
-zram device keeps its pages in RAM: the device is there and
-`/sys/block/zramN/backing_dev` reads `none`, or the kernel gives zram no
-backing device at all. A zram device with a backing device, or one that is not
-there at activation, gets the decision of disk swap: kept off. The `swap`
-check refuses a zram swap with a backing device only while it is active.
-NAILS does not read zram-generator's configuration: at the switch the hidden
-session's zram-generator sets the device up again from it, so a
-`writeback-device=` set there after the decoy set its device up is not seen.
+zram-generator does not run in the hidden session: the entry masks it there,
+as it masks the GPT auto-generator, so the hidden session runs without
+zram-generator's swap, whatever the hidden root's copy of its configuration
+names. The decoy's own units turn its zram swap off as the switch stops them,
+and its start after the way back sets it up again; NAILS does not check that
+the swap went off. Any other zram swap unit the hidden systemd would start is
+left to it as RAM-only swap while its zram device keeps its pages in RAM: the
+device is there and `/sys/block/zramN/backing_dev` reads `none`, or the
+kernel gives zram no backing device at all. A zram device with a backing
+device, or one that is not there at activation, gets the decision of disk
+swap: kept off. A zram swap that a service turns on itself, not through a
+swap unit, is not decided. The `swap` check refuses a zram swap with a
+backing device only while it is active.
+
+A stop can fail to reset its zram device and leave it set up, which the next
+start of the service manager then cannot set up again. So once the hidden
+units have stopped, the way back resets every zram device that holds a swap
+area no swap uses, before the decoy starts, so the decoy's start can set it up
+as its cold boot did. That includes a device the decoy itself set up and left
+with its swap off, which the way back leaves reset. A device in use, one never
+set up and one that holds anything but a swap area are left alone. The reset
+logs the device's change of size in the kernel's ring buffer, before the way
+back takes the kernel log's cursor.
 
 NAILS lists the decoy's unit directories and reads its unit files with
 `O_NOATIME`, which the kernel grants to root, and activation always runs as
@@ -403,11 +471,12 @@ bound read-only or overlaid keeps its automount off as well: the hidden
 systemd would find the mount point taken and fail the automount, and with it
 `local-fs.target`, which would start the hidden session in emergency mode. The
 automount is skipped where `local-fs.target` requires it and masked where the
-entry has `nofail`. Masks and skips are runtime files in `/run`, gone with the
+entry has `nofail`, both read from the options as NAILS splits them, which for
+an option with a backslash may not be how systemd reads them. Masks and skips are runtime files in `/run`, gone with the
 session; a mask is written in `/run/systemd/system` and in
 `/run/systemd/system.control`, which ranks above `/etc/systemd/system`, so it
 also masks a unit installed there. systemd's GPT auto-generator, which would mount partitions the fstab
-does not list, is masked the same way. `nails check` prints the decision for
+does not list, and zram-generator are masked the same way. `nails check` prints the decision for
 every entry and every unit outside the fstab it reads (the `fstab-policy`
 check). A decoy partition you mount by hand inside the hidden session is
 outside this policy and is written directly.

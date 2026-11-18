@@ -5,14 +5,14 @@
 //! root.
 //!
 //! The record, the plan and reading the links are unit-tested against a fake
-//! `/sys/class/net`, and the tools against fakes; this proves the parts a mock
-//! cannot show: that the applier actually removes a link and sets an address
-//! back through `ip`, reading the result back from the kernel's own sysfs, and
-//! that the whole record and restore, from the real `ip`'s list of rules and
-//! the kernel's settings below `/proc/sys/net` to the deletes and writes, puts
-//! a namespace back as entry found it. It runs in a throwaway network
-//! namespace, so the host's own links are out of reach and a bungled change
-//! can harm nothing.
+//! `/sys/class/net`, and the kernel against a fake; this proves the parts a
+//! mock cannot show: that the applier actually removes a link and sets an
+//! address back over netlink, reading the result back from the kernel's own
+//! sysfs, and that the whole record and restore, from the kernel's own list of
+//! rules and tables and its settings below `/proc/sys/net` to the deletes and
+//! writes, puts a namespace back as entry found it. It runs in a throwaway
+//! network namespace, so the host's own links are out of reach and a bungled
+//! change can harm nothing.
 //!
 //! What entry found is read in that namespace, never assumed: a new network
 //! namespace starts with a copy of the host's IPv4 settings, so on a host that
@@ -20,11 +20,12 @@
 //! gets settings of its own that are not the kernel's defaults, so a way back
 //! that wrote defaults fails on every host, not only on one that forwards.
 //!
-//! It needs `ip` and the `dummy` link type (its module loaded, or installed
-//! for the kernel to load), and the firewall-table test needs `nft` and
-//! nf_tables. It takes `ip` and `nft` only from the system locations the way
-//! back searches, never from `PATH`, as `apply_links` finds `ip` there itself.
-//! CI provides them, so each one missing is a skip that
+//! It makes the session's state with `ip` and needs the `dummy` link type
+//! (its module loaded, or installed for the kernel to load), and the
+//! firewall-table test makes its tables with `nft` and needs nf_tables. The
+//! code under test runs neither: it asks the kernel over netlink. The tests
+//! take `ip` and `nft` only from the system locations NAILS once searched,
+//! never from `PATH`. CI provides them, so each one missing is a skip that
 //! `NAILS_REQUIRE_USERNS=1` turns into a failure, as it does a missing user
 //! namespace, a network namespace the run cannot create and a sysfs it cannot
 //! mount.
@@ -34,10 +35,10 @@
 //! namespace: the power-off the way back then asks for writes nothing there.
 
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, skip, skip_host, write_executable};
+use nails_core::test_support::{FakeNetKernel, Rerun, skip, skip_host, write_executable};
 use nails_teardown::mountinfo::parse_mountinfo;
 use nails_teardown::whole_root::network::{
-    self, Kept, NetTools, NetworkRecord, Places, RestorePlan, apply_links,
+    self, Kept, Netlink, NetworkRecord, Places, RestorePlan, apply_links,
 };
 use nails_teardown::whole_root::network_policy::Policy;
 use nails_teardown::whole_root::plan::{
@@ -75,7 +76,7 @@ fn link_present(ip: &Path, name: &str) -> bool {
 fn ip_or_skip() -> PathBuf {
     match tools::find(None, "ip") {
         Some(ip) => ip,
-        None => skip("iproute2 (ip) is in none of the system locations the way back searches"),
+        None => skip("iproute2 (ip) is in none of the system locations NAILS searches for tools"),
     }
 }
 
@@ -283,17 +284,14 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
             proc_sys: PathBuf::from(network::PROC_SYS),
         };
         std::fs::write(&places.proc_hostname, "decoy-host\n").unwrap();
-        let tools = NetTools {
-            ip: Some(ip.clone()),
-            ..NetTools::default()
-        };
+        let kernel = Netlink::system();
         let rules = |family| output(&ip, &["-N", family, "rule", "show"]);
         let rules_v4 = rules("-4");
         let rules_v6 = ipv6.then(|| rules("-6"));
         // As entry finds them here: the host's IPv4 settings, which the
         // namespace started with, and the decoy's own.
         let settings_then = settings();
-        let record = NetworkRecord::capture(&places, &tools);
+        let record = NetworkRecord::capture(&places, &kernel);
 
         // The session: a random address on the decoy's device, a link of its
         // own and one made again under the name of the decoy's, a WireGuard
@@ -339,12 +337,11 @@ fn the_way_back_puts_a_namespaces_links_rules_and_settings_back() {
         }
         std::fs::write(&places.proc_hostname, "hidden-host\n").unwrap();
 
-        let kept = network::restore_with(&places, &tools, Some(&record.encode()));
+        let kept = network::restore_with(&places, &kernel, Some(&record.encode()));
 
-        let mut unknown = vec!["firewall tables"];
-        if !ipv6 {
-            unknown.insert(0, "IPv6 rules");
-        }
+        // The kernel lists every part: the tables too, as none where nf_tables
+        // is not in the kernel, so nothing is left unknown.
+        let unknown = if ipv6 { vec![] } else { vec!["IPv6 rules"] };
         assert_eq!(
             kept,
             Kept {
@@ -380,7 +377,7 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
     .in_user_mount_ns()
     .run(|| {
         let Some(nft) = tools::find(None, "nft") else {
-            skip("nftables (nft) is in none of the system locations the way back searches");
+            skip("nftables (nft) is in none of the system locations NAILS searches for tools");
         };
         fresh_network_namespace();
         // The decoy: a firewall table of its own, and its WireGuard tunnel's.
@@ -390,7 +387,8 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
         assert!(ok(&nft, &["add", "table", "ip", "wg-quick-wg0"]));
         let before = output(&nft, &["-j", "list", "tables"]);
         let proc_sys = Path::new(network::PROC_SYS);
-        let policy = Policy::capture(None, Some(&nft), proc_sys);
+        let kernel = Netlink::system();
+        let policy = Policy::capture(&kernel, proc_sys);
 
         // The decoy's stop takes its tunnel down; the session brings up its
         // own under the same name, and a VPN app's blocking table.
@@ -399,10 +397,10 @@ fn the_way_back_deletes_the_firewall_tables_the_session_added() {
         assert!(ok(&nft, &["add", "table", "inet", "mullvad"]));
         let mut kept = Kept::default();
 
-        policy.restore(None, Some(&nft), proc_sys, &mut kept);
+        policy.restore(&kernel, proc_sys, &mut kept);
 
         assert!(kept.tables.is_empty(), "{kept:?}");
-        assert_eq!(kept.unknown, ["IPv4 rules", "IPv6 rules"]);
+        assert!(kept.unverified.is_empty(), "{kept:?}");
         assert_eq!(output(&nft, &["list", "tables"]), "table inet keep\n");
         // The `keep` table's object, up to its closing brace.
         let keep = |json: &str| {
@@ -461,6 +459,7 @@ fn way_back_plan(hidden: &Path) -> Plan {
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
+        quiet_mounts: Vec::new(),
         pids: nails_teardown::whole_root::fresh_pids::Record::default(),
     }
 }
@@ -524,7 +523,7 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
         };
         std::fs::write(&places.proc_hostname, "decoy-host\n").unwrap();
         add_fake_link(&places.sys_class_net, "lo", 1);
-        let record = NetworkRecord::capture(&places, &NetTools::default());
+        let record = NetworkRecord::capture(&places, &FakeNetKernel::offline());
         std::fs::write(runtime.join(network::RECORD_NAME), record.encode()).unwrap();
         // The session's tunnel, still there when the way back runs.
         add_fake_link(&places.sys_class_net, "wg0", 9);
@@ -548,8 +547,9 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
                 nextroot.display()
             )),
             pid_places: None,
+            zram: None,
             network: places,
-            network_tools: Some(NetTools::default()),
+            network_kernel: Some(std::sync::Arc::new(FakeNetKernel::offline())),
             power_off: PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,

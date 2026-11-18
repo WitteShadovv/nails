@@ -56,14 +56,9 @@
         "status": "fail"
       },
       {
-        "message": "Required host tools are missing. Install them and retry:\n  systemctl (apt install systemd)\n  loginctl (apt install systemd)\n  ip (apt install iproute2)",
+        "message": "Required host tools are missing. Install them and retry:\n  systemctl (apt install systemd)\n  loginctl (apt install systemd)",
         "name": "host-tools",
         "status": "fail"
-      },
-      {
-        "message": "The way back finds nft, and iw where a link is a Wi-Fi interface",
-        "name": "network-tools",
-        "status": "pass"
       },
       {
         "message": "requires the hidden-volume check to pass",
@@ -192,7 +187,7 @@
     },
     "summary": {
       "failed": 5,
-      "passed": 15,
+      "passed": 14,
       "skipped": 7,
       "warnings": 4
     }

@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The child processes the transitions run, each bounded by a deadline:
-//! `systemctl` to enqueue the soft-reboot or a power action, `dmsetup` to
-//! mark the hidden backend for deferred removal, and `ip`, for the way back's
-//! [`network`](super::network) restore, to delete the links and the
-//! policy-routing rules a session added and reset each device's hardware
-//! address to the one recorded at entry.
+//! `systemctl` to enqueue the soft-reboot or a power action and `dmsetup` to
+//! mark the hidden backend for deferred removal. The network state goes to
+//! the kernel over netlink instead ([`net_kernel`](super::net_kernel)).
 //!
 //! Every tool runs by absolute path (recorded at activation, or one of a fixed
 //! list of system locations), with a cleared environment and no output, so a
-//! wedged PID 1 costs at most the deadline.
+//! wedged PID 1 costs at most the deadline, and in a mount namespace whose
+//! every mount is `noatime`, so nothing it reads changes an access time
+//! ([`crate::noatime::spawn_without_access_times`]).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -101,6 +101,7 @@ pub fn run(program: &Path, args: &[&str], budget: Duration) -> Outcome {
         .stderr(Stdio::null())
         .current_dir("/");
     ignore_stop_signals(&mut command);
+    crate::noatime::spawn_without_access_times(&mut command);
     let Ok(mut child) = command.spawn() else {
         return Outcome::Refused;
     };
@@ -182,7 +183,12 @@ pub fn start_target(systemctl: &Path, target: &str) -> Outcome {
 pub const SOFT_REBOOT_TARGET: &str = "soft-reboot.target";
 
 /// Reload the service manager, so a runtime drop-in written to `/run` applies.
+/// A reload makes PID 1 run every generator and read every unit file again,
+/// so the local disk mounts that keep access times are `noatime` while it runs
+/// ([`crate::noatime::QuietMounts`]), where they can be; a caller that must
+/// not reload otherwise opens them itself first.
 pub fn daemon_reload(systemctl: &Path) -> bool {
+    let _quiet = crate::noatime::QuietMounts::open();
     run_bounded(systemctl, &["daemon-reload"], Duration::from_secs(30))
 }
 
@@ -287,6 +293,7 @@ fn run_reading(program: &Path, args: &[&str], budget: Duration, stream: Stream) 
         .stderr(piped(matches!(stream, Stream::Stderr)))
         .current_dir("/");
     ignore_stop_signals(&mut command);
+    crate::noatime::spawn_without_access_times(&mut command);
     let Ok(mut child) = command.spawn() else {
         return (Ran::NotStarted, String::new());
     };
