@@ -40,7 +40,7 @@ CASES: list[tuple[bytes, str]] = [
 class Machine(Protocol):
     """The part of the NixOS test driver's machine these helpers use."""
 
-    def succeed(self, command: str) -> str: ...
+    def succeed(self, *commands: str, timeout: int | None = None) -> str: ...
 
 
 def shell_path(path: bytes) -> str:
