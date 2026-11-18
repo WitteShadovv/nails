@@ -17,10 +17,18 @@ back (:func:`plant`) and judges the decoy's journal after it
 
 Each plant proves it ran, in the ring buffer: the late writer writes a
 record after its lines, which must follow the hidden journald's stop, and
+one for each of ``/dev/log`` and the native socket that took its line,
+which each must have done unless the hidden service manager had closed that
+socket before (before systemd 258 it fails a journald socket that receives
+anything once journald has stopped for the soft-reboot, and the socket
+holds nothing then), and
 the lingering unit's stop command writes one as the way back's last step
 ends it, which must fall inside that step. That stop command also writes a
 file to ``/run``, which the way back's scrub must have removed: the way back
-ends the session's processes before it scrubs ``/run``.
+ends the session's processes before it scrubs ``/run``. An emergency kills
+every unit of the session itself before the soft-reboot, the lingering one
+among them, so after an emergency the lingering unit is only known to have
+run until the plant.
 
 The judgment reads the kernel ring buffer (RAM, where the hidden session's
 records stay until power-off) to place what the decoy's journal holds: the
@@ -123,6 +131,15 @@ JOURNALD_STOPPED = re.compile(
     r"|systemd-journald\.service: Deactivated successfully\.)"
 )
 
+#: The hidden service manager failing journald's socket and its ``/dev/log``
+#: socket, which closes each with what it holds.
+SOCKET_FAILED = {
+    "syslog": re.compile(
+        r"systemd\[1\]: systemd-journald-dev-log\.socket: Failed with result"
+    ),
+    "native": re.compile(r"systemd\[1\]: systemd-journald\.socket: Failed with result"),
+}
+
 #: A service manager opening one of journald's sockets, by unit name and
 #: description, or by its description alone as NixOS logs it.
 REOPENED = re.compile(
@@ -213,12 +230,14 @@ def audit_serial(text: str) -> int | None:
 class Verdict:
     """What the decoy's journal holds of the hidden session after one way
     back. ``findings`` must be empty; ``dm_teardown`` lists the lines of the
-    hidden volume's device-mapper teardown it holds, ``tail`` every ring
-    record between the step's start and the decoy's first line, marked
-    ``*`` where the decoy's journal holds it."""
+    hidden volume's device-mapper teardown it holds, ``closed`` the late
+    writer's channels the hidden service manager had closed before it wrote,
+    ``tail`` every ring record between the step's start and the decoy's
+    first line, marked ``*`` where the decoy's journal holds it."""
 
     findings: list[str] = field(default_factory=list)
     dm_teardown: list[str] = field(default_factory=list)
+    closed: list[str] = field(default_factory=list)
     tail: list[str] = field(default_factory=list)
     judged: bool = False
 
@@ -265,6 +284,23 @@ def judge_records(
                 "not judged: the late writer did not log after the hidden "
                 "journald stopped and before the way back's last step"
             )
+        else:
+            for channel, failed in SOCKET_FAILED.items():
+                sent = re.compile(re.escape(f"{late_mark}-sent-{channel}"))
+                if any(
+                    stopped.seq < r.seq < late.seq and sent.search(r.text) for r in ring
+                ):
+                    continue
+                if any(
+                    stopped.seq < r.seq < late.seq and failed.search(r.text)
+                    for r in ring
+                ):
+                    verdict.closed.append(channel)
+                    continue
+                verdict.findings.append(
+                    f"not judged: the late writer's {channel} line did not go "
+                    "out, and its socket was open"
+                )
     if linger is not None:
         ended = first_after(ring, step.seq, re.compile(re.escape(f"{linger}-stopped")))
         if ended is None or ended.seq >= banner.seq:
@@ -356,14 +392,17 @@ LATE_UNIT = "late-writer"
 
 def late_stop_command(logger: str, mark: str) -> str:
     """The late writer's stop: one line through ``/dev/log``, its standard
-    output and the native socket, each with its own suffix of ``mark``, and,
-    once all three went out, ``<mark>-kmsg`` to the kernel log, the proof it
+    output and the native socket, each with its own suffix of ``mark``, then
+    to the kernel log ``<mark>-sent-syslog`` and ``<mark>-sent-native`` for
+    each socket that took its line, and ``<mark>-kmsg`` last, the proof it
     ran. The service manager turns the doubled backslashes into the single
     ones printf reads as a newline."""
     return (
-        f'/bin/sh -c "{logger} -t late {mark}-syslog && echo {mark}-stdout && '
+        f'/bin/sh -c "{logger} -t late {mark}-syslog '
+        f"&& echo {mark}-sent-syslog > /dev/kmsg; echo {mark}-stdout; "
         f"printf 'MESSAGE={mark}-native\\\\nSYSLOG_IDENTIFIER=late\\\\n' "
-        f'| {logger} --journald && echo {mark}-kmsg > /dev/kmsg"'
+        f"| {logger} --journald && echo {mark}-sent-native > /dev/kmsg; "
+        f'echo {mark}-kmsg > /dev/kmsg"'
     )
 
 
@@ -428,18 +467,27 @@ JOURNAL = (
 
 
 def judge(
-    machine: Machine, marker: str, mark: str, linger: str, uuid: str | None
+    machine: Machine,
+    marker: str,
+    mark: str,
+    linger: str,
+    uuid: str | None,
+    ended_by_step: bool = True,
 ) -> Verdict:
     """After the way back, on the decoy: judge its journal and what the
     lingering unit's stop wrote to ``/run`` (see the module docs). ``uuid``
-    is the hidden filesystem's, or None."""
+    is the hidden filesystem's, or None. ``ended_by_step`` is false after an
+    emergency, which ends the lingering unit before the way back's last
+    step."""
     machine.succeed("journalctl --sync")
     ring = parse_kmsg(machine.succeed(RING))
     entries = parse_journal(machine.succeed(JOURNAL))
     names = [mark, linger, f"{LATE_UNIT}.service"]
     if uuid:
         names.append(uuid)
-    verdict = judge_records(ring, entries, marker, names, mark, linger)
+    verdict = judge_records(
+        ring, entries, marker, names, mark, linger if ended_by_step else None
+    )
     left = machine.succeed(
         f"test -e {linger_file(linger)} && echo left || echo gone"
     ).strip()

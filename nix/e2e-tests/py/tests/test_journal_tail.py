@@ -221,7 +221,9 @@ def with_controls(ring: list[Record]) -> list[Record]:
     step = next(r for r in ring if "Starting systemd-soft-reboot" in r.text)
     added = [
         Record(1502, 63200000, "systemd[1]: Stopped Journal Service."),
-        Record(1503, 63300000, "NAILSLATE1-kmsg"),
+        Record(1503, 63210000, "NAILSLATE1-sent-syslog"),
+        Record(1504, 63220000, "NAILSLATE1-sent-native"),
+        Record(1505, 63300000, "NAILSLATE1-kmsg"),
         Record(step.seq + 1, step.usec + 1, "lngr1-stopped"),
     ]
     moved = [Record(r.seq + 1, r.usec, r.text) if r.seq > step.seq else r for r in ring]
@@ -254,6 +256,26 @@ class ControlTest(unittest.TestCase):
         found = self.judge(ring).findings
         self.assertEqual(len(found), 1)
         self.assertIn("the late writer did not log", found[0])
+
+    def test_a_channel_closed_before_the_late_writer_is_not_judged(self) -> None:
+        ring = [
+            r
+            if r.text != "NAILSLATE1-sent-native"
+            else Record(
+                r.seq,
+                r.usec,
+                "systemd[1]: systemd-journald.socket: Failed with result 'resources'.",
+            )
+            for r in with_controls(parse_kmsg(RING))
+        ]
+        verdict = self.judge(ring)
+        self.assertEqual(verdict.findings, [])
+        self.assertEqual(verdict.closed, ["native"])
+        # An open socket that took no line fails the judgment.
+        ring = [r for r in ring if "Failed with result" not in r.text]
+        found = self.judge(ring).findings
+        self.assertEqual(len(found), 1)
+        self.assertIn("native line did not go out", found[0])
 
     def test_journald_s_sockets_opened_anew_by_the_decoy_are_found(self) -> None:
         ring = with_controls(parse_kmsg(RING))
@@ -301,8 +323,10 @@ class CommandTest(unittest.TestCase):
         self.assertIn("echo M-stdout", stop)
         self.assertIn("MESSAGE=M-native\\\\nSYSLOG_IDENTIFIER=late", stop)
         self.assertIn("| /usr/bin/logger --journald", stop)
-        self.assertTrue(stop.endswith('&& echo M-kmsg > /dev/kmsg"'), stop)
-        self.assertEqual(stop.count(" && "), 3)
+        self.assertIn("M-syslog && echo M-sent-syslog > /dev/kmsg;", stop)
+        self.assertIn("--journald && echo M-sent-native > /dev/kmsg;", stop)
+        self.assertTrue(stop.endswith('; echo M-kmsg > /dev/kmsg"'), stop)
+        self.assertNotIn("$", stop)
 
     def test_the_linger_stop_writes_to_run_and_then_says_so(self) -> None:
         self.assertEqual(
