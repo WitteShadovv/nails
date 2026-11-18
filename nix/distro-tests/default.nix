@@ -163,7 +163,8 @@ let
     name: drv: lib.nameValuePair (accessTimesName name) drv
   ) accessTimesSet.drivers;
 
-  # Fact-capture probes for the families not admitted yet, keyed "<name>-probe".
+  # Fact-capture probes of Arch, which the smoke suite does not run yet, and of
+  # Fedora, whose admission rests on them, keyed "<name>-probe".
   # Like the records scenarios they are host drivers. The metadata lists the
   # ones whose image is pinned, for a dispatch of distro-e2e.yml that runs the
   # probes.

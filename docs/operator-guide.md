@@ -3512,8 +3512,8 @@ the machine leaves your control.
 
 ### What has not been validated on hardware
 
-The session is validated in virtual machines. On Fedora no run on real hardware
-has passed yet, so its support is provisional (see the
+The session is validated in virtual machines. Fedora's support is provisional
+until a run on real hardware has passed (see the
 [Fedora notes](decoy-requirements.md#fedora)). These are open until measured on
 real hardware:
 

@@ -409,7 +409,7 @@ def plan_matrix(
     A suite selected alone plans as :func:`plan_distro_matrix` or
     :func:`plan_driver_matrix` do. With several, each runs what it has of the
     named entries (every one when none is named): ``debian-13`` names that
-    distribution's smoke and records scenarios, ``fedora-44`` the refusal of
+    distribution's smoke and records scenarios, ``arch-boxes`` the refusal of
     that image. No suite may drop out of a run unseen, so that a gate cannot
     pass having run nothing: a name that no selected suite has is an error,
     and so are a suite with nothing to run when no name is given and a plan

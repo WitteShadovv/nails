@@ -4,12 +4,13 @@
 //! The FHS backend: systemd hosts laid out on the Filesystem Hierarchy
 //! Standard.
 //!
-//! Debian 13 (trixie), Ubuntu 24.04 and Ubuntu 26.04 are the tested targets; a
-//! later Debian or Ubuntu release runs here too, with a warning that it is
-//! untested, and a derivative whose `ID_LIKE` names `debian` or `ubuntu`, and no
-//! family NAILS has not validated, is accepted provisionally. Every other
-//! family (Fedora, Arch, unknown IDs) is refused at detection and never reaches
-//! this backend. The hidden
+//! Debian 13 (trixie), Ubuntu 24.04, Ubuntu 26.04 and the Cloud edition of
+//! Fedora 44 and 45 are the tested targets; a later release of these, or
+//! another Fedora edition, runs here too, with a warning that it is untested,
+//! and so do a derivative whose `ID_LIKE` names `debian` or `ubuntu`, and no
+//! family NAILS has not validated, and the derivatives of Fedora the family
+//! table names. Arch, unknown IDs and the other hosts detection refuses never
+//! reach this backend. The hidden
 //! configuration is whatever the root upper's `/etc` holds, so the backend has
 //! no config layer.
 
