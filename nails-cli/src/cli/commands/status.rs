@@ -74,13 +74,7 @@ pub fn execute(
                 println!();
                 println!("Error: {}", message);
                 println!();
-                match sudo {
-                    Some(line) => println!("Run it as root: {line}"),
-                    None if nails_core::app::status::is_mount_table_error(&source) => {
-                        println!("Run status again where /proc is mounted and readable")
-                    }
-                    None => println!("Fix access to the state file, then run status again"),
-                }
+                println!("{}", unknown_fix(sudo.as_deref(), &source));
             }
             let _ = std::io::stdout().flush();
             return status_exit_code(Posture::Unknown);
@@ -103,6 +97,20 @@ pub fn execute(
 
     let _ = std::io::stdout().flush();
     status_exit_code(report.posture)
+}
+
+/// The line that says what to do where the place is unknown for `source`:
+/// run as root with `sudo` where root can read it, run again where `/proc`
+/// is mounted for a mount table that could not be read, and otherwise fix
+/// access to the state file.
+fn unknown_fix(sudo: Option<&str>, source: &nails_core::NailsError) -> String {
+    match sudo {
+        Some(line) => format!("Run it as root: {line}"),
+        None if nails_core::app::status::is_mount_table_error(source) => {
+            "Run status again where /proc is mounted and readable".to_string()
+        }
+        None => "Fix access to the state file, then run status again".to_string(),
+    }
 }
 
 #[cfg(test)]
