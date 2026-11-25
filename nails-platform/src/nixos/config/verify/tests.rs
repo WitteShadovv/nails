@@ -871,6 +871,28 @@ fn a_mapping_after_a_name_nix_reads_after_a_number_is_refused() {
     }
 }
 
+/// A carriage return in code is a blank also where an attribute path is
+/// read: between its names and around its `=`. A URI inside a run of tokens
+/// is read whole (`1a:1''` is the number 1 and the URI `a:1''`), so no
+/// string starts in it.
+#[test]
+fn a_mapping_after_a_carriage_return_in_an_attribute_path_or_a_uri_in_a_run_is_refused() {
+    for content in [
+        "{ boot.initrd.luks.devices = {\r data\r=\r{ device = \"/dev/sdc1\"; }; }; }",
+        "{ boot.initrd.luks.devices = { data\r.device = \"/dev/sdc1\"; }; }",
+        "{ boot.initrd.luks.devices = { data.\rdevice = \"/dev/sdc1\"; }; }",
+        "{ boot\r.initrd.luks\r.devices\r=\r{ data = { device = \"/dev/sdc1\"; }; }; }",
+        "{ y = 1a:1''; boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; }; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
 /// The kinds of the references `scan` holds, in order.
 fn shown_lines(scan: &BaseConfigScan) -> Vec<ReferenceKind> {
     scan.references.iter().map(|found| found.kind).collect()
