@@ -361,10 +361,11 @@ pub enum Origin {
         /// Whether the lines that need the mount require it only as the
         /// mount for a path in it (a mount point below it, a source, a swap
         /// file, `x-systemd.requires-mounts-for=`), not by name
-        /// (`x-systemd.requires=`): systemd 260.5 started a line below a
-        /// masked mount, or naming it in `x-systemd.requires-mounts-for=`,
-        /// without the mount, so the warning says the target may not be
-        /// reached, and the mask is not recorded as a required one.
+        /// (`x-systemd.requires=`) nor through an option NAILS cannot read:
+        /// systemd 260.5 started a line below a masked mount, or naming it in
+        /// `x-systemd.requires-mounts-for=`, without the mount, so the
+        /// warning says the target may not be reached, also with `may`, and
+        /// the mask is not recorded as a required one.
         by_path: bool,
     },
 }
@@ -553,7 +554,21 @@ impl Decision {
         } else {
             ("requires", "that target pulls", "it does")
         };
-        let unreached = if matches!(origin, Origin::Needed { may: true, .. }) {
+        let unreached = if matches!(
+            origin,
+            Origin::Needed {
+                may: true,
+                by_path: true,
+                ..
+            }
+        ) {
+            format!(
+                "{boot} may require it, through a line that needs it only as the mount for a \
+                 path, so the hidden session may not reach {}, and the units only {those} in may \
+                 not start there",
+                if several { "them" } else { "it" }
+            )
+        } else if matches!(origin, Origin::Needed { may: true, .. }) {
             format!(
                 "{boot} may require it, and where {they}, the hidden session will not reach {}, \
                  and the units only {those} in will not start there",

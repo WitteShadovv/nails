@@ -841,7 +841,8 @@ fn the_warning_for_a_needed_noauto_line_names_the_lines_that_hold_it_up() {
 /// in (here a backslash) is kept off, but nothing may require it: the tmpfs
 /// below gives no dependency on it in systemd 260.5's generator output. The
 /// warning says the target may require it, and the mask is not recorded as
-/// one a target requires.
+/// one a target requires. The option may name the mount, so the warning
+/// says that where the target requires the tmpfs, it is not reached.
 #[test]
 fn a_noauto_line_only_an_unread_option_may_pull_in_may_leave_a_target_unreached() {
     let fstab = "/dev/vdw1 /w/a ext4 noauto 0 0\n\
@@ -1214,7 +1215,7 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_skipped_or_warned_of() {
                 origin: Origin::Needed {
                     lines: vec![tmp.clone().into()],
                     may: true,
-                    by_path: false,
+                    by_path: true,
                 },
             }),
             "{fstab}"
@@ -1223,10 +1224,11 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_skipped_or_warned_of() {
             absent[0].warning().expect("a warning"),
             format!(
                 "{dir} is masked rather than skipped, as its device {device} is not there: \
-                 local-fs.target may require it, and where it does, the hidden session will not \
-                 reach it, and the units only that target pulls in will not start there. Attach \
-                 the device before activating, or give the fstab entry for {tmp} the nofail \
-                 option (x-systemd.wanted-by= in place of an x-systemd.required-by= it gives)"
+                 local-fs.target may require it, through a line that needs it only as the mount \
+                 for a path, so the hidden session may not reach it, and the units only that \
+                 target pulls in may not start there. Attach the device before activating, or \
+                 give the fstab entry for {tmp} the nofail option (x-systemd.wanted-by= in place \
+                 of an x-systemd.required-by= it gives)"
             )
         );
         assert_eq!(
@@ -1271,8 +1273,9 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_skipped_or_warned_of() {
 /// as `noauto`, linking it nowhere. NAILS warned that the hidden session will
 /// not reach local-fs.target, which requires the noauto line, and recorded
 /// the mask as a required one, which `nails status` listed. Where its
-/// device is not there, the warning says the target may require it, the
-/// mask is not recorded, and the reason says that the boot may mount it.
+/// device is not there, the warning says the target may require it, and,
+/// as the tmpfs needs it only for a path, may not be reached, the mask is
+/// not recorded, and the reason says that the boot may mount it.
 #[test]
 fn a_noauto_line_a_line_with_a_backslash_needs_is_one_a_target_may_require() {
     for below in ["comment=x\\054nofail", "comment=x\\054noauto"] {
@@ -1300,7 +1303,7 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_one_a_target_may_require() {
                 origin: Origin::Needed {
                     lines: vec!["/data/tmp".into()],
                     may: true,
-                    by_path: false,
+                    by_path: true,
                 },
             }),
             "{below}"
@@ -1308,9 +1311,9 @@ fn a_noauto_line_a_line_with_a_backslash_needs_is_one_a_target_may_require() {
         let warning = absent[0].warning().expect("a warning");
         assert!(
             warning.contains(
-                "local-fs.target may require it, and where it does, the hidden session will \
-                 not reach it"
-            ) && !warning.contains("which requires it"),
+                "local-fs.target may require it, through a line that needs it only as the mount \
+                 for a path, so the hidden session may not reach it"
+            ) && !warning.contains("will not"),
             "{warning}"
         );
         assert_eq!(
