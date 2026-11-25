@@ -354,9 +354,10 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
         // deeper path (a bind of a plain folder inside the subvolume) has no
         // `subvol=` of its own and cannot be mounted again that way, so it is
         // refused like any other bind below.
-        // mount(2) splits its options at every comma, and the option text it
-        // takes cannot hold a name that is not valid UTF-8 unchanged, so the
-        // way back could not name such a subvolume.
+        // mount(2) splits its options at every comma, and the option text
+        // NAILS builds for it (a String, as is the session plan's JSON) cannot
+        // hold a name that is not valid UTF-8 unchanged, so the way back could
+        // not name such a subvolume.
         let Some(subvol) = mount.root.to_str().filter(|subvol| !subvol.contains(',')) else {
             return refuse(format!(
                 "the decoy root's btrfs subvolume {} has a comma or a byte that is not valid \

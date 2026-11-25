@@ -718,10 +718,11 @@ fn a_mount_table_that_cannot_be_read_fails_the_step() {
     );
 }
 
-/// An offline scan reads only the images it is given, and nothing it decides
-/// rests on the session: a mount table that cannot be read does not stop it,
-/// and it runs as outside a session. A live scan of the same device still
-/// fails, as it cannot tell whether it runs in the planting session.
+/// An offline scan never refuses a scan for the session it runs in, so a mount
+/// table that cannot be read does not stop it, and it runs as outside a
+/// session, which only the next step it names reads. A live scan of the same
+/// device still fails, as it cannot tell whether it runs in the planting
+/// session.
 #[test]
 fn an_offline_scan_runs_where_the_mount_table_cannot_be_read() {
     fn unread(_: &Path) -> std::io::Result<SessionView> {

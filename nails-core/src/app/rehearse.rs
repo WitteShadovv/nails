@@ -435,10 +435,11 @@ impl Rehearsal {
         let (token, state) = self
             .scan_token(options)
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "no_token", e))?;
-        // An offline scan reads only the images it is given, and nothing it
-        // decides rests on the session: a mount table that cannot be read
-        // does not stop it, and it then runs as outside a session, which only
-        // the next step it names reads.
+        // An offline scan reads the images it is given and the rehearsal
+        // state, and never refuses a scan for the session it runs in, so a
+        // mount table that cannot be read does not stop it. It then runs as
+        // outside a session, and the next step it names reads as on the
+        // decoy: that step is all the session decides here.
         let session = match self.live_session() {
             Err(_) if options.offline => None,
             session => session?,
