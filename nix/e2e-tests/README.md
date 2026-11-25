@@ -1094,7 +1094,18 @@ are older than a day), and `/etc/selinux/config`, which `lsm-status` compares
 with the boot (a read of it may not show). Two plain soft-reboots of the decoy into
 itself, one before and one after the sessions, each with the hidden root
 mounted as for a session, are the controls: what the decoy's own stop and start
-read. Every read in the window of `nails check` is
+read. A control whose own stop failed to reset the decoy's zram device (it was
+still busy) leaves it set up with a swap area no swap uses, and its start then
+cannot set the zram swap up: it reads none of `systemd-makefs`, `mkswap` and
+`swapon`, which the start after every way back reads, as the way back resets
+such a device before the decoy starts. Such a control still counts, and the
+scenario resets the device as the way back does and runs the control again,
+with the disk aged afresh, until a control's start sets the zram swap up; after
+four controls that never do the run fails with a zram message. Where the stop
+of the warm-up switch, which nothing measures, left such a device, the scenario
+resets it and starts its swap again. No path is let through for any of this:
+every read after a way back still needs a control of the same run that made
+it. Every read in the window of `nails check` is
 a finding. In two sessions, one left by `deactivate` and one by the emergency, a
 read before the way back started must be one a control's stop made, and a read
 after it one a control's stop or start made. A link that NAILS' own lookups
@@ -1103,8 +1114,9 @@ makes whenever it handles a kernel event, are listed and do not fail the
 scenario; every other finding does. Every command of the scenario that
 reads the decoy runs through `lib/noatime-run.c`, a static helper that runs it
 in a mount namespace whose every mount is noatime, so the scenario's own reads
-never count. The run prints its whole report, every phase's reads with their
-times, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
+never count. The run prints its findings first and then its whole report, every phase's
+reads with their times and the idle zram devices after each control and each
+way back, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
 journal from the activation to the switch, which PID 1 writes at debug level
 for that time, so a read can be lined up with what PID 1 did. An activation,
 `deactivate` or emergency that exits non-zero while the system is not stopping

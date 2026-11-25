@@ -59,6 +59,20 @@
 # not show: under relatime a read updates its access time only where that is
 # a day old, or older than the file's last change.
 #
+# A stop can fail to reset the decoy's zram device (the device is still busy,
+# and zram-generator's unit fails its stop): the device keeps its size and its
+# swap area, no swap uses it, and the next start cannot set the zram swap up
+# again, so it reads none of systemd-makefs, mkswap and swapon. The way back
+# resets such a device before the decoy starts (docs/configuration.md), so the
+# start after a way back always sets the zram swap up, as a cold boot does. A
+# control whose own stop left such a device shows a start no way back gives
+# the decoy: its reads still count, and the scenario resets the device as the
+# way back does and runs the control again, until a control's start sets the
+# zram swap up (at most four times). Unless something sets the device up again
+# in between, the next control's stop finds zram-generator's unit failed and
+# has no zram swap to turn off, and its start sets the device up as a cold
+# boot does.
+#
 # Like the records scenarios it is a host driver: on a KVM host by hand, or in
 # the records suite of distro-e2e.yml.
 {
@@ -304,7 +318,23 @@ distroVm.buildVmTest {
         assert out != "overlay", f"the root is still the overlay: {out}"
 
 
-    def control(label):
+    def idle_zram():
+        # The decoy's zram devices that are set up and hold a swap area no swap
+        # uses: what a stop that failed to reset its device leaves (see the
+        # header). Asked after a phase's listing, through QUIET.
+        return vm.succeed(
+            quiet(
+                "cd /sys/block && for n in zram*; do "
+                + '[ -e "$n/initstate" ] || continue; '
+                + '[ "$(cat "$n/initstate")" = 1 ] || continue; '
+                + 'grep -qE "^/dev/$n[[:space:]]" /proc/swaps && continue; '
+                + '[ "$(blkid -p -o value -s TYPE "/dev/$n")" = swap ] && echo "$n"; '
+                + "done; true"
+            )
+        ).split()
+
+
+    def control_once(label):
         # The decoy as a session leaves it: the hidden root mounted, so the
         # control's stop handles that mount as the way in does.
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
@@ -317,11 +347,36 @@ distroVm.buildVmTest {
             f"{label}: this userspace started at {userspace}, before the switch ({ref})"
         )
         reads = reads_of(label, ref)
-        report["phases"][label].update({"stop": shutdown, "userspace": userspace})
+        idle = idle_zram()
+        report["phases"][label].update(
+            {"stop": shutdown, "userspace": userspace, "idle_zram": idle}
+        )
         # A mapping the plain soft-reboot left open would keep the next hidden
         # root from taking its name.
         vm.execute(quiet("if [ -e /dev/mapper/data ]; then cryptsetup close data; fi"))
-        return at.control_of(reads, userspace)
+        return at.control_of(reads, userspace), idle
+
+
+    def control(label, tries=4):
+        # What a plain soft-reboot reads at this point, once its start sets the
+        # zram swap up as the start after a way back does (see the header). A
+        # control whose own stop failed to reset a zram device still counts,
+        # and the control runs again after the device is reset.
+        controls = []
+        for attempt in range(tries):
+            name = label if attempt == 0 else f"{label}-again-{attempt}"
+            result, idle = control_once(name)
+            controls.append(result)
+            if not idle:
+                return controls
+            # Reset as the way back resets, by the shell's own echo; the kernel
+            # refuses it while anything still holds the device open.
+            for device in idle:
+                vm.wait_until_succeeds(f"echo 1 > /sys/block/{device}/reset", timeout=60)
+        raise AssertionError(
+            f"{label}: in {tries} plain soft-reboots the decoy's start never set its "
+            + "zram swap up, as the start after a way back does"
+        )
 
 
     def wait_reconcile():
@@ -388,7 +443,12 @@ distroVm.buildVmTest {
         stop_back, decoy_start = pid1_times()
         marks += [(f"{label} hidden stop", stop_back), (f"{label} decoy start", decoy_start)]
         reads = reads_of(label, ref)
-        report["phases"][label].update({"marks": marks, "way_back": way_back})
+        # The way back resets every zram device that holds a swap area no swap
+        # uses before the decoy starts, so the decoy's start sets each up
+        # again: none is left idle unless the kernel refused a reset.
+        report["phases"][label].update(
+            {"marks": marks, "way_back": way_back, "idle_zram": idle_zram()}
+        )
         return reads, way_back, marks
 
 
@@ -422,6 +482,12 @@ distroVm.buildVmTest {
         # A first switch, measured by nothing, so that every later phase starts
         # from a decoy that booted with the timers masked.
         switch("systemctl soft-reboot", "warm-up")
+        # Where the warm-up's stop failed to reset a zram device, its start ran
+        # without that zram swap: reset the device and start the swap again, so
+        # the first control's stop turns a zram swap off as a way in's does.
+        for name in idle_zram():
+            vm.wait_until_succeeds(f"echo 1 > /sys/block/{name}/reset", timeout=60)
+            vm.succeed(quiet(f"systemctl start dev-{name}.swap"))
         MOUNTS = json.loads(walker("mounts"))["mounts"]
         assert "/" in MOUNTS, f"the decoy disk's filesystems: {MOUNTS}"
         MOUNT_ARGS = " ".join(shlex.quote(m) for m in MOUNTS)
@@ -429,7 +495,7 @@ distroVm.buildVmTest {
         print(f"the decoy disk's filesystems: {MOUNTS}")
 
     with subtest("control: a plain soft-reboot"):
-        controls = [control("control-1")]
+        controls = control("control-1")
 
     with subtest("a session left by deactivate"):
         flows = [flow("session-1", "deactivate")]
@@ -438,7 +504,7 @@ distroVm.buildVmTest {
         flows.append(flow("session-2", "emergency"))
 
     with subtest("control: a plain soft-reboot after the sessions"):
-        controls.append(control("control-2"))
+        controls += control("control-2")
 
     with subtest("check, activation and the way back read nothing a plain switch does not"):
         merged = at.merge(controls)
@@ -452,10 +518,14 @@ distroVm.buildVmTest {
         report["links"] = at.as_json(links)
         report["udevd"] = at.as_json(udevd)
         # Flushed at once: a driver that fails exits without writing what its
-        # output still holds.
-        print("=== ACCESS-TIME REPORT ===", flush=True)
-        print(json.dumps(report, sort_keys=True), flush=True)
-        print("=== END OF ACCESS-TIME REPORT ===", flush=True)
+        # output still holds. The findings come before the report, whose one
+        # line runs to hundreds of kilobytes: `gh run view --log` drops the
+        # rest of a step's log from a line that long on.
+        print(
+            f"{len(others)} reads of the decoy disk no plain soft-reboot makes:\n"
+            + at.describe(others, all_marks),
+            flush=True,
+        )
         # The links NAILS' own lookups follow or read, which the operator
         # guide names: listed, not a failure (see access_times.py).
         print(
@@ -468,6 +538,9 @@ distroVm.buildVmTest {
             + at.describe(udevd, all_marks),
             flush=True,
         )
+        print("=== ACCESS-TIME REPORT ===", flush=True)
+        print(json.dumps(report, sort_keys=True), flush=True)
+        print("=== END OF ACCESS-TIME REPORT ===", flush=True)
         assert not others, (
             f"{len(others)} reads of the decoy disk no plain soft-reboot makes:\n"
             + at.describe(others, all_marks)
