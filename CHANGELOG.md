@@ -1313,7 +1313,17 @@ of this changelog for that version becomes the release notes word for word, and
   units that name a path in it with `x-systemd.requires-mounts-for=` or `RequiresMountsFor=`,
   without the mount, and reached `local-fs.target`. For a line below the mount, or one naming it
   with `x-systemd.requires-mounts-for=`, NAILS said that the target will not be reached, and listed
-  the mask.
+  the mask. The same holds where such a mount is skipped and the skip is masked after all, as a
+  drop-in of the decoy's resets its start conditions or NAILS cannot tell what it pulls in: the
+  warning said that the target will not be reached, and `nails status` listed the mask, also where
+  the units the target requires need the mount only for a path. And it holds for the warning that
+  a skipped unit requires a unit the session masks: one that needs it only for a path, such as the
+  mount of an unmounted parent directory with `nofail`, may still start, and the warning now says
+  that the target may not be reached.
+- The list of the decoy filesystems that `nails check` and `activate --dry-run` print, and
+  activation's own list, name a `noauto` line whose mask yields to a unit file of its name that a
+  boot target links as left to that unit file, and a skip the hidden session masks after all as
+  masked rather than skipped. Both lists said masked for the first and skipped for the second.
 - A `noauto` line whose mount another line needs is kept off, where the boot starts that other
   line and it is left to the hidden systemd or put in place: a line below its mount point, one with
   it as its source, or one that names it with `x-systemd.requires-mounts-for=`,
