@@ -49,6 +49,12 @@ REPO = Path(__file__).resolve().parents[1]
 TABLE_PATH = REPO / "nix" / "distro-tests" / "images.json"
 LOCK_PATH = REPO / "flake.lock"
 MIRRORS_PATH = REPO / "nix" / "distro-tests" / "mirrors.nix"
+# The pinned inputs of each image the project builds itself, by mirror family:
+# the test-images workflow rebuilds it from them every night, so the link
+# check probes them as well as the published asset.
+BUILDER_INPUTS = {
+    "arch-install": REPO / "nix" / "distro-tests" / "arch-install" / "inputs.json",
+}
 
 # The placeholder hash an entry carries until it is pinned for real. It is the
 # well-known Nix "fake" SHA256, so an enabled entry that still has it is caught
@@ -435,6 +441,7 @@ def link_check(
     url_ok: Callable[[str], bool] = _url_ok,
     pin_url: Callable[[Mapping], str] | None = None,
     mirror: Mirror | None = None,
+    builder_inputs: Mapping[str, Path] | None = None,
 ) -> LinkReport:
     """Check the pin of every entry, the staged ones as well as the enabled.
 
@@ -447,8 +454,14 @@ def link_check(
     smoke matrix until a change enables it, and the probes boot the Fedora and
     Arch ones before then; its pin lapses all the same, so it is checked like
     an enabled one. A mirror entry is probed at the asset it pins in the
-    assets repository (``mirror``, by default read from mirrors.nix); one that
-    pins no asset yet, or a mirror with no base, is listed as not checked. A
+    assets repository (``mirror``, by default read from mirrors.nix). The
+    inputs its builder pins (``builder_inputs``, by default
+    ``BUILDER_INPUTS``) are probed too, the installer ISO and the package
+    snapshot, since the nightly rebuild fails once either is gone; that
+    happens before its first asset is pinned as well. An entry that pins no
+    asset yet, or a mirror with no base, names that in its line: among the
+    checked entries when its build inputs were probed, and among the
+    unchecked ones otherwise. A
     run that could check no enabled entry fails as well: a pass would claim a
     check of the images CI boots that never happened, whatever it found for
     the staged ones.
@@ -457,6 +470,7 @@ def link_check(
     resolve = pin_url or _locked_nix_vm_test_url()
     report = LinkReport()
     no_probe: dict[str, str] = {}
+    inputs = BUILDER_INPUTS if builder_inputs is None else builder_inputs
     checked_enabled = False
     for name, entry in table.items():
         enabled = bool(entry.get("enabled"))
@@ -497,6 +511,24 @@ def link_check(
                 url, why = _mirror_url(source, mirror)
                 if url is None:
                     no_probe[name] = why
+            family = str(source.get("family"))
+            if family in inputs:
+                try:
+                    build_urls = builder_urls(inputs[family])
+                except LinkError as error:
+                    done.append("its build inputs unreadable")
+                    report.failures.append(f"{label}: {error}")
+                else:
+                    for build_url in build_urls:
+                        done.append(f"probed {build_url}")
+                        if not url_ok(build_url):
+                            report.failures.append(
+                                f"{label}: build input is unreachable: {build_url}"
+                            )
+                    # The entry counts as checked by its build inputs; its
+                    # line still says why its asset was not probed.
+                    if name in no_probe:
+                        done.append(no_probe.pop(name))
         if url is not None:
             done.append(f"probed {url}")
             if not url_ok(url):
@@ -518,13 +550,30 @@ def link_check(
     return report
 
 
+def builder_urls(path: Path) -> list[str]:
+    """The URLs a builder's inputs.json pins: its ISO and its package snapshot.
+
+    The snapshot is probed at its core repository database, the first file
+    pacman fetches from it.
+    """
+    try:
+        inputs = json.loads(path.read_text(encoding="utf-8"))
+        iso, server = inputs["iso"]["url"], inputs["packages"]["server"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise LinkError(f"cannot read {path.name}: {error}") from None
+    if not isinstance(iso, str) or not isinstance(server, str):
+        raise LinkError(f"{path.name} names no ISO URL and package server")
+    core = server.replace("$repo", "core").replace("$arch", "x86_64")
+    return [iso, f"{core}/core.db"]
+
+
 def _mirror_url(source: Mapping, mirror: Mirror) -> tuple[str | None, str]:
     """The URL a mirror source pins, or None and why there is none to probe."""
     if not mirror.configured():
         return None, "the mirror is not configured yet"
     asset = source.get("asset")
     if asset is None:
-        return None, "a mirror source that pins no asset yet"
+        return None, "no asset pinned yet"
     return mirror.url_for(str(source.get("family")), str(asset)), ""
 
 
