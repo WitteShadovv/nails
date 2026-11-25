@@ -33,7 +33,13 @@ with a plain soft-reboot. What differs is what Arch is:
   (:func:`drift_package`, three versions), installed on the decoy, updated
   in the first hidden session and updated again on the decoy after it, so
   that hidden sessions list it twice: check warns of it with pacman's fix,
-  and the second entry shows the advisory;
+  and the second entry shows the advisory with that fix. pacman's hook marks
+  /etc and /var out of date with /usr after each transaction, which the next
+  start of PID 1 brings up to date (``ConditionNeedsUpdate=``): the first
+  version is installed before the reference boot, and the gate runs that
+  update by hand after the third, so that every plain soft-reboot and every
+  entry starts with none pending, and no control's changes of a pending
+  update excuse a way back's (:func:`fedora_gate.same_state`);
 - zram: arch-boxes sets up no zram device and has no zram-generator. The
   cold boot decides (:func:`zram_applies`): where it set zram up, every zram
   check of the Fedora gate runs; where not, none does and the run records
@@ -139,6 +145,17 @@ DRIFT_PACKAGE = "gate-drift"
 DRIFT_DIR = "/run/gate-pkg"
 # The fix check's package-drift row gives for pacman.
 DRIFT_FIX = "sudo pacman -U"
+# The units that bring /etc and /var up to date with /usr, which PID 1 runs at
+# a start where an update is pending (``ConditionNeedsUpdate=``): pacman's
+# hook for systemd marks one pending after every transaction that changes
+# /usr.
+UPDATE_UNITS = (
+    "grep -l '^ConditionNeedsUpdate=' /usr/lib/systemd/system/*.service "
+    "2>/dev/null | xargs -rn1 basename | sort -u"
+)
+# The update state of a decoy whose /etc and /var follow /usr
+# (:func:`fedora_gate.update_state`).
+UP_TO_DATE = "/etc current; /var current"
 # What check gives on the stock image before the decoy is prepared, as the
 # Arch section of the decoy requirements says: each row, its verdict, the words
 # its message and fix name, and the assertion.
@@ -468,7 +485,6 @@ class ArchGate(fg.Gate):
         self.auditd_off()
         self.locate()
         self.lsm()
-        self.drift_install()
         self.clean_check()
         self.failed_positive()
 
@@ -578,12 +594,35 @@ class ArchGate(fg.Gate):
         return int(float(self.wall()))
 
     def drift_install(self) -> None:
-        """The drift control's package, version 1, on the decoy."""
+        """The drift control's package, version 1, on the decoy, before the
+        reference boot, which brings /etc and /var up to date with the /usr
+        pacman changed: the first plain soft-reboot then starts from the
+        state each entry starts from."""
         out = self.fact("drift-install-1", pacman_install("1", self.builddate()))
         self.check(
             "pacman installs the drift control's package on the decoy",
             "rc=0" in out and installed_version(out) == "1-1",
             out[-1500:],
+        )
+
+    def up_to_date(self, label: str, entry: str) -> None:
+        """/etc and /var brought up to date with the /usr pacman changed, as a
+        start of PID 1 does where an update is pending, by the units that
+        start does it with (:data:`UPDATE_UNITS`): the next entry then starts
+        from the state the plain soft-reboots start from, and no control's
+        changes of that pending update excuse its way back's."""
+        units = self.fact(f"update-units-{label}", UPDATE_UNITS).split()
+        if units:
+            self.sh(
+                f"update-done-{label}",
+                "systemctl restart " + " ".join(shlex.quote(u) for u in units),
+            )
+        state = self.needs_update(f"after-{label}")
+        self.check(
+            f"/etc and /var are up to date with /usr before the {entry} entry, as "
+            "a start of PID 1 leaves them",
+            bool(units) and state == UP_TO_DATE,
+            {"units": units, "state": state},
         )
 
     # --- the kernel log --------------------------------------------------
@@ -661,12 +700,20 @@ class ArchGate(fg.Gate):
         self.stock()
         self.swap_off()
         self.sh("prepare-decoy", PREPARE_DECOY, 600)
+        self.drift_install()
         self.power_cycle("reference")
         cmdline = self.fact("cmdline", "cat /proc/cmdline")
         self.check(
             "the decoy boots with init_on_free=1, as its requirements ask",
             "init_on_free=1" in cmdline.split(),
             cmdline,
+        )
+        update = self.needs_update("reference")
+        self.check(
+            "/etc and /var are up to date with /usr after the reference boot, "
+            "which ran the units of the update pacman left pending",
+            update == UP_TO_DATE,
+            update,
         )
         self.mark("boot-ready")
         self.decoy()
@@ -725,6 +772,7 @@ class ArchGate(fg.Gate):
             "rc=0" in out and installed_version(out) == "3-1",
             out[-1500:],
         )
+        self.up_to_date("drift", "second")
         self.sh("hidden-root-2", self.hidden_root)
         _, rows = self.check_rows("check-drift")
         row = rows.get("package-drift", {})
@@ -739,10 +787,11 @@ class ArchGate(fg.Gate):
         state["sleep_guard"] = True
         if self.enter(2, fg.USER, fg.FRESH_CONFIG, state):
             log = self.facts.get("activate-2.log", "")
+            advisory = fg.advisory_text(log, "package-drift")
             self.check(
                 "the entry shows the drift advisory with its fix",
-                DRIFT_PACKAGE in log,
-                log[-2000:],
+                DRIFT_PACKAGE in advisory and DRIFT_FIX in advisory,
+                advisory or log[-2000:],
             )
             self.hidden(2, fg.USER, state)
             disk = self.hotplug(2)

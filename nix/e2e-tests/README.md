@@ -1280,8 +1280,10 @@ soft-reboot carries listening; each socket PID 1 listens on for journald,
 with its socket inode and its label, and the state and start time of
 journald's socket units as they were at the cold boot; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
-the shapes of what the plain soft-reboots added there (a new journal stream,
-session or unit file of the decoy's own start, its numbers left out) and the
+the shapes of what the plain soft-reboots from the same update state added
+there (a new session or unit file of the decoy's own start, its numbers left
+out), a new journal stream file only where the decoy's journald holds that
+stream open for a unit of the decoy's that runs and is not NAILS's, and the
 link PID 1 keeps for a unit's run where it leads to the run the decoy's PID 1
 runs now, that run started a second or more after the switch's last step
 ended, as PID 1 gives it to the second, and the unit is none of NAILS's and
@@ -1311,7 +1313,15 @@ where a plain soft-reboot changes them: every file and folder whose contents
 or inode, its labels among its extended attributes, changed since right
 before the entry, held against those that changed across either plain
 soft-reboot, the login record files aside, and a unit's private temporary
-folder counted by its unit, since each start of the unit names a new one. A
+folder counted by its unit, since each start of the unit names a new one; and
+every name on them right before the entry that is gone after the way back,
+held against the names either plain soft-reboot took away, since a file
+deleted shows only in its folder's times, which a plain soft-reboot may
+change too. A plain soft-reboot counts for a way back only where it started
+in the same update state as the way back's entry, as systemd judges
+`ConditionNeedsUpdate=` for `/etc` and `/var`: one that brought them up to
+date with `/usr` changes the linker cache, the system users and the journal's
+catalog, which a way back from a state with no update pending must not. A
 path the decoy's own start changes at every switch therefore shows nothing of
 a session. A change a run of one of the decoy's own timers made counts as the
 decoy's too, but only when that run, as the decoy's PID 1 reports it, was
@@ -1330,7 +1340,11 @@ up at the next start of PID 1, is the positive control: its write after the
 first way back must count as its run's. A change of a run the hidden root's
 PID 1 started before the switch, contents the session changed that a later
 run only touched, and every change of a way back whose switch's time the
-gate could not read are not explained and still fail the check. In this driver, once auditd is off, the gate masks
+gate could not read are not explained and still fail the check. The partitions of the decoy's disk that no filesystem is mounted
+from, no swap is on and nothing holds (a BIOS boot partition, an ESP left
+behind its automount point) must hold the same bytes after each way back as
+right before its entry. The gate reads the names three times before it counts
+them as not read, which fails the comparison. In this driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
 them one that keeps every process from being audited, and has the kernel
 record every program run from below `/run`, with the domain it runs in, and

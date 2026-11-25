@@ -179,6 +179,115 @@ class FstabPolicyTest(unittest.TestCase):
         self.assertNotIn("fstab-policy", ag.HARNESS_WARNINGS)
 
 
+class FakeVm:
+    """A guest that answers each command by the first key it contains."""
+
+    def __init__(self, answers: dict[str, str]) -> None:
+        self.answers = answers
+        self.ran: list[str] = []
+
+    def succeed(self, cmd: str) -> str:
+        self.ran.append(cmd)
+        for key, out in self.answers.items():
+            if key in cmd:
+                return out
+        return ""
+
+    def wait_for_unit(self, unit: str) -> None:
+        self.ran.append(f"wait {unit}")
+
+
+class UpdateStateTest(unittest.TestCase):
+    def test_the_pending_update_is_brought_in_before_the_entry(self) -> None:
+        g = gate()
+        ran: list[str] = []
+        states = iter(["/etc current\n/var current"])
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            if cmd == ag.UPDATE_UNITS:
+                return "ldconfig.service\nsystemd-update-done.service"
+            return next(states)
+
+        def sh(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> tuple[int, str]:
+            ran.append(cmd)
+            return 0, ""
+
+        g.fact = fact  # type: ignore[method-assign]
+        g.sh = sh  # type: ignore[method-assign]
+        quiet(g.up_to_date, "drift", "second")
+        self.assertEqual(
+            ran, ["systemctl restart ldconfig.service systemd-update-done.service"]
+        )
+        self.assertEqual(
+            [(c["name"], c["passed"]) for c in g.checks],
+            [
+                (
+                    "/etc and /var are up to date with /usr before the second entry, "
+                    "as a start of PID 1 leaves them",
+                    True,
+                )
+            ],
+        )
+        # Still pending afterwards, or no unit to run it: the check fails.
+        g.checks = []
+        states = iter(["/etc pending\n/var current"])
+        quiet(g.up_to_date, "drift", "second")
+        self.assertFalse(g.checks[0]["passed"])
+
+    def test_the_first_control_starts_from_an_update_brought_in(self) -> None:
+        # pacman installs the drift control's first version before the
+        # reference boot, whose start brings /etc and /var up to date, and so
+        # before the first plain soft-reboot.
+        g = gate()
+        order: list[str] = []
+
+        class Stop(Exception):
+            pass
+
+        g.vm = FakeVm({})
+        steps = ("prepare", "attach", "stock", "swap_off", "drift_install", "decoy")
+        for name in steps:
+            setattr(g, name, lambda *a, name=name: order.append(name))
+
+        def sh(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> tuple[int, str]:
+            order.append(label)
+            return 0, ""
+
+        def power_cycle(label: str) -> None:
+            order.append(f"power-cycle {label}")
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            order.append(label)
+            if label == "cmdline":
+                return "init_on_free=1"
+            return "/etc current\n/var current"
+
+        def control(label: str) -> None:
+            order.append(label)
+            raise Stop
+
+        g.sh = sh  # type: ignore[method-assign]
+        g.power_cycle = power_cycle  # type: ignore[method-assign]
+        g.mark = lambda label: None  # type: ignore[method-assign]
+        g.fact = fact  # type: ignore[method-assign]
+        g.control = control  # type: ignore[method-assign]
+        with self.assertRaises(Stop):
+            quiet(g.flows)
+        reference = order.index("power-cycle reference")
+        self.assertLess(order.index("drift_install"), reference)
+        self.assertLess(reference, order.index("decoy"))
+        self.assertEqual(order[-1], "control-1")
+        self.assertTrue(all(c["passed"] for c in g.checks), g.checks)
+
+
 class DriftTest(unittest.TestCase):
     def test_the_package_info(self) -> None:
         info = ag.pkginfo("2", 1700000000)

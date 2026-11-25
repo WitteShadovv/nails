@@ -3,7 +3,9 @@ Fedora decoy, that run without a VM."""
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import gzip
 import hashlib
 import io
 import tempfile
@@ -12,6 +14,18 @@ from typing import Any
 
 import fedora_gate as fg
 import selinux_gate as sg
+
+# The update state of a decoy whose /etc and /var follow /usr.
+CURRENT = "/etc current; /var current"
+
+
+def settled(run: fg.Gate) -> fg.Gate:
+    """``run`` with every switch of its disk and /run listings taken in one
+    update state, and the same names before and after each."""
+    labels = {*run.disk, *run.runs}
+    run.update_states = dict.fromkeys(labels, CURRENT)
+    run.names = {label: ({"/etc"}, {"/etc"}) for label in labels}
+    return run
 
 
 def gate(**settings: Any) -> fg.Gate:
@@ -386,21 +400,134 @@ class DecoyDiskTest(unittest.TestCase):
         self.assertEqual([c["passed"] for c in judged], [False])
         self.assertIn("no control", judged[0]["detail"])
 
-    def test_judges_each_way_back_against_every_control(self) -> None:
+    @staticmethod
+    def judged(
+        disk: dict[str, set[str]],
+        states: dict[str, str],
+        names: dict[str, tuple[set[str] | None, set[str] | None]] | None = None,
+    ) -> fg.Gate:
         run = gate()
-        run.disk = {
-            "control-1": {"/var/a"},
-            "way-back-1": {"/var/a", "/var/b"},
-            "control-2": {"/var/b"},
-            "way-back-2": {"/var/a", "/etc/label"},
-        }
+        run.disk = disk
+        run.update_states = states
+        run.names = (
+            names
+            if names is not None
+            else {label: ({"/etc"}, {"/etc"}) for label in disk}
+        )
         quiet(run.judge_disk)
-        judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
+        run.checks = [c for c in run.checks if "decoy disk changed" in c["name"]]
+        return run
+
+    def test_judges_each_way_back_against_every_control(self) -> None:
+        run = self.judged(
+            {
+                "control-1": {"/var/a"},
+                "way-back-1": {"/var/a", "/var/b"},
+                "control-2": {"/var/b"},
+                "way-back-2": {"/var/a", "/etc/label"},
+            },
+            dict.fromkeys(
+                ("control-1", "way-back-1", "control-2", "way-back-2"), CURRENT
+            ),
+        )
         self.assertEqual(
-            [(c["name"].split(":")[0], c["passed"]) for c in judged],
+            [(c["name"].split(":")[0], c["passed"]) for c in run.checks],
             [("way back 1", True), ("way back 2", False)],
         )
-        self.assertIn("/etc/label", judged[1]["detail"])
+        self.assertIn("/etc/label", run.checks[1]["detail"])
+
+    def test_a_control_of_another_update_state_excuses_nothing(self) -> None:
+        # As on arch-boxes before the fix: pacman left an update pending
+        # right before the first plain soft-reboot, which brought /etc and
+        # /var up to date; the way back's entry had none pending.
+        update = {"/etc", "/etc/ld.so.cache", "/etc/.updated", "/var", "/var/.updated"}
+        disk = {
+            "control-1": {"/var/lib/systemd/random-seed", *update},
+            "way-back-1": {"/var/lib/systemd/random-seed", *update},
+            "control-2": {"/var/lib/systemd/random-seed"},
+        }
+        states = {
+            "control-1": "/etc pending; /var pending",
+            "way-back-1": CURRENT,
+            "control-2": CURRENT,
+        }
+        run = self.judged(disk, states)
+        self.assertFalse(run.checks[0]["passed"])
+        for path in update:
+            self.assertIn(path, run.checks[0]["detail"])
+        # In the same state, the control's changes count.
+        run = self.judged(disk, {**states, "way-back-1": states["control-1"]})
+        self.assertTrue(run.checks[0]["passed"])
+        # No control of the way back's state judges nothing.
+        run = self.judged(
+            {"control-1": disk["control-1"], "way-back-1": disk["way-back-1"]},
+            {"control-1": states["control-1"], "way-back-1": CURRENT},
+        )
+        self.assertFalse(run.checks[0]["passed"])
+        self.assertIn("update state", run.checks[0]["detail"])
+
+    def test_an_unknown_update_state_matches_none(self) -> None:
+        self.assertFalse(
+            fg.same_state("/etc unknown; /var current", "/etc unknown; /var current")
+        )
+        self.assertFalse(fg.same_state(None, CURRENT))
+        self.assertTrue(fg.same_state(CURRENT, CURRENT))
+        self.assertEqual(
+            fg.update_state("/etc pending\n/var current\n"),
+            "/etc pending; /var current",
+        )
+        self.assertEqual(fg.update_state("/etc pending"), "/etc pending; /var unknown")
+        self.assertEqual(fg.update_state("oops"), "/etc unknown; /var unknown")
+        self.assertIn("ConditionNeedsUpdate=$d", fg.NEEDS_UPDATE)
+
+    def test_a_deletion_shows_where_its_folder_s_times_do_not(self) -> None:
+        # A plain soft-reboot changes /var's own times, so a file deleted
+        # directly in /var shows only as a name gone.
+        disk = {"control-1": {"/var"}, "way-back-1": {"/var"}}
+        states = dict.fromkeys(disk, CURRENT)
+        names: dict[str, tuple[set[str] | None, set[str] | None]] = {
+            "control-1": ({"/var", "/var/a", "/var/tmp/x"}, {"/var", "/var/a"}),
+            "way-back-1": ({"/var", "/var/a", "/var/tmp/x"}, {"/var", "/var/tmp/x"}),
+        }
+        run = self.judged(disk, states, names)
+        self.assertFalse(run.checks[0]["passed"])
+        self.assertIn("/var/a", run.checks[0]["detail"])
+        # A name a plain soft-reboot also takes away is no sign of the session.
+        names["way-back-1"] = ({"/var", "/var/a", "/var/tmp/x"}, {"/var", "/var/a"})
+        self.assertTrue(self.judged(disk, states, names).checks[0]["passed"])
+        # Names the gate could not read judge nothing.
+        names["way-back-1"] = (None, {"/var"})
+        run = self.judged(disk, states, names)
+        self.assertFalse(run.checks[0]["passed"])
+        self.assertIn("names not read", run.checks[0]["detail"])
+
+    def test_reads_the_names_packed(self) -> None:
+        listing = "/\n/etc\n/etc/x\n/nix/store\n/var/log/wtmp\nfind: gone\n"
+        packed = base64.b64encode(gzip.compress(listing.encode())).decode()
+
+        class Vm:
+            def __init__(self, out: str, status: int = 0) -> None:
+                self.out, self.status = out, status
+
+            def execute(self, cmd: str, timeout: int = 900) -> tuple[int, str]:
+                return self.status, self.out
+
+            def succeed(self, cmd: str) -> str:
+                return "/ btrfs\n/nix/store 9p\n"
+
+        run = gate()
+        run.vm = Vm(packed + "\n")
+        self.assertEqual(run.disk_names("before-1"), {"/", "/etc", "/etc/x"})
+        self.assertEqual(run.facts["disk-names-before-1"], 3)
+        for vm in (Vm(packed[:-8]), Vm("not base64!"), Vm(packed, 1)):
+            run.vm = vm
+            self.assertIsNone(run.disk_names("after-1"))
+
+    def test_names_gone(self) -> None:
+        self.assertEqual(
+            fg.gone_names({"/a", "/b", "/c"}, {"/a"}, [({"/b"}, set())]), ["/c"]
+        )
+        self.assertEqual(fg.gone_names({"/a"}, {"/a", "/new"}, []), [])
 
 
 # What DECOY_TIMERS printed after a way back on Fedora 45: unbound-anchor's
@@ -675,7 +802,7 @@ class DecoyTimersTest(unittest.TestCase):
         }
         run.timers = {"way-back-1": way_back_timers()}
         run.facts["carried-1"] = {"switchUs": TIMERS_SWITCH_US}
-        quiet(run.judge_disk)
+        quiet(settled(run).judge_disk)
         self.assertEqual([c["passed"] for c in run.checks], [True, True], run.checks)
 
     def test_a_write_beside_the_timer_runs_still_fails(self) -> None:
@@ -686,7 +813,7 @@ class DecoyTimersTest(unittest.TestCase):
         }
         run.timers = {"way-back-1": way_back_timers()}
         run.facts["carried-1"] = {"switchUs": TIMERS_SWITCH_US}
-        quiet(run.judge_disk)
+        quiet(settled(run).judge_disk)
         self.assertEqual([c["passed"] for c in run.checks], [False, True])
         self.assertIn("'not in a control': ['/etc/x']", run.checks[0]["detail"])
 
@@ -705,6 +832,113 @@ BLIND = (
     "the decoy filesystem compresses file contents, so a leaked canary may be "
     "stored compressed, which this raw plaintext scan cannot match"
 )
+
+
+class PartitionTest(unittest.TestCase):
+    LISTING = (
+        "/dev/vda1 digest-of-vda1\n"
+        "/dev/vda2 digest-of-vda2\n"
+        "/dev/vda3 mounted\n"
+        "/dev/vda4 swap\n"
+    )
+
+    def test_reads_each_partition(self) -> None:
+        self.assertEqual(
+            fg.partition_hashes(self.LISTING + "no disk under x\n"),
+            {
+                "/dev/vda1": "digest-of-vda1",
+                "/dev/vda2": "digest-of-vda2",
+                "/dev/vda3": "mounted",
+                "/dev/vda4": "swap",
+            },
+        )
+
+    def test_a_partition_that_changed_or_was_mounted_since(self) -> None:
+        before = fg.partition_hashes(self.LISTING)
+        self.assertEqual(fg.partition_problems(before, before), [])
+        after = {**before, "/dev/vda1": "00", "/dev/vda2": "mounted"}
+        del after["/dev/vda4"]
+        self.assertEqual(
+            fg.partition_problems(before, after),
+            [
+                "/dev/vda1 holds other bytes than before the entry",
+                "/dev/vda2 was not mounted before the entry and is mounted now",
+            ],
+        )
+        self.assertEqual(
+            fg.partition_problems(before, {}),
+            ["/dev/vda1 is gone", "/dev/vda2 is gone"],
+        )
+
+
+class StreamTest(unittest.TestCase):
+    LISTING = (
+        "journald 230\n"
+        "held 18406\n"
+        "held 18759\n"
+        "held 2001\n"
+        "file 10:18406 systemd-logind.service active\n"
+        "file 10:18759 overlay-runtime-boot.service active\n"
+        "file 10:1999 dbus-broker.service active\n"
+        "file 10:2001 - -\n"
+    )
+
+    def test_a_stream_of_a_unit_of_the_decoy_s_that_runs(self) -> None:
+        self.assertEqual(
+            fg.stream_problems(self.LISTING, ("overlay-runtime",)),
+            {
+                "f /run/systemd/journal/streams/10:18759": (
+                    "it is NAILS's overlay-runtime-boot.service"
+                ),
+                "f /run/systemd/journal/streams/10:1999": (
+                    "the decoy's journald holds no such stream"
+                ),
+                "f /run/systemd/journal/streams/10:2001": "it names no unit",
+            },
+        )
+        stopped = "held 5\nfile 10:5 gate-late.service inactive\n"
+        self.assertEqual(
+            list(fg.stream_problems(stopped).values()),
+            ["its unit gate-late.service does not run (inactive)"],
+        )
+
+    def test_the_shape_of_a_stream_excuses_none(self) -> None:
+        streams = "f /run/systemd/journal/streams"
+        run = gate()
+        run.update_states = {"control-1": CURRENT, "way-back-1": CURRENT}
+        run.runs = {
+            "control-1": (set(), {f"{streams}/10:1"}),
+            "way-back-1": (set(), {f"{streams}/10:2", f"{streams}/10:3"}),
+        }
+        run.streams = {1: {f"{streams}/10:3": "it names no unit"}}
+        quiet(run.judge_run)
+        self.assertFalse(run.checks[0]["passed"])
+        self.assertEqual(run.facts["run-residue-way-back-1"], [f"{streams}/10:3"])
+        # Streams the gate could not read are all left.
+        run.checks = []
+        run.streams = {1: None}
+        quiet(run.judge_run)
+        self.assertEqual(
+            run.facts["run-residue-way-back-1"], [f"{streams}/10:2", f"{streams}/10:3"]
+        )
+
+
+class AdvisoryTest(unittest.TestCase):
+    def test_the_advisory_with_the_lines_below_it(self) -> None:
+        log = (
+            "[WARN] decoy-nix-trace: x\n"
+            "[WARN] package-drift: gate-drift (3-1 on the decoy)\n"
+            "In a hidden session (`sudo pacman -U <file>`).\n"
+            "[WARN] binary-location: y\n"
+        )
+        self.assertEqual(
+            fg.advisory_text(log, "package-drift"),
+            "[WARN] package-drift: gate-drift (3-1 on the decoy)\n"
+            "In a hidden session (`sudo pacman -U <file>`).",
+        )
+        self.assertEqual(
+            fg.advisory_text("gate-drift sudo pacman -U", "package-drift"), ""
+        )
 
 
 class RehearseScanTest(unittest.TestCase):
@@ -910,7 +1144,7 @@ class RunResidueTest(unittest.TestCase):
             run.run_invocations = {"way-back-2": reading}
             run.facts["leave-wall-2"] = self.LEAVE
             run.facts["carried-2"] = {"switchUs": switch_us}
-            quiet(run.judge_run)
+            quiet(settled(run).judge_run)
             self.assertEqual(run.facts["run-residue-way-back-2"], left, switch_us)
             self.assertEqual(
                 [c["passed"] for c in run.checks], [False], run.checks
@@ -922,7 +1156,7 @@ class RunResidueTest(unittest.TestCase):
         }
         run.run_invocations = {"way-back-2": reading}
         run.facts["carried-2"] = {"switchUs": int(self.SWITCH * 1_000_000)}
-        quiet(run.judge_run)
+        quiet(settled(run).judge_run)
         self.assertEqual([c["passed"] for c in run.checks], [True], run.checks)
 
     def test_the_invocation_reading_names_only_invocation_links(self) -> None:
@@ -956,16 +1190,29 @@ class RunResidueTest(unittest.TestCase):
             "way-back-2": ({"d /run/a"}, {"d /run/a", "d /run/overlay-runtime-boot/x"}),
         }
         run.pieces = {2: ["/run/overlay-runtime-boot"]}
-        quiet(run.judge_run)
+        quiet(settled(run).judge_run)
         name = "nothing of the session stays in /run, at any depth"
         self.assertEqual(
             [(c["name"], c["passed"]) for c in run.checks],
             [(f"way back 1: {name}", False), (f"way back 2: {name}", True)],
         )
         self.assertEqual(run.facts["run-residue-way-back-1"], ["f /run/left"])
-        # Without a control nothing is judged, so nothing passes.
+        # Without a control nothing is judged, so nothing passes, and a
+        # control of another update state does not count.
         run = gate()
         run.runs = {"way-back-1": ({"d /run/a"}, {"d /run/a"})}
+        quiet(run.judge_run)
+        self.assertFalse(run.checks[0]["passed"])
+        run = gate()
+        run.update_states = {
+            "control-1": "/etc pending; /var pending",
+            "way-back-1": CURRENT,
+        }
+        link = "l /run/u/invocation:ldconfig.service"
+        run.runs = {
+            "control-1": ({"d /run/a"}, {"d /run/a", link}),
+            "way-back-1": ({"d /run/a"}, {"d /run/a", link}),
+        }
         quiet(run.judge_run)
         self.assertFalse(run.checks[0]["passed"])
 

@@ -72,8 +72,15 @@ QEMU process:
    PID 1 started after the switch, of a unit not NAILS's whose file lies
    outside ``/run``.
    A timer the gate adds to the decoy before the first entry, which catches
-   up at the first way back, is the positive control of that reading. And a
-   login on the decoy, the positive control of the login records.
+   up at the first way back, is the positive control of that reading. A
+   control counts only where it started in the update state of the way
+   back's entry (whether /etc and /var follow /usr, ``ConditionNeedsUpdate=``);
+   on the disk no name may be gone that no such control took away, and every
+   partition of the decoy's disk that no filesystem is mounted from must hold
+   the bytes it held before the entry; in ``/run`` a journal stream file
+   counts only where the decoy's journald holds its stream open for a unit of
+   the decoy's that runs. And a login on the decoy, the positive control of
+   the login records.
 
 In the variant with the policy's dontaudit rules on, the kernel also records
 every program run from below ``/run`` with its domain, and every program run
@@ -99,6 +106,8 @@ when one does not hold.
 
 from __future__ import annotations
 
+import base64
+import gzip
 import json
 import os
 import re
@@ -488,6 +497,68 @@ touch -d @$(( $(date +%s) - 7200 )) {TIMER_STAMPS}/stamp-{GATE_TIMER}.timer
 systemctl enable {GATE_TIMER}.timer
 systemctl is-active {GATE_TIMER}.timer || true
 """
+# Whether the decoy's PID 1 would run, at its next start, the units that bring
+# /etc and /var up to date with /usr (``ConditionNeedsUpdate=``: the linker
+# cache, the system users, the journal's catalog, ``.updated``), as systemd
+# itself judges it: a package manager that changed /usr leaves both pending.
+# A plain soft-reboot in such a state changes files a way back from a state
+# without it would not, so a control counts for a way back only when both
+# were in the same state (:func:`same_state`). Output systemd-analyze does not
+# give as a verdict is ``unknown``, which no state matches.
+NEEDS_UPDATE = (
+    "for d in /etc /var; do "
+    'out=$(systemd-analyze condition "ConditionNeedsUpdate=$d" 2>&1); '
+    'case "$out" in *"Conditions succeeded"*) echo "$d pending" ;; '
+    '*"Conditions failed"*) echo "$d current" ;; *) echo "$d unknown" ;; esac; '
+    "done"
+)
+# The partitions of the disk that holds the decoy's root which no filesystem
+# is mounted from, no swap is on and nothing holds (a device mapper or RAID
+# device), each with the SHA-256 of its bytes: an ESP left behind its automount
+# point, a BIOS boot partition. The comparison of the decoy disk's files reads
+# only what is mounted, so these are compared byte for byte instead. A mounted
+# one is listed as such.
+PARTITIONS = r"""
+root=$(findmnt -nvo SOURCE /)
+disk=$(lsblk -nro PKNAME "$root" | head -n1)
+test -n "$disk" || { echo "no disk under $root"; exit 0; }
+lsblk -nrpo NAME,TYPE "/dev/$disk" | while read -r name type; do
+  test "$type" = part || continue
+  if findmnt -rn -S "$name" >/dev/null ||
+    test -n "$(lsblk -nro MOUNTPOINTS "$name" | tr -d '\n')"; then
+    echo "$name mounted"; continue
+  fi
+  if grep -q "^$name " /proc/swaps; then echo "$name swap"; continue; fi
+  if test -n "$(ls -A "/sys/class/block/${name##*/}/holders" 2>/dev/null)"; then
+    echo "$name held"; continue
+  fi
+  echo "$name $(sha256sum < "$name" | cut -d' ' -f1)"
+done
+"""
+# journald's stream files in /run and what the gate holds each to after a way
+# back: the socket inodes the decoy's journald holds open, and for each
+# stream file the unit it names (``-`` for none) with that unit's state.
+JOURNAL_STREAMS = r"""
+pid=$(systemctl show -P MainPID systemd-journald.service)
+echo "journald $pid"
+for f in /proc/$pid/fd/*; do readlink "$f"; done 2>/dev/null |
+  sed -n 's/^socket:\[\([0-9]*\)\]$/held \1/p' | sort -u
+for f in /run/systemd/journal/streams/*; do
+  test -f "$f" || continue
+  u=$(sed -n 's/^UNIT=//p' "$f" | head -n1)
+  s=-
+  test -z "$u" || s=$(systemctl show -P ActiveState "$u")
+  echo "file ${f##*/} ${u:--} ${s:--}"
+done
+"""
+# The states of a unit that runs: a stream of one is the decoy's.
+RUNNING_STATES = ("active", "activating", "reloading", "deactivating", "refreshing")
+# How often the gate reads the names on the decoy disk before it counts them
+# as not read.
+NAMES_TRIES = 3
+# Where journald keeps a file of each stream it reads, named
+# ``<device>:<inode>`` after the stream's socket.
+STREAMS_DIR = "/run/systemd/journal/streams"
 # The blind spot the rehearsal's scan must name for a btrfs root mounted to
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
@@ -799,6 +870,134 @@ def disk_listing(since: str) -> str:
         f'find "$target" -xdev \\( -newerct @{since} -o -newermt @{since} \\) '
         "-print; done | sort -u"
     )
+
+
+def disk_find(tests: str) -> str:
+    """The guest command that runs ``find`` with ``tests`` on each of the
+    decoy's disk mounts, the hidden volume and the gate's bind left out, and
+    sorts what it prints."""
+    return (
+        "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
+        f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
+        f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
+        f'find "$target" -xdev {tests}; done | sort -u'
+    )
+
+
+def advisory_text(log: str, name: str) -> str:
+    """The advisory ``name`` in what an entry printed: its ``[WARN] <name>:``
+    line and the lines below it up to the next ``[`` line, which hold its
+    fix; empty where it printed none."""
+    lines: list[str] = []
+    for line in log.splitlines():
+        if lines and line.startswith("["):
+            break
+        if lines or line.startswith(f"[WARN] {name}:"):
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def update_state(text: str) -> str:
+    """The state :data:`NEEDS_UPDATE` printed, one ``<dir> <verdict>`` per
+    line, sorted; ``unknown`` where it printed no verdict for /etc or /var."""
+    found = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in ("/etc", "/var"):
+            found[words[0]] = words[1]
+    return "; ".join(
+        f"{d} {found[d] if found.get(d) in ('pending', 'current') else 'unknown'}"
+        for d in ("/etc", "/var")
+    )
+
+
+def same_state(way_back: str | None, control: str | None) -> bool:
+    """Whether a control taken in the update state ``control`` counts for a way
+    back from the state ``way_back`` (each :func:`update_state`): only when
+    both are known and the same."""
+    return (
+        way_back is not None
+        and control is not None
+        and "unknown" not in way_back
+        and way_back == control
+    )
+
+
+def gone_names(
+    before: set[str], after: set[str], controls: Iterable[tuple[set[str], set[str]]]
+) -> list[str]:
+    """The names on the decoy disk (each :func:`changed_paths` of a listing of
+    every name) that were there before a way back's entry and are gone after
+    it, but those a plain soft-reboot also took away (``controls``, each the
+    names before and after it): a file deleted on the decoy shows only in its
+    folder's times, which a plain soft-reboot may change as well."""
+    taken: set[str] = set()
+    for was, now in controls:
+        taken |= was - now
+    return sorted(before - after - taken)
+
+
+def partition_hashes(text: str) -> dict[str, str]:
+    """Each partition :data:`PARTITIONS` listed, with its digest or why it has
+    none (``mounted``, ``swap``, ``held``)."""
+    found = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0].startswith("/dev/"):
+            found[words[0]] = words[1]
+    return found
+
+
+def partition_problems(
+    before: Mapping[str, str], after: Mapping[str, str]
+) -> list[str]:
+    """What changed after a way back on the partitions that held a digest
+    before its entry (:func:`partition_hashes`): one whose bytes differ, one
+    mounted since, or one gone."""
+    problems = []
+    for name, digest in sorted(before.items()):
+        if digest in ("mounted", "swap", "held"):
+            continue
+        now = after.get(name)
+        if now is None:
+            problems.append(f"{name} is gone")
+        elif now in ("mounted", "swap", "held"):
+            problems.append(f"{name} was not mounted before the entry and is {now} now")
+        elif now != digest:
+            problems.append(f"{name} holds other bytes than before the entry")
+    return problems
+
+
+def stream_problems(text: str, own_prefixes: Iterable[str] = ()) -> dict[str, str]:
+    """The stream files of :data:`JOURNAL_STREAMS` that are not the decoy's,
+    by their ``f <path>`` entry of /run, each with why: one whose socket the
+    decoy's journald does not hold open, one that names no unit, one of a
+    unit that does not run (:data:`RUNNING_STATES`), and one of a unit whose
+    name starts with one of ``own_prefixes`` (NAILS's)."""
+    held: set[str] = set()
+    files: dict[str, tuple[str, str]] = {}
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] == "held":
+            held.add(words[1])
+        elif len(words) == 4 and words[0] == "file":
+            files[words[1]] = (words[2], words[3])
+        elif words and words[0] == "file":
+            files[words[1] if len(words) > 1 else ""] = ("-", "-")
+    prefixes = tuple(own_prefixes)
+    problems = {}
+    for name, (unit, state) in files.items():
+        inode = name.rpartition(":")[2]
+        entry = f"f {STREAMS_DIR}/{name}"
+        if inode not in held:
+            problems[entry] = "the decoy's journald holds no such stream"
+        elif unit == "-":
+            problems[entry] = "it names no unit"
+        elif prefixes and unit.startswith(prefixes):
+            problems[entry] = f"it is NAILS's {unit}"
+        elif state not in RUNNING_STATES:
+            problems[entry] = f"its unit {unit} does not run ({state})"
+    return problems
 
 
 def rehearse_scan_problems(
@@ -1321,6 +1520,15 @@ class Gate:
         # what the decoy's own timers did there (:meth:`decoy_timers`).
         self.disk: dict[str, set[str]] = {}
         self.timers: dict[str, dict[str, Any]] = {}
+        # Every name on the decoy disk before and after each switch, by its
+        # label (None where the gate could not read them).
+        self.names: dict[str, tuple[set[str] | None, set[str] | None]] = {}
+        # The update state (:data:`NEEDS_UPDATE`) right before each switch:
+        # a control's before its soft-reboot, a way back's before its entry.
+        self.update_states: dict[str, str] = {}
+        # The journal stream files after each way back that are not the
+        # decoy's (:func:`stream_problems`), None where they were not read.
+        self.streams: dict[int, dict[str, str] | None] = {}
         # /run before and after each switch, by its label, and the reconcile
         # step's pieces that stayed after each way back.
         self.runs: dict[str, tuple[set[str], set[str]]] = {}
@@ -1933,6 +2141,64 @@ class Gate:
             "times": times,
             "reruns": reruns,
         }
+    def disk_names(self, label: str) -> set[str] | None:
+        """Every name on the decoy's disk mounts, as :meth:`disk_changes`
+        reads them (:func:`changed_paths`), sent packed, as they are many;
+        None where the guest did not send them whole in
+        :data:`NAMES_TRIES` reads. find's complaints of a name that went
+        away while it ran are left out, as is its status. The count, or why
+        each read failed, is kept as a fact."""
+        failures: list[str] = []
+        for _ in range(NAMES_TRIES):
+            try:
+                status, out = self.vm.execute(
+                    "( set +o pipefail; "
+                    f"( {disk_find('-print')} ) 2>/dev/null | gzip -1 | base64 -w0 )",
+                    timeout=600,
+                )
+            except Exception as error:  # noqa: BLE001 - a dead guest is a result
+                failures.append(f"{type(error).__name__}: {error}")
+                continue
+            try:
+                text = gzip.decompress(base64.b64decode(out.strip(), validate=True))
+                names = changed_paths(
+                    text.decode("utf-8", "replace"), self.other_mounts()
+                )
+            except (ValueError, OSError, EOFError) as error:
+                failures.append(
+                    f"exit {status}, {len(out)} characters: "
+                    f"{type(error).__name__}: {error}"
+                )
+                continue
+            if status != 0 or not names:
+                failures.append(f"exit {status}, {len(names)} names")
+                continue
+            self.facts[f"disk-names-{label}"] = (
+                {"names": len(names), "failed reads": failures}
+                if failures
+                else len(names)
+            )
+            return names
+        self.facts[f"disk-names-{label}"] = {"not read": failures}
+        return None
+
+    def needs_update(self, label: str) -> str:
+        """The update state right before a switch (:data:`NEEDS_UPDATE`),
+        kept by the switch's label."""
+        return update_state(
+            self.fact(f"needs-update-{label}", NEEDS_UPDATE, again=True)
+        )
+
+    def usable_controls(self, label: str) -> list[str]:
+        """The controls that count for the way back ``label``: those taken in
+        the update state its entry had (:func:`same_state`)."""
+        state = self.update_states.get(label)
+        return [
+            control
+            for control in self.update_states
+            if "control" in control
+            and same_state(state, self.update_states.get(control))
+        ]
 
     # --- the decoy -------------------------------------------------------
 
@@ -2317,8 +2583,15 @@ class Gate:
         drift = rows.get("package-drift", {})
         self.facts[f"drift-{n}"] = drift
         # What the way back is held to, taken as close to the entry as the
-        # harness can: /run as the decoy has it, at every depth, and the time
-        # from which the decoy disk's changes count.
+        # harness can: the update state its controls must share, every name
+        # on the decoy disk, the bytes of its partitions no filesystem
+        # mounts, /run as the decoy has it, at every depth, and the time from
+        # which the decoy disk's changes count.
+        self.update_states[f"way-back-{n}"] = self.needs_update(f"before-{n}")
+        state["names"] = self.disk_names(f"before-{n}")
+        state["partitions"] = partition_hashes(
+            self.fact(f"partitions-before-{n}", PARTITIONS, 600, again=True)
+        )
         state["run"] = self.run_listing(f"before-{n}")
         state["since"] = self.wall()
         self.mark(f"enter-{n}")
@@ -2947,8 +3220,25 @@ class Gate:
             self.run_invocations[f"way-back-{n}"] = self.fact(
                 f"invocations-after-{n}", new_links
             )
+        streams = self.fact(f"journal-streams-{n}", JOURNAL_STREAMS, again=True)
+        self.streams[n] = (
+            stream_problems(streams, (NAILS_UNITS,))
+            if re.search(r"^held \d+$", streams, re.M)
+            else None
+        )
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
+        self.names[f"way-back-{n}"] = (state["names"], self.disk_names(f"after-{n}"))
+        partitions = partition_hashes(
+            self.fact(f"partitions-after-{n}", PARTITIONS, 600, again=True)
+        )
+        problems = partition_problems(state["partitions"], partitions)
+        self.check(
+            f"way back {n}: the partitions of the decoy's disk that no filesystem "
+            "is mounted from hold the bytes they held before the entry",
+            bool(state["partitions"]) and not problems,
+            {"before": state["partitions"], "after": partitions, "problems": problems},
+        )
         self.decoy_timers(
             f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]), state["since"]
         )
@@ -3302,6 +3592,8 @@ class Gate:
     # --- the controls ----------------------------------------------------
 
     def control(self, label: str) -> None:
+        self.update_states[label] = self.needs_update(f"before-{label}")
+        names = self.disk_names(f"before-{label}")
         run = self.run_listing(f"before-{label}")
         since = self.wall()
         self.mark(f"{label}-start")
@@ -3312,6 +3604,7 @@ class Gate:
         self.wait_reconcile()
         self.runs[label] = (run, self.run_listing(f"after-{label}"))
         self.disk_changes(label, since)
+        self.names[label] = (names, self.disk_names(f"after-{label}"))
         self.decoy_timers(label, float(since), since)
         self.enforcing(f"after {label}")
         failed = self.failed_units(f"failed-{label}")
@@ -3340,7 +3633,10 @@ class Gate:
         the records checks judge: a label or a file the session or NAILS wrote
         on the decoy would show as a path neither explains. A path that only a
         timer's run explains in one control is not part of the reference
-        (:func:`decoy_reference`)."""
+        (:func:`decoy_reference`). Only the controls taken in the update state
+        of the way back's entry count (:meth:`usable_controls`), and a name
+        there before the entry and gone after it counts as a change unless
+        such a control took it away too (:func:`gone_names`)."""
         self.where = "the decoy disk"
         timers = {label: dict(found) for label, found in self.timers.items()}
         for label in self.disk:
@@ -3358,26 +3654,52 @@ class Gate:
         controls_by_label = {
             label: paths for label, paths in self.disk.items() if "control" in label
         }
-        controls = decoy_reference(controls_by_label, explained)
         self.facts["disk-controls"] = {
             label: sorted(paths) for label, paths in controls_by_label.items()
         }
+        self.facts["update-states"] = dict(self.update_states)
         for label, paths in self.disk.items():
             if not label.startswith("way-back-"):
                 continue
+            usable = [c for c in self.usable_controls(label) if c in controls_by_label]
+            reference = decoy_reference(
+                {c: controls_by_label[c] for c in usable}, explained
+            )
             own = explained.get(label, {})
-            residue = decoy_disk_residue(paths - set(own), controls)
+            residue = decoy_disk_residue(paths - set(own), reference)
+            before, after = self.names.get(label, (None, None))
+            taken = [
+                (was, now)
+                for was, now in (self.names.get(c, (None, None)) for c in usable)
+                if was is not None and now is not None
+            ]
+            gone = (
+                gone_names(before, after, taken)
+                if before is not None and after is not None
+                else None
+            )
             self.check(
                 f"{label.replace('-', ' ')}: the decoy disk changed only where a "
                 "plain soft-reboot or a run of the decoy's own timer changes it",
-                bool(controls) and not residue,
+                bool(usable) and not residue and gone == [],
                 {
                     "not in a control": residue,
+                    "gone": gone if gone is not None else "names not read",
                     "the decoy's timers": own,
+                    "controls": usable,
                     "changed": sorted(paths),
                 }
-                if controls
-                else "no control was taken",
+                if usable
+                else {
+                    "no control was taken in the update state of its entry": (
+                        self.update_states.get(label)
+                    ),
+                    "controls": {
+                        c: self.update_states[c]
+                        for c in self.update_states
+                        if "control" in c
+                    },
+                },
             )
         # The positive control: the gate's own timer of the decoy caught up at
         # the first way back, and its write counts as its run's.
@@ -3412,20 +3734,38 @@ class Gate:
     def judge_run(self) -> None:
         """/run after each way back holds, at every depth, only what it held
         right before the entry, entries of a shape that a plain soft-reboot
-        also adds (a journal stream, a session or a unit file of the decoy's
-        own start), and the invocation links of runs the decoy's PID 1 started
-        after the switch, of units not NAILS's with their files outside /run
-        (:func:`decoy_invocations`, :func:`run_residue`)."""
+        from the same update state also adds (:meth:`usable_controls`: a
+        session or a unit file of the decoy's own start), a journal stream
+        file only where the decoy's journald holds its stream open for a unit
+        of the decoy's that runs (:func:`stream_problems`), and the invocation
+        links of runs the decoy's PID 1 started after the switch, of units not
+        NAILS's with their files outside /run (:func:`decoy_invocations`,
+        :func:`run_residue`)."""
         self.where = "/run"
-        controls = [pair for label, pair in self.runs.items() if "control" in label]
         for label, (before, after) in self.runs.items():
             if not label.startswith("way-back-"):
                 continue
             n = int(label.rsplit("-", 1)[-1])
+            controls = [
+                self.runs[c] for c in self.usable_controls(label) if c in self.runs
+            ]
             own = decoy_invocations(
                 self.run_invocations.get(label, ""), self.switch_of(n)
             )
             residue = run_residue(before, after, controls, self.pieces.get(n, []), own)
+            # A stream file is of a shape every start adds, so its shape
+            # excuses none: it must be one the decoy's journald holds open,
+            # of a unit of the decoy's that runs now (:func:`stream_problems`).
+            streams = self.streams.get(n)
+            for entry in sorted(after - before):
+                if not entry.startswith(f"f {STREAMS_DIR}/"):
+                    continue
+                if streams is None or entry in streams:
+                    residue.append(entry)
+            residue = sorted(set(residue))
+            self.facts[f"stream-problems-{label}"] = (
+                streams if streams is not None else "not read"
+            )
             self.facts[f"run-residue-{label}"] = residue
             self.facts[f"run-own-{label}"] = {
                 "switch": self.switch_of(n),
@@ -3439,7 +3779,7 @@ class Gate:
                 bool(controls) and not residue,
                 {"left": residue, "new": sorted(after - before)[:200]}
                 if controls
-                else "no control was taken",
+                else "no control was taken in the update state of its entry",
             )
 
     def judge_execs(self) -> None:
@@ -3845,10 +4185,11 @@ class Gate:
         state["sleep_guard"] = True
         if self.enter(2, USER, FRESH_CONFIG, state):
             log = self.facts.get("activate-2.log", "")
+            advisory = advisory_text(log, "package-drift")
             self.check(
                 "the entry shows the drift advisory with its fix",
-                removed in log,
-                log[-2000:],
+                removed in advisory and "sudo dnf" in advisory,
+                advisory or log[-2000:],
             )
             self.hidden(2, USER, state)
             disk = self.hotplug(2)
