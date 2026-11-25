@@ -2,58 +2,312 @@
   "image": "arch-install",
   "osId": "arch",
   "enforcing": false,
-  "imageFile": null,
-  "recorded": false,
+  "imageFile": "arch-install-2026.11.01-20261125-45604987470.qcow2",
+  "recorded": true,
   "facts": {
     "selinuxMode": null,
     "selinuxBackdoorDomain": null,
     "selinuxLabels": null,
     "selinuxPolicyLoads": null,
-    "kernelRelease": null,
-    "moduleDirs": null,
-    "systemdVersion": null,
-    "mounts": [],
-    "fstab": null,
-    "swaps": [],
-    "mountUnits": [],
+    "kernelRelease": "7.2.11-arch1-1",
+    "moduleDirs": [
+      "7.2.11-arch1-1"
+    ],
+    "systemdVersion": "systemd 262 (262.1-1-arch)",
+    "mounts": [
+      {
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvolid=256,subvol=/@"
+      },
+      {
+        "target": "/boot",
+        "fstype": "vfat",
+        "options": "rw,relatime,fmask=0177,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro"
+      },
+      {
+        "target": "/home",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvolid=257,subvol=/@home"
+      },
+      {
+        "target": "/var/cache/pacman/pkg",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvolid=259,subvol=/@pkg"
+      },
+      {
+        "target": "/var/log",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvolid=258,subvol=/@log"
+      }
+    ],
+    "fstab": [
+      {
+        "source": "UUID=e513c647-706f-43c6-8406-9f7349369429",
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=e513c647-706f-43c6-8406-9f7349369429",
+        "target": "/home",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@home",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=e513c647-706f-43c6-8406-9f7349369429",
+        "target": "/var/cache/pacman/pkg",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@pkg",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=e513c647-706f-43c6-8406-9f7349369429",
+        "target": "/var/log",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:3,discard=async,space_cache=v2,subvol=/@log",
+        "dump": 0,
+        "pass": 0
+      },
+      {
+        "source": "UUID=7C69-A7EA",
+        "target": "/boot",
+        "fstype": "vfat",
+        "options": "rw,relatime,fmask=0177,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro",
+        "dump": 0,
+        "pass": 2
+      }
+    ],
+    "swaps": [
+      {
+        "name": "/dev/zram0",
+        "type": "partition",
+        "size": 1023930368,
+        "priority": 100
+      }
+    ],
+    "mountUnits": [
+      {
+        "unit": "proc-sys-fs-binfmt_misc.automount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "waiting",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.automount",
+        "sourcePath": null
+      },
+      {
+        "unit": "-.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/-.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "boot.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/boot.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "dev-hugepages.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-hugepages.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-mqueue.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/dev-mqueue.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "home.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/home.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "proc-sys-fs-binfmt_misc.mount",
+        "load": "loaded",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": "/usr/lib/systemd/system/proc-sys-fs-binfmt_misc.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-fs-fuse-connections.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-fs-fuse-connections.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-config.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-config.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-debug.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-debug.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "sys-kernel-tracing.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/sys-kernel-tracing.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "tmp.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/usr/lib/systemd/system/tmp.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "var-cache-pacman-pkg.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/var-cache-pacman-pkg.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "var-lib-machines.mount",
+        "load": "loaded",
+        "active": "inactive",
+        "sub": "dead",
+        "fragmentPath": "/usr/lib/systemd/system/var-lib-machines.mount",
+        "sourcePath": null
+      },
+      {
+        "unit": "var-log.mount",
+        "load": "loaded",
+        "active": "active",
+        "sub": "mounted",
+        "fragmentPath": "/run/systemd/generator/var-log.mount",
+        "sourcePath": "/etc/fstab"
+      },
+      {
+        "unit": "dev-disk-by\\x2ddiskseq-4.swap",
+        "load": "loaded",
+        "active": "active",
+        "sub": "active",
+        "fragmentPath": null,
+        "sourcePath": null
+      },
+      {
+        "unit": "dev-zram0.swap",
+        "load": "loaded",
+        "active": "active",
+        "sub": "active",
+        "fragmentPath": "/run/systemd/generator/dev-zram0.swap",
+        "sourcePath": null
+      }
+    ],
     "generatorUnits": {
-      "/run/systemd/generator": null,
+      "/run/systemd/generator": [
+        "-.mount",
+        "boot.mount",
+        "dev-zram0.swap",
+        "getty.target.wants",
+        "home.mount",
+        "local-fs.target.requires",
+        "local-fs.target.wants",
+        "swap.target.wants",
+        "systemd-zram-setup@zram0.service.d",
+        "var-cache-pacman-pkg.mount",
+        "var-log.mount"
+      ],
       "/run/systemd/generator.late": null
     },
-    "tools": {},
+    "tools": {
+      "systemctl": "/usr/bin/systemctl",
+      "loginctl": "/usr/bin/loginctl",
+      "busctl": "/usr/bin/busctl",
+      "journalctl": "/usr/bin/journalctl",
+      "dmsetup": "/usr/bin/dmsetup",
+      "ip": "/usr/bin/ip",
+      "nft": "/usr/bin/nft",
+      "cryptsetup": "/usr/bin/cryptsetup",
+      "sh": "/usr/bin/sh",
+      "mount": "/usr/bin/mount",
+      "sync": "/usr/bin/sync",
+      "swapoff": "/usr/bin/swapoff",
+      "kill": "/usr/bin/kill",
+      "systemd-run": "/usr/bin/systemd-run",
+      "modprobe": "/usr/bin/modprobe",
+      "cp": "/usr/bin/cp",
+      "chown": "/usr/bin/chown"
+    },
     "services": {
       "auditd": {
-        "enabled": null,
-        "active": null
+        "enabled": "disabled",
+        "active": "inactive"
       },
       "tuned": {
-        "enabled": null,
-        "active": null
+        "enabled": "not-found",
+        "active": "inactive"
       },
       "firewalld": {
-        "enabled": null,
-        "active": null
+        "enabled": "not-found",
+        "active": "inactive"
       },
       "abrtd": {
-        "enabled": null,
-        "active": null
+        "enabled": "not-found",
+        "active": "inactive"
       }
     },
-    "auditdRefuseManualStop": null,
+    "auditdRefuseManualStop": true,
     "packages": null,
     "journaldVendorConfig": {
-      "storage": null,
+      "storage": "persistent",
       "sources": [],
       "credential": null,
       "vendorHint": null
     },
     "failedBootUnits": [],
-    "maskedUnits": [],
+    "maskedUnits": [
+      "archlinux-keyring-wkd-sync.service",
+      "pacman-init.service",
+      "serial-getty@hvc0.service",
+      "serial-getty@ttyS0.service",
+      "sshd.service",
+      "systemd-boot-update.service",
+      "systemd-networkd-wait-online.service",
+      "systemd-time-wait-sync.service",
+      "sshd.socket",
+      "archlinux-keyring-wkd-sync.timer"
+    ],
     "updatedbPrunePaths": [],
     "avcs": [],
     "ninePUnderEnforcing": null,
     "derivativeOsRelease": {},
-    "softRebootsCount": null,
+    "softRebootsCount": 1,
     "failedUnitsAfterSoftReboot": [],
     "avcsAfterSoftReboot": [],
     "selinuxLabelsAfterSoftReboot": null,
