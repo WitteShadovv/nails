@@ -3140,14 +3140,16 @@ then: `deactivate` refuses before it asks anything, with exit 6, and a plain
 and names `/proc/self/mountinfo`). Without the table NAILS cannot tell the
 hidden session from the decoy, so nothing that needs it goes on: `activate`,
 `deactivate`, `discard`, `recover` and the `rehearse` steps refuse (an
-`--offline` scan, which reads only the images it is given, still runs), the
-last step before a switch refuses the switch and on the way back powers off
-first,
-and `emergency` with a session plan powers off at once (`--reboot` reboots).
-The window refuses a menu entry's start, and opened from a terminal it shows
-its Emergency control from the start. Run the command again
-where `/proc` is mounted and readable. A mount whose path or options hold a
-byte that is not valid UTF-8 is read as any other, and is no such case.
+`--offline` scan, which reads only the images it is given, still runs), the last
+step before a switch refuses the switch and on the way back powers off first,
+and `emergency` with a session plan powers off at once (`--reboot` reboots). The
+window refuses a menu entry's start, and opened from a terminal it takes itself
+for a hidden session: it shows its Emergency control from the start, and of its
+tools it offers at most a hidden session's (Verify, Rehearsal and Settings),
+never Discard Hidden Changes, Set Up Hidden Volume or Activation Options. Run
+the command again where `/proc` is mounted and readable. A mount whose path or
+options hold a byte that is not valid UTF-8 is read as any other, and is no such
+case.
 
 **The switch is refused** (the soft-reboot comes back to the root it left).
 Right before PID 1 switches, NAILS checks the other root's init the way PID 1

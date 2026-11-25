@@ -144,8 +144,8 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     // The window's own reading, which needs no helper: in a hidden session,
-    // and where the mount table could not be read, its Emergency control
-    // shows from the start.
+    // and where the mount table could not be read, it takes itself for one
+    // from the start (its Emergency control, a hidden session's tools).
     let in_hidden_session = launch::emergency_from_start(
         engine.as_deref(),
         mountinfo.as_deref().map_err(String::as_str),

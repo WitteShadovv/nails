@@ -1161,14 +1161,16 @@ of this changelog for that version becomes the release notes word for word, and
   sit on. `status` reports the place as unknown and names the mount table, the watcher sends one
   alert that it cannot see the disks, verify warns that it cannot tell whether `/run/nextroot` is
   populated, `check` says it cannot tell how each decoy filesystem would be handled, and the window
-  refuses a menu entry's start, saying the table could not be read, and otherwise shows its
-  Emergency control from the start. An offline verify, which says how to mount each place of the
-  decoy that holds nothing under the root, took the device of such a place for one not mounted here:
-  it now says the table could not be read and gives the mount for either case. A mount table that is
-  not there at all, where `/proc` is not mounted, now counts as one that cannot be read in verify,
-  in the NixOS check `suspicious-nails-reference` and in the record of the hidden volume's
-  device-mapper stack too, which took it for an empty table. A list of swaps that cannot be read
-  fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy root whose
+  refuses a menu entry's start, saying the table could not be read, and opened from a terminal it
+  takes itself for a hidden session: it shows its Emergency control from the start, and of its tools
+  it offers at most a hidden session's (Verify, Rehearsal and Settings), never Discard Hidden
+  Changes, Set Up Hidden Volume or Activation Options. An offline verify, which says how to mount
+  each place of the decoy that holds nothing under the root, took the device of such a place for one
+  not mounted here: it now says the table could not be read and gives the mount for either case. A
+  mount table that is not there at all, where `/proc` is not mounted, now counts as one that cannot
+  be read in verify, in the NixOS check `suspicious-nails-reference` and in the record of the hidden
+  volume's device-mapper stack too, which took it for an empty table. A list of swaps that cannot be
+  read fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy root whose
   subvolume name is not valid UTF-8 is refused, and so is an overlay layer at such a path: the
   option text `mount(2)` takes cannot hold that name unchanged. A btrfs mount whose `subvol=` holds
   an octal escape (a space in the subvolume's name) now counts as that subvolume in the
@@ -1177,8 +1179,12 @@ of this changelog for that version becomes the release notes word for word, and
   The decoy's fstab is read with a byte that is not valid UTF-8 kept as its octal escape, and a
   mount point holds the bytes its escapes stand for, and the session policy names mount, automount,
   swap and device units as PID 1 names them, a name of 256 characters or more shortened with a hash:
-  so what the policy masks or skips for such a line is the unit PID 1 has. A decoy unit whose name
-  may be one PID 1 shortened that way is masked.
+  so what the policy masks or skips for such a line is the unit PID 1 has, but in one case that is
+  older than this release and not covered yet: a mount point or swap device in the decoy's fstab
+  written with an escape that glibc does not undo (such as `\377`), which systemd 258 and older read
+  as the escape's four characters, so that the hidden systemd of such a decoy looks for another unit
+  than the one NAILS masks or skips. A decoy unit whose name may be one PID 1 shortened that way is
+  masked.
 - The way back keeps more of the hidden session out of the decoy journal. PID 1 named every process
   of the session still running at the switch in `Sending SIGKILL to PID N (<name>)` lines after
   the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`

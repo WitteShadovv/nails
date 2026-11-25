@@ -215,12 +215,15 @@ pub fn decide(
     }
 }
 
-/// Whether the window shows its Emergency control from the start, by its own
-/// reading of `mountinfo` for the hidden volume of `engine`: where `/` is the
-/// overlay of a hidden session, and where the mount table could not be read,
-/// which leaves that untold. There the control shows, as the stricter end: in
-/// a hidden session it is the way out, on the decoy it ends nothing that the
-/// person does not ask it to.
+/// Whether the window takes itself for a hidden session from the start, by
+/// its own reading of `mountinfo` for the hidden volume of `engine`: where `/`
+/// is the overlay of a hidden session, and where the mount table could not be
+/// read, which leaves that untold. There it shows its Emergency control, and
+/// of its tools it offers at most a hidden session's (Verify, Rehearsal and
+/// Settings), never Discard Hidden Changes, Set Up Hidden Volume or
+/// Activation Options: the stricter end, as in a hidden session the control
+/// is the way out, and on the decoy it ends nothing that the person does not
+/// ask it to.
 #[must_use]
 pub fn emergency_from_start(engine: Option<&Path>, mountinfo: Result<&[u8], &str>) -> bool {
     match (engine, mountinfo) {
