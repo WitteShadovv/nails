@@ -789,6 +789,66 @@ fn a_mapping_after_a_comment_or_a_token_nix_ends_is_refused() {
     }
 }
 
+/// A name right after an operator, with no blank between them, is a name to
+/// Nix, `''` in it too: the mapping counts in a `luks.devices` block after
+/// `2 +a''`, `[ ] ++a''`, `{ } //a''`, `{ b ? 1 }@a''` and `{ b ? 1 }:a''`,
+/// which Nix 2.36 reads as the mapping `data`.
+#[test]
+fn a_mapping_after_a_name_right_after_an_operator_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for (before, entry) in [
+        ("y = let a'' = 1; in 2 +a'';", entry),
+        ("y = let a'' = [ ]; in [ ] ++a'';", entry),
+        ("y = let a'' = { }; in { } //a'';", entry),
+        ("f = { b ? 1 }@a'': 1;", entry),
+        ("f = let a'' = 1; in { b ? 1 }:a'';", entry),
+        (
+            "y = let a'' = 1; in 2 +a'';",
+            "boot.initrd.luks.devices = { inherit data; };",
+        ),
+    ] {
+        for content in [
+            format!("{{\n  {before}\n  {entry}\n}}\n"),
+            format!("{{ {before} {entry} }}"),
+        ] {
+            let scan = scan_configuration(&content);
+            assert_eq!(
+                shown_lines(&scan),
+                [ReferenceKind::MapperName],
+                "{content:?}"
+            );
+        }
+    }
+}
+
+/// Nix reads a carriage return in code as a blank, so a `luks.devices`
+/// block after one names its mapping: after `x = 1;` or a comment that a
+/// carriage return ends, and in a file whose lines end in a carriage return
+/// alone.
+#[test]
+fn a_mapping_after_a_carriage_return_in_code_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for content in [
+        format!("{{\n  x = 1;\r{entry}\n}}\n"),
+        format!("{{\n  x = 1; # note\r\r{entry}\n}}\n"),
+        format!("{{\n  x = 1; /* a */\r{entry}\n}}\n"),
+        "{\r  boot.initrd.luks.devices = {\r    data = { device = \"/dev/sdc1\"; };\r  };\r}\r"
+            .to_string(),
+    ] {
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// The kinds of the references `scan` holds, in order.
+fn shown_lines(scan: &BaseConfigScan) -> Vec<ReferenceKind> {
+    scan.references.iter().map(|found| found.kind).collect()
+}
+
 /// Where a reading by quotes and brackets alone parts from Nix's lexer, what
 /// it finds counts too: here it takes the quote in the block comment for a
 /// string, which runs on to hold `/mnt/d\ata`, and Nix reads the second

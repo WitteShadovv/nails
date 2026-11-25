@@ -31,8 +31,10 @@
 //! at its first `*/`, whatever quotes it holds (`/* a 5" disk */`), and
 //! starts at a `/*` right after a word too (`true/* … */`); a `#` comment
 //! ends at a carriage return as well as at the end of the line, and what
-//! follows the carriage return is code. A `'` continues an identifier
-//! (`a''` is a name, not the start of a string), and a URI holds every byte
+//! follows the carriage return is code, where a carriage return is a blank.
+//! A `'` continues an identifier (`a''` is a name, not the start of a
+//! string), also one right after an operator (`2 +a''`, `{ } //a''`), but
+//! not a path (`./a''` is a path and a string), and a URI holds every byte
 //! Nix allows in one, `'` and `*` among them (`http://example.org/a''`). A
 //! scanner made with [`Reading::Quotes`] reads them by quotes and brackets
 //! alone instead, and the check counts what either reading finds.
@@ -271,20 +273,26 @@ impl Scanner {
                 i += 2;
                 continue;
             }
-            if !in_comment && !is_blank(line[i]) {
+            // Nix reads a carriage return outside a string as a blank.
+            let blank = is_blank(line[i]) || (nix && line[i] == b'\r');
+            if !in_comment && !blank {
                 self.comment = None;
             }
             if attribute {
-                if is_blank(line[i]) || (in_comment && matches!(line[i], b'#' | b'*')) {
+                if blank || (in_comment && matches!(line[i], b'#' | b'*')) {
                     i += 1;
                     continue;
                 }
                 attribute = false;
                 let (attributes, named) = (defined.len(), names.len());
-                if let Some(next) =
-                    self.stack(in_comment)
-                        .definition(line, i, indent, &mut names, &mut defined)
-                {
+                if let Some(next) = self.stack(in_comment).definition(
+                    line,
+                    i,
+                    indent,
+                    nix,
+                    &mut names,
+                    &mut defined,
+                ) {
                     // The escapes of the quoted names it defines or names.
                     let quoted = defined[attributes..]
                         .iter()
@@ -548,6 +556,7 @@ impl Stack {
         line: &[u8],
         start: usize,
         indent: usize,
+        cr: bool,
         names: &mut Vec<(Range<usize>, Named)>,
         defined: &mut Vec<Range<usize>>,
     ) -> Option<usize> {
@@ -566,8 +575,8 @@ impl Stack {
             let entries = entries && names_entry(&attrs.path);
             return Some(inherit(entries, line, start + b"inherit".len(), names));
         }
-        let (components, end) = attribute_path(line, start)?;
-        let next = skip_blanks(line, end);
+        let (components, end) = attribute_path(line, start, cr)?;
+        let next = skip_space(line, end, cr);
         if line.get(next) != Some(&b'=') || line.get(next + 1) == Some(&b'=') {
             return None;
         }
@@ -584,7 +593,7 @@ impl Stack {
             }
             defined.push(range);
         }
-        let value = skip_blanks(line, next + 1);
+        let value = skip_space(line, next + 1, cr);
         if let Some(named) = value_names(&full, attrs.in_list)
             && let Some(range) = quoted(line, value)
         {
@@ -709,17 +718,17 @@ fn quoted_escapes(line: &[u8], range: Range<usize>) -> Vec<Escape> {
 type Component = (Vec<u8>, Range<usize>);
 
 /// The attribute path at `start` (`a.b."c"`, blanks allowed around each
-/// dot): its components and where it ends.
-fn attribute_path(line: &[u8], start: usize) -> Option<(Vec<Component>, usize)> {
+/// dot, and carriage returns where `cr`): its components and where it ends.
+fn attribute_path(line: &[u8], start: usize, cr: bool) -> Option<(Vec<Component>, usize)> {
     let mut components = Vec::new();
     let (first, mut end) = component(line, start)?;
     components.push(first);
     loop {
-        let dot = skip_blanks(line, end);
+        let dot = skip_space(line, end, cr);
         if line.get(dot) != Some(&b'.') {
             break;
         }
-        let Some((next, after)) = component(line, skip_blanks(line, dot + 1)) else {
+        let Some((next, after)) = component(line, skip_space(line, dot + 1, cr)) else {
             break;
         };
         components.push(next);
@@ -775,61 +784,143 @@ pub(super) fn skip_blanks(line: &[u8], from: usize) -> usize {
     })
 }
 
+/// [`skip_blanks`], past carriage returns too where `cr`, as Nix reads them
+/// outside a string.
+fn skip_space(line: &[u8], from: usize, cr: bool) -> usize {
+    from + line.get(from..).map_or(0, |rest| {
+        rest.iter()
+            .take_while(|&&b| is_blank(b) || (cr && b == b'\r'))
+            .count()
+    })
+}
+
 fn is_blank(byte: u8) -> bool {
     byte == b' ' || byte == b'\t'
 }
 
 /// The start of a token (a word, a path, a URL or a number), not the inside
-/// of one. As Nix reads it (`nix`), a word right after the `.` that selects
-/// an attribute of a value in brackets or a string starts one too
-/// (`{ a'' = 1; }.a''`).
+/// of one. As Nix reads it (`nix`), a token starts at any byte of one after
+/// a byte of none, so an operator (`+`, `++`, `//`, `@`, `:`, `.`) that
+/// starts a run of such bytes is read with the word after it.
 fn is_token_start(line: &[u8], i: usize, nix: bool) -> bool {
-    let not_in_token = |at: usize| !is_token_byte(line[at]);
-    is_identifier_byte(line[i])
-        && (i == 0
-            || not_in_token(i - 1)
-            || (nix && line[i - 1] == b'.' && (i == 1 || not_in_token(i - 2))))
+    let starts = if nix {
+        is_token_byte(line[i])
+    } else {
+        is_identifier_byte(line[i])
+    };
+    starts && (i == 0 || !is_token_byte(line[i - 1]))
 }
 
-/// Where the token that starts at `i` ends, as Nix's lexer reads it. A URI
-/// (`http://example.org/a''`) takes every byte Nix allows in one, `'` and
-/// `*` among them. Elsewhere `/*` starts a comment, also right after a word
-/// (`true/* a 5" disk */`), and `'` continues an identifier (`a''`), but not
-/// a path (`./a''` is a path and a string).
+/// Where the run of tokens that starts at `i` ends, as Nix's lexer reads
+/// it: each token is the longest of a URI, a path, an identifier, a number
+/// and an operator that starts there. So a URI (`http://example.org/a''`)
+/// takes every byte Nix allows in one, `'` and `*` among them; `'` continues
+/// an identifier (`a''`, also `2 +a''` and `{ } //a''`) but ends a path
+/// (`./a''` and `/a''` are a path and a string); and elsewhere `/*` starts a
+/// comment, also right after a word (`true/* a 5" disk */`).
 fn token_end(line: &[u8], i: usize) -> usize {
-    if let Some(end) = uri_end(line, i) {
-        return end;
-    }
     let mut at = i;
-    let mut path = false;
-    while let Some(&byte) = line.get(at) {
-        let continues = match byte {
-            b'/' => {
-                path = true;
-                line.get(at + 1) != Some(&b'*')
-            }
-            b'\'' => !path && ends_identifier(&line[i..at]),
-            _ => is_token_byte(byte),
-        };
-        if !continues {
+    while at < line.len() && !line[at..].starts_with(b"/*") {
+        let len = [
+            uri_end(line, at).map_or(0, |end| end - at),
+            path_len(line, at),
+            identifier_len(line, at),
+            number_len(line, at),
+            operator_len(line, at),
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(0);
+        if len == 0 {
             break;
         }
-        at += 1;
+        at += len;
     }
-    at
+    at.max(i + 1)
 }
 
-/// Whether `text`, the token read so far, ends in an identifier, which a `'`
-/// continues: its last part, after the last byte no identifier holds, has a
-/// letter or `_`, from which on Nix reads it as one (`1a` is `1` and `a`).
-fn ends_identifier(text: &[u8]) -> bool {
-    let start = text
+/// A byte Nix allows in a path.
+fn is_path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+}
+
+/// The length of the path that starts at `at`, as Nix's lexer reads one:
+/// path bytes or `~`, then one or more `/` each followed by path bytes, and
+/// a `/` after them; or the part before an interpolation (`./a/${x}`). 0
+/// where none starts.
+fn path_len(line: &[u8], at: usize) -> usize {
+    let mut end = at;
+    if line[at] == b'~' {
+        end += 1;
+    } else {
+        end += line[at..].iter().take_while(|&&b| is_path_byte(b)).count();
+    }
+    let mut parts = 0;
+    while line.get(end) == Some(&b'/') && line.get(end + 1).is_some_and(|&b| is_path_byte(b)) {
+        end += 1;
+        end += line[end..].iter().take_while(|&&b| is_path_byte(b)).count();
+        parts += 1;
+    }
+    if line.get(end) == Some(&b'/') && (parts > 0 || line[end + 1..].starts_with(b"${")) {
+        end += 1;
+    } else if parts == 0 {
+        return 0;
+    }
+    end - at
+}
+
+/// The length of the identifier that starts at `at`: a letter or `_`, then
+/// letters, digits, `_`, `'` and `-`. 0 where none starts.
+fn identifier_len(line: &[u8], at: usize) -> usize {
+    if !(line[at].is_ascii_alphabetic() || line[at] == b'_') {
+        return 0;
+    }
+    1 + line[at + 1..]
         .iter()
-        .rposition(|&b| !(is_identifier_byte(b) || b == b'\''))
-        .map_or(0, |at| at + 1);
-    text[start..]
-        .iter()
-        .any(|&b| b.is_ascii_alphabetic() || b == b'_')
+        .take_while(|&&b| is_identifier_byte(b) || b == b'\'')
+        .count()
+}
+
+/// The length of the number that starts at `at`: digits, or digits around a
+/// `.` and an exponent after them. 0 where none starts.
+fn number_len(line: &[u8], at: usize) -> usize {
+    let digits = |from: usize| {
+        line.get(from..).map_or(0, |rest| {
+            rest.iter().take_while(|b| b.is_ascii_digit()).count()
+        })
+    };
+    let mut end = at + digits(at);
+    let mut fraction = false;
+    if line.get(end) == Some(&b'.') && (end > at || digits(end + 1) > 0) {
+        end += 1 + digits(end + 1);
+        fraction = true;
+    }
+    if fraction
+        && matches!(line.get(end), Some(b'e' | b'E'))
+        && line.get(end + 1..).is_some_and(|rest| {
+            let sign = usize::from(matches!(rest.first(), Some(b'+' | b'-')));
+            rest.get(sign).is_some_and(u8::is_ascii_digit)
+        })
+    {
+        end += 1;
+        end += usize::from(matches!(line.get(end), Some(b'+' | b'-')));
+        end += digits(end);
+    }
+    end - at
+}
+
+/// The length of the operator of token bytes that starts at `at`: `//` and
+/// `++`, or one of `.`, `/`, `~`, `+`, `-`, `@` and `:`. 0 where none
+/// starts.
+fn operator_len(line: &[u8], at: usize) -> usize {
+    if line[at..].starts_with(b"//") || line[at..].starts_with(b"++") {
+        2
+    } else {
+        usize::from(matches!(
+            line[at],
+            b'.' | b'/' | b'~' | b'+' | b'-' | b'@' | b':'
+        ))
+    }
 }
 
 /// The end of the URI that starts at `i`, if one does, as Nix's lexer reads

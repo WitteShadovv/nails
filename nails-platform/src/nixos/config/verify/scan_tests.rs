@@ -232,14 +232,16 @@ fn the_code_after_a_comment_or_a_token_nix_ends_is_read_as_code() {
     assert_eq!(names(&text), [mapping(2, "data")], "{text:?}");
 }
 
-/// Where Nix reads a string, so does the scanner: `''` after a path or a
-/// number opens one, as does `"` after a URI. An entry inside it names
+/// Where Nix reads a string, so does the scanner: `''` after a path
+/// (`./a`, `/a`) or a number opens one, as does `"` after a URI. An entry inside it names
 /// nothing.
 #[test]
 fn a_string_or_a_comment_after_a_path_is_read_as_one() {
     for text in [
         "{ y = ./a''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
         "{ y = 1''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
+        "{ y = /a''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
+        "{ y = 2 + /a''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
         "{ y = http://example.org/a\"{ boot.initrd.luks.devices = { data = { }; }; }\"; }",
     ] {
         assert_eq!(names(text), [], "{text:?}");
