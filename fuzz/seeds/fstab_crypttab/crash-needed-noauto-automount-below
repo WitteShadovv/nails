@@ -1,0 +1,6 @@
+/dev/vda6 /var/cache ext4 noauto 0 0
+tmpfs /var/cache/t tmpfs defaults 0 0
+/dev/vdc1 /srv/crlf ext4 noauto 0 0
+/dev/vdd1 /srv/crlf/d ext4 defaults 0 2
+/dev/vde1 /boot/var/cache ext4 noauto 0 0
+tmpfs /boot/var/cache/t tmpfs x-systemd.requires=/boot/var/cache 0 0

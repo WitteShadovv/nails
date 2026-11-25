@@ -107,10 +107,23 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
             // The mask of a noauto line nothing pulls in yields to a skip
-            // of its unit that waits for its device.
-            for unit in decision.masked_units() {
+            // of its unit that waits for its device. The mask of any noauto
+            // line, one kept off for another reason too (a network
+            // filesystem, a line at or below the hidden root), yields its
+            // mount, its first unit, to a skip where a line the boot starts
+            // needs that mount: the boot mounts it whatever `noauto` says.
+            let needed = entry.is_noauto()
+                && matches!(
+                    decision,
+                    Decision::Mask {
+                        unreached: None,
+                        ..
+                    }
+                );
+            for (at, unit) in decision.masked_units().iter().enumerate() {
                 assert!(
-                    kept.masks.contains(unit) || (decision.is_noauto_mask() && skipped(unit)),
+                    kept.masks.contains(unit)
+                        || (skipped(unit) && (decision.is_noauto_mask() || (needed && at == 0))),
                     "{unit}"
                 );
             }
