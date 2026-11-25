@@ -282,7 +282,9 @@ fn device_of(fstab: &[FstabEntry], unit: &str) -> Option<Option<PathBuf>> {
 /// [`KeptOff::unsure`].
 ///
 /// The mask of a `noauto` line that nothing NAILS reads pulls in
-/// ([`Decision::is_noauto_mask`]) is the one exception: a skip of the same
+/// ([`Decision::is_noauto_mask`]), and the automount the decision for such a
+/// line carries where a line needs its mount ([`Decision::noauto_held`]),
+/// are the one exception: a skip of the same
 /// unit that waits for the device the line gives keeps it off instead, as it
 /// starts nothing either, and pulls in what the line's unit pulls in that
 /// acts on its device too ([`checkers`]). A skip that waits for another
@@ -297,12 +299,15 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     let mut masks: Vec<String> = Vec::new();
     let mut noauto: Vec<String> = Vec::new();
     for decision in decisions {
-        let into = if decision.is_noauto_mask() {
-            &mut noauto
-        } else {
-            &mut masks
-        };
-        into.extend(decision.masked_units().iter().cloned());
+        let held = decision.noauto_held();
+        for unit in decision.masked_units() {
+            let into = if held.contains(unit) {
+                &mut noauto
+            } else {
+                &mut masks
+            };
+            into.push(unit.clone());
+        }
     }
     // Each skip with whether NAILS reads that a boot target requires it.
     let mut skips: Vec<(Skip, bool)> = decisions
