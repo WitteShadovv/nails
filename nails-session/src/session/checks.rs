@@ -51,7 +51,6 @@ use crate::platform::{HostProfile, upgrade_hint};
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use nails_teardown::whole_root::logind;
-use nails_teardown::whole_root::plan::Skip;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -381,17 +380,18 @@ impl<F: Filesystem> PreFlightCheck<F> for ShutdownInhibitorsCheck {
 /// masked instead ([`mount_units::kept_off`]). A refusal names what to do
 /// about it ([`Decision::remedy`]).
 pub fn judge_fstab(decisions: &[Decision], unskipped: &[String]) -> CheckResult {
-    judge_fstab_not_looked_up(decisions, &[], unskipped, &|_| false)
+    let kept = policy::runtime_units(&[], decisions);
+    judge_fstab_not_looked_up(decisions, &kept, unskipped, &|_| false)
 }
 
-/// [`judge_fstab`], with `skips`, what the hidden session skips
+/// [`judge_fstab`], with `kept`, what the hidden session masks and skips
 /// ([`mount_units::kept_off`]), where `not_looked_up` tells a path the
 /// automount guard did not look up: a refusal of one is left without a fix
 /// of its own, since the check's [`settle`] gives the one that mounts the
 /// automount point.
 fn judge_fstab_not_looked_up(
     decisions: &[Decision],
-    skips: &[Skip],
+    kept: &policy::KeptOff,
     unskipped: &[String],
     not_looked_up: &dyn Fn(&Path) -> bool,
 ) -> CheckResult {
@@ -416,7 +416,7 @@ fn judge_fstab_not_looked_up(
     let notable: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, Decision::Leave { .. }))
-        .map(|d| d.describe_kept(skips))
+        .map(|d| d.describe_kept(&kept.masks, &kept.skips))
         .collect();
     let kept_off_mounts = decisions.iter().any(|d| {
         let units = d
@@ -601,7 +601,7 @@ impl FstabPolicyCheck {
             let at = root.join(target.strip_prefix("/").unwrap_or(target));
             skipped.iter().any(|skip| skip.path == at)
         };
-        let result = judge_fstab_not_looked_up(&decisions, &kept.skips, &unskipped, &not_looked_up);
+        let result = judge_fstab_not_looked_up(&decisions, &kept, &unskipped, &not_looked_up);
         refused_where_not_looked_up(result, &skipped)
     }
 }

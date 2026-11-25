@@ -67,6 +67,57 @@ impl KeptOff {
     }
 }
 
+impl Decision {
+    /// [`Decision::describe`], given `masks` and `skips`, what the hidden
+    /// session masks and skips ([`super::super::mount_units::kept_off`]), as
+    /// `check`, its list of the decoy filesystems and activation's list all
+    /// say. The mask of a `noauto` line ([`Decision::is_noauto_mask`]) whose
+    /// mount the hidden session skips in its place, as a unit a boot target
+    /// requires needs it or a skip of the same unit waits for its device, is
+    /// described as skipped; one whose mount it neither masks nor skips, as a
+    /// unit file of its name that a boot target links outranks the line, as
+    /// left to that unit file, which is decided as a unit of its own. A skip
+    /// whose units the session masks after all is described as masked.
+    pub fn describe_kept(&self, masks: &[String], skips: &[Skip]) -> String {
+        let skipped = |unit: &String| skips.iter().any(|skip| skip.units.contains(unit));
+        match self {
+            Decision::Mask {
+                target,
+                units,
+                reason,
+                ..
+            } if self.is_noauto_mask() => match units.first() {
+                Some(mount) if skipped(mount) => {
+                    format!("{}: skipped ({reason})", target.display())
+                }
+                Some(mount) if !masks.contains(mount) => format!(
+                    "{}: left to the unit file of {mount} (noauto, but a unit file of that \
+                     name that a boot target links outranks the line, and is decided as a unit \
+                     of its own)",
+                    target.display()
+                ),
+                _ => self.describe(),
+            },
+            Decision::Skip {
+                target,
+                skip,
+                reason,
+                ..
+            } if skip
+                .units
+                .iter()
+                .any(|unit| masks.contains(unit) && !skipped(unit)) =>
+            {
+                format!(
+                    "{}: masked rather than skipped ({reason})",
+                    target.display()
+                )
+            }
+            _ => self.describe(),
+        }
+    }
+}
+
 /// What [`KeptOff::needed_noauto`] did with the mount of a `noauto` line
 /// that a unit the hidden boot starts requires.
 #[derive(Debug, Clone, PartialEq, Eq)]

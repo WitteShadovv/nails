@@ -512,8 +512,10 @@ fn filesystems_without_mount_table(error: &str) -> Vec<String> {
 /// root as activation resolves them, given the decoy's mount table `mounts`,
 /// and with the decoy's mount, swap and automount units outside its fstab.
 /// `present` tells whether a device is there now. An entry the policy leaves
-/// as it is, such as the root itself, is not listed, and a `noauto` line whose
-/// mount the hidden session skips in place of its mask is listed as skipped
+/// as it is, such as the root itself, is not listed, and each other is listed
+/// as the hidden session keeps it off: a `noauto` line whose mount it skips in
+/// place of its mask as skipped, one whose mask yields to a unit file as left
+/// to it, and a skip it masks after all as masked
 /// ([`crate::session::policy::Decision::describe_kept`]).
 ///
 /// Each lookup is asked of the automount guard by `snapshot` first, as the
@@ -571,7 +573,7 @@ fn decoy_filesystems<F: Filesystem>(
     let mut lines: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
-        .map(|d| d.describe_kept(&kept.skips))
+        .map(|d| d.describe_kept(&kept.masks, &kept.skips))
         .collect();
     lines.extend(unread);
     let named = lines.join("\n");

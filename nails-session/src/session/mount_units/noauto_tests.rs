@@ -165,6 +165,16 @@ fn a_unit_file_that_outranks_a_noauto_line_s_unit_is_decided_as_a_unit() {
         );
         assert!(kept.required_masks.is_empty(), "{links}: {kept:?}");
         assert!(warnings.is_empty(), "{links}: {warnings:?}");
+        // The lists say so: they said masked.
+        let line = decisions
+            .iter()
+            .find(|decision| decision.is_noauto_mask())
+            .map(|decision| decision.describe_kept(&kept.masks, &kept.skips))
+            .unwrap_or_else(|| panic!("{links}: {decisions:?}"));
+        assert!(
+            line.starts_with("/r/a: left to the unit file of r-a.mount ("),
+            "{links}: {line}"
+        );
     }
 }
 
@@ -412,7 +422,7 @@ fn reset_conditions(decoy: &Decoy, unit: &str) {
 /// the mount for a path (`RequiresMountsFor=`, a mount point below it), the
 /// warning said so too, and the mask was recorded, but systemd 260.5 starts
 /// such a unit without the mount: the warning says may, and nothing is
-/// recorded.
+/// recorded. The lists say masked.
 #[test]
 fn a_noauto_skip_masked_after_all_says_may_where_a_unit_needs_it_for_a_path() {
     for (name, unit, by_path) in [
@@ -440,7 +450,7 @@ fn a_noauto_skip_masked_after_all_says_may_where_a_unit_needs_it_for_a_path() {
             &format!("../{name}"),
         );
         reset_conditions(&decoy, "r-a.mount");
-        let (_, kept, warnings) = kept(&decoy, PULLED_LINE);
+        let (decisions, kept, warnings) = kept(&decoy, PULLED_LINE);
         assert!(
             kept.masks.iter().any(|mask| mask == "r-a.mount"),
             "{name}: {kept:?}"
@@ -471,6 +481,12 @@ fn a_noauto_skip_masked_after_all_says_may_where_a_unit_needs_it_for_a_path() {
             by_path,
             "{name}: {warnings:?}"
         );
+        let line = decisions
+            .iter()
+            .find(|decision| decision.is_noauto_mask())
+            .map(|decision| decision.describe_kept(&kept.masks, &kept.skips))
+            .unwrap_or_else(|| panic!("{name}: {decisions:?}"));
+        assert!(line.starts_with("/r/a: masked ("), "{name}: {line}");
     }
 }
 
@@ -481,7 +497,8 @@ fn a_noauto_skip_masked_after_all_says_may_where_a_unit_needs_it_for_a_path() {
 /// warning says the target will not be reached, and the mask is recorded.
 /// Where it needs it only as the mount for a path (a mount point below it,
 /// `x-systemd.requires-mounts-for=`), the warning said so too, and the mask
-/// was recorded: it says may, and nothing is recorded.
+/// was recorded: it says may, and nothing is recorded. The lists said
+/// skipped: they say masked.
 #[test]
 fn a_needed_noauto_skip_masked_after_all_says_may_where_lines_need_it_for_a_path() {
     for (needer, by_path) in [
@@ -495,7 +512,7 @@ fn a_needed_noauto_skip_masked_after_all_says_may_where_lines_need_it_for_a_path
         let decoy = Decoy::new();
         reset_conditions(&decoy, "n-a.mount");
         let fstab = format!("/dev/vdn1 /n/a ext4 noauto 0 0\n{needer}");
-        let (_, kept, warnings) = kept(&decoy, &fstab);
+        let (decisions, kept, warnings) = kept(&decoy, &fstab);
         assert!(
             kept.masks.iter().any(|mask| mask == "n-a.mount"),
             "{needer}: {kept:?}"
@@ -518,6 +535,15 @@ fn a_needed_noauto_skip_masked_after_all_says_may_where_lines_need_it_for_a_path
             warnings[0].contains("so the hidden session may not reach that target"),
             by_path,
             "{needer}: {warnings:?}"
+        );
+        let line = decisions
+            .iter()
+            .find(|decision| decision.skip().is_some())
+            .map(|decision| decision.describe_kept(&kept.masks, &kept.skips))
+            .unwrap_or_else(|| panic!("{needer}: {decisions:?}"));
+        assert!(
+            line.starts_with("/n/a: masked rather than skipped (noauto, but the line for "),
+            "{needer}: {line}"
         );
     }
 }

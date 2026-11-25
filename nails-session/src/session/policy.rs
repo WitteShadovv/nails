@@ -505,30 +505,6 @@ impl Decision {
         }
     }
 
-    /// [`Decision::describe`], given `skips`, what the hidden session skips
-    /// ([`super::mount_units::kept_off`]): the mask of a `noauto` line
-    /// ([`Decision::is_noauto_mask`]) whose mount the hidden session skips in
-    /// its place, as a unit a boot target requires needs it or a skip of the
-    /// same unit waits for its device, is described as skipped. `check`, its
-    /// list of the decoy filesystems and activation's list all say so.
-    pub fn describe_kept(&self, skips: &[Skip]) -> String {
-        match self {
-            Decision::Mask {
-                target,
-                units,
-                reason,
-                ..
-            } if self.is_noauto_mask()
-                && units
-                    .first()
-                    .is_some_and(|mount| skips.iter().any(|skip| skip.units.contains(mount))) =>
-            {
-                format!("{}: skipped ({reason})", target.display())
-            }
-            _ => self.describe(),
-        }
-    }
-
     /// What the operator should know about this decision before the switch:
     /// a mask that keeps a boot target from being reached.
     pub fn warning(&self) -> Option<String> {

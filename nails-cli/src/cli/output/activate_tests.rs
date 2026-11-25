@@ -148,9 +148,12 @@ fn an_entering_result_lists_the_system_filesystems_and_masks() {
 /// A noauto line of a decoy disk that the entry skips in place of its mask
 /// ([`Plan::skips`], as a unit a boot target requires needs its mount) is
 /// listed as skipped, as `check` lists it. It was listed as masked, as the
-/// decision for the line alone says. Without the skip it stays masked.
+/// decision for the line alone says. Masked ([`Plan::masks`]) it says masked.
+/// Neither, as a unit file of its name that a boot target links outranks the
+/// line, it is listed as left to that unit file: it said masked.
 ///
 /// [`Plan::skips`]: nails_teardown::whole_root::plan::Plan::skips
+/// [`Plan::masks`]: nails_teardown::whole_root::plan::Plan::masks
 #[test]
 fn a_noauto_line_the_entry_skips_is_listed_as_skipped() {
     use nails_core::session::{fstab::parse_fstab, policy};
@@ -164,18 +167,30 @@ fn a_noauto_line_the_entry_skips_is_listed_as_skipped() {
     );
     let line = "(noauto, but a unit that pulls it in would have the hidden session mount it \
                 read-write)";
-    for (skipped, said) in [(true, "skipped"), (false, "masked")] {
+    let yielded = "/r/a: left to the unit file of r-a.mount (noauto, but a unit file of that \
+                   name that a boot target links outranks the line, and is decided as a unit of \
+                   its own)";
+    for (kept, said) in [
+        ("skipped", format!("/r/a: skipped {line}")),
+        ("masked", format!("/r/a: masked {line}")),
+        ("neither", yielded.to_string()),
+    ] {
         let mut entry = entry(Vec::new());
         entry.decisions = decisions.clone();
-        if skipped {
-            entry.plan.skips = vec![Skip {
-                units: vec!["r-a.mount".to_string()],
-                pulled: Vec::new(),
-                device: Some("/dev/vdy1".into()),
-            }];
+        entry.plan.masks = vec!["r-a.automount".to_string()];
+        match kept {
+            "skipped" => {
+                entry.plan.skips = vec![Skip {
+                    units: vec!["r-a.mount".to_string()],
+                    pulled: Vec::new(),
+                    device: Some("/dev/vdy1".into()),
+                }];
+            }
+            "masked" => entry.plan.masks.push("r-a.mount".to_string()),
+            _ => {}
         }
         let data = activate_data(&ActivateResult::Entering(&entry), 1.0);
-        assert_eq!(data.filesystems, [format!("/r/a: {said} {line}")]);
+        assert_eq!(data.filesystems, [said], "{kept}");
     }
 }
 
