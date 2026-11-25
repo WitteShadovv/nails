@@ -22,8 +22,9 @@
 NAILS is a command-line tool that runs a hidden session on an ordinary-looking
 ("decoy") Linux system. It soft-reboots the machine into one OverlayFS overlay
 over the whole decoy root, with every change written to an encrypted hidden
-volume you provide, and soft-reboots back to the plain decoy when you are done.
-Nothing that starts the hidden session is installed on the decoy.
+volume you provide. When you are done it powers the machine off, and the decoy
+boots afresh at the next power-on. Nothing that starts the hidden session is
+installed on the decoy.
 
 Website and documentation: [nails.run](https://nails.run)
 
@@ -61,9 +62,9 @@ writes through the decoy's mounted filesystems lands in the upper on the hidden
 volume. The few writes that go around the mount layer (a disk the session mounts
 itself, EFI variables) are listed under
 [residual channels](docs/threat-model.md#residual-channels).
-`nails deactivate` soft-reboots back into the plain decoy root and closes the
-hidden volume on the way. `nails emergency` does the
-same at once, or powers the machine off.
+`nails deactivate` stops every hidden program and powers the machine off. A
+hidden session never goes back to the decoy: the kernel that ran it ends with
+it. `nails emergency` kills the hidden session at once and powers off too.
 
 NAILS does **not** encrypt anything itself. The hidden volume, and its
 deniability, come from the storage backend you choose; see
@@ -113,14 +114,16 @@ What it helps with:
 What it does **not** protect against:
 
 - anyone with access to the **running** machine, memory forensics, or cold-boot
-  attacks (power off after a session: a soft-reboot keeps RAM);
+  attacks (every session ends in a power-off, but RAM keeps data for a while
+  after it);
 - **network and remote records**: the hidden session shares the decoy's kernel,
   machine-id, hostname, MAC addresses and, by default, its user account and
   home; ISPs, VPNs and online services see whatever it does;
 - compelled disclosure of the **hidden** volume, physical or repeated coercion,
   or an adversary who images the disk more than once and compares;
 - a persistent decoy: a journal, syslog or audit log on the decoy disk records
-  the soft-reboots. Activation refuses such a decoy unless you override it;
+  the soft-reboot into the session. Activation refuses such a decoy unless you
+  override it;
 - firmware or hardware compromise, keyloggers, side channels, or a compromised
   root on the decoy.
 
@@ -135,9 +138,9 @@ model is written down; read it before relying on NAILS.
 | A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
 | Linux 6.1 or newer | The default kernel of Debian 13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. NAILS keeps the programs it starts as root from changing the decoy's access times, and the service manager while it reads the decoy from changing those on the decoy's local disk mounts, through `mount_setattr` (Linux 5.12). The `kernel-version` check refuses an older kernel, and one whose release it cannot read or tell the version of, and names the running release. |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no tuned logging to a file, no armed kdump, no unattended-upgrades set to install at shutdown, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit, tuned, kdump and install-at-shutdown refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
-| A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
+| A decoy root on a block device | ext4, xfs, btrfs or f2fs. Activation refuses a RAM, overlay or ZFS root. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
-| Host tools | `systemctl` and `loginctl` (systemd), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. Activation is refused while one is missing; `nails check` names it and the package that provides it. The decoy needs no `ip`, `nft` or `iw`: NAILS asks the kernel itself for the links, rules and firewall tables a session adds, and the way back deletes them the same way. |
+| Host tools | `systemctl` and `loginctl` (systemd), `dmsetup` when the hidden volume is on device-mapper, and `nix` on NixOS. Activation is refused while one is missing; `nails check` names it and the package that provides it. The decoy needs no `ip`, `nft` or `iw`. |
 | Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `discard` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
@@ -158,7 +161,7 @@ soft-reboot.
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
 | Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). Once Fedora is admitted, its gate will check the edition too: Cloud will be the tested edition, so Workstation, KDE Plasma Desktop, any other edition and a Fedora host whose os-release names none will run with a warning. Its derivatives Nobara and Ultramarine will need release 44 or newer. |
 | ostree and image-based hosts | Refused | NAILS cannot overlay an immutable system. |
-| Non-systemd hosts (OpenRC, runit, ...) | Refused | The session is entered and left with a systemd soft-reboot. |
+| Non-systemd hosts (OpenRC, runit, ...) | Refused | The session is entered with a systemd soft-reboot. |
 
 Also refused by the pre-flight checks:
 
@@ -412,17 +415,16 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    operator guide says how to
    [turn that off for the hidden session alone](docs/operator-guide.md#inherited-autostart-services-and-autologin).
 
-5. **Verify, then return** from inside the hidden session:
+5. **Verify, then end the session** from inside the hidden session:
 
    ```bash
    sudo /mnt/data/nails verify --deep
-   sudo /mnt/data/nails deactivate --poweroff
+   sudo /mnt/data/nails deactivate
    ```
 
-   `deactivate` without `--poweroff` returns to the decoy's login screen (or,
-   with display-manager autologin, to its desktop).
-   Powering off is what clears RAM; leave the machine off for a few minutes
-   before handing it over.
+   `deactivate` stops every hidden program and powers the machine off. RAM
+   keeps data for a while after that. Leave the machine off for a few minutes
+   before you hand it over. The decoy boots afresh at the next power-on.
 
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
@@ -455,21 +457,26 @@ flowchart LR
     H["Hidden session<br/>whole-root overlay,<br/>upper on the hidden volume"]
     O["Powered off<br/>RAM decays"]
     D -->|"nails activate<br/>(soft-reboot)"| H
-    H -->|"nails deactivate<br/>(orderly stop, soft-reboot)"| D
-    H -->|"nails emergency<br/>(kill everything, soft-reboot)"| D
-    H -.->|"--poweroff"| O
+    H -->|"nails deactivate<br/>(orderly stop, power-off)"| O
+    H -->|"nails emergency<br/>(kill everything, power-off)"| O
+    D -.->|"entry fails at the switch<br/>(power-off)"| O
+    O -->|"power on<br/>(fresh boot)"| D
     D -.->|"nails recover<br/>(after an interrupted activation)"| D
 ```
 
 | Step | Runs on | What happens | What you see |
 |---|---|---|---|
 | `activate` | the decoy | Pre-flight checks, a read-only residue baseline of the decoy (report on the hidden volume), the root overlay at `/run/nextroot`, on NixOS the hidden system built into the overlay, then the soft-reboot. Ctrl+C before the switch rolls everything back. | Progress and a summary, then your terminal closes and the screen shows a text console for a few seconds. The hidden session starts at its own login screen; a display manager set to log an account in automatically logs it in again. |
-| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs the top of `/run` of what the session added, deletes the runtime journal, which the decoy shares with it, and puts most of the decoy's network state back. When a link, MAC address, policy-routing rule or nftables table it sets out to undo is still the session's afterwards, or it cannot read them back, it powers off instead of returning (see the [safety notes](#safety-notes)). | Programs close as at a logout. The decoy starts at its own login screen; a display manager set to log an account in automatically logs it in again. The hidden volume is unmounted and closed. When the last step powers off instead, the machine turns off; `deactivate` says so before it asks where it can already tell. |
-| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`), all but the emergency command itself and the service manager's own units, which the shutdown stops moments later. It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off, and its last step powers off instead of returning wherever it does after `deactivate`. | A few seconds of text console, then the decoy's normal login screen: log in with the decoy password. NAILS logs nobody in; a display manager set to log an account in automatically logs it in again, as at boot. When the last step powers off instead, the machine turns off. |
-| `--poweroff` | either command | Powers off instead of returning to the decoy. | The machine turns off. |
+| `deactivate` | the hidden session | Refuses while a program blocks shutdown. Otherwise it records the session as ended and starts an orderly power-off: every hidden program stops, every filesystem is unmounted, the hidden volume's mappings are removed, and the machine turns off. | Programs close as at a shutdown, then the machine turns off. |
+| `emergency` | the hidden session | Kills every interactive shell, enqueues the power-off, then kills every hidden program at once (`cgroup.kill`), all but the emergency command itself and the service manager's own units. It acts immediately; `--countdown` adds an abortable wait. `--reboot` reboots fully through the firmware instead. When the power-off cannot be enqueued, it asks the kernel directly. | The machine turns off within seconds. |
 | `recover` | the decoy | Removes what an interrupted activation left in `/run` and resets the state. Never reboots. | A short report. |
 
-Both transitions log you out. Save your work first.
+Activation logs you out, and every ending powers off. Save your work first.
+
+If the last step before the switch cannot do its work, the machine powers off
+instead of entering the hidden session. The screen gives no reason. `nails
+status` shows it once you open the hidden volume again. A failure before that
+step can read the session plan keeps no reason.
 
 <img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.8s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
@@ -498,27 +505,14 @@ object is the `data` of a one-line versioned envelope (`schema_version` 2);
 - **The hidden volume must stay mounted for the whole session.** It is
   kernel-managed for that reason: a FUSE mount dies with the programs at the
   soft-reboot.
-- **A soft-reboot leaves traces in RAM**: the kernel ring buffer, the
-  soft-reboot counter (two per session, on systemd 256 and newer) and the
-  unchanged boot ID and uptime.
-  Power off after a session when that matters. A warm reboot does not clear RAM
-  either.
-- **The way back puts only part of the session's network state back**: it
-  deletes the links, policy-routing rules and firewall tables the session
-  added and sets MAC addresses, the hostname and the network settings back,
-  but the addresses and routes the session gave the decoy's own devices, and
-  the other cases the operator guide lists, stay until power-off. It powers
-  off instead of returning when what it sets out to undo is still the
-  session's afterwards: a virtual link or a Wi-Fi interface on one of the
-  decoy's radios that the session added, the MAC address of one of the
-  decoy's devices, or a policy-routing rule or nftables table the session
-  added, where activation could list the decoy's own; and when it cannot read
-  the links, rules or tables back. It asks the kernel itself for all of it,
-  and runs no `ip`, `nft` or `iw`. A
-  hostname or network setting it cannot write back does not count, and
-  neither does what it leaves alone. Take VPN connections down and stop
-  containers and virtual machines before you deactivate, or end with
-  `deactivate --poweroff`. See the
+- **Every session ends in a power-off.** A hidden session never goes back to
+  the decoy. `deactivate`, `emergency`, the backend watcher and the window's
+  Emergency control all power the machine off, and so does a switch that
+  hangs for 30 minutes. The kernel's memory, its log, its network state and
+  its process counter end with it, and the decoy boots afresh at the next
+  power-on. RAM keeps data for a while after the power-off: leave the machine
+  off for a few minutes before you hand it over. A warm reboot
+  (`emergency --reboot`) does not clear RAM. See the
   [operator guide](docs/operator-guide.md#how-it-works).
 - **Do not suspend during a session.** Suspend keeps the whole hidden session
   and the volume key in RAM. Set the lid switch to `lock` and
@@ -530,7 +524,7 @@ object is the `data` of a one-line versioned envelope (`schema_version` 2);
 - **A clean `nails verify` is evidence, not proof.** It checks for known
   artifacts and lists what it did not check.
 - **Panic button:** bind a key to a root-owned unit that runs
-  `nails emergency --poweroff`, defined only in the hidden configuration. Never
+  `nails emergency`, defined only in the hidden configuration. Never
   give the binary a passwordless `sudo` rule. See the
   [operator guide](docs/operator-guide.md#panic-switch).
 
@@ -560,9 +554,10 @@ See [the operator guide](docs/operator-guide.md#copy-up-cost-and-shadowed-decoy-
 <details>
 <summary><b>Troubleshooting</b></summary>
 
-In the hidden session the way out is always `deactivate`, then `emergency`, then a
-power-off. A power-off is always safe: nothing of the session is installed on the
-decoy and everything NAILS puts in `/run` is gone at power-off.
+In the hidden session the way out is `deactivate`, then `emergency`, then the
+power button. Each ends in a power-off. A power-off is always safe: nothing of
+the session is installed on the decoy and everything NAILS puts in `/run` is
+gone at power-off.
 
 | Situation | What to do |
 |---|---|
@@ -573,6 +568,7 @@ decoy and everything NAILS puts in `/run` is gone at power-off.
 | The hidden volume failed (USB pulled, I/O errors) | Run the RAM copy activation left behind: `sudo /run/overlay-runtime/control emergency`. Power off if that does not respond. |
 | The hidden volume is full | Free space inside the session, or deactivate and `discard` a large path from the decoy. Never delete files out of the upper by hand. |
 | Power loss or crash | The decoy boots normally. If `nails status` reports a mismatched state, run `nails recover` once. |
+| The machine turned off during `activate` | The last step before the switch refused the entry. Boot the decoy, open the hidden volume and run `nails status`: it names the reason. |
 
 The full runbook, including cleaning up by hand when `recover` cannot run, is in
 [the operator guide](docs/operator-guide.md#when-things-go-wrong).
@@ -590,7 +586,8 @@ betray one — while a LUKS volume is visibly an encrypted volume. NAILS adds
 nothing to the backend's claim. It keeps the *session* off the decoy.
 
 **Can I keep working on the decoy while the hidden session runs?** No. Only one
-of them runs at a time; switching logs you out of the other.
+of them runs at a time. Activation logs you out of the decoy, and the session
+ends in a power-off.
 
 **Why does it need a soft-reboot?** Every process of the hidden session then
 starts inside the overlay, so there is nothing on the decoy side to find,
@@ -604,7 +601,7 @@ persona gives it an empty home instead. See
 [persona modes](docs/configuration.md#persona-modes).
 
 **Does it work on a persistent decoy?** Only with `--allow-persistent-decoy`,
-and then the decoy's journal records the soft-reboots and the activation
+and then the decoy's journal records the soft-reboot and the activation
 command, tuned logging to a file records them in its log, an armed kdump can
 write a crashed session's memory to the decoy disk, and unattended-upgrades
 set to install at shutdown installs the pending updates there at every
@@ -628,8 +625,8 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | `init <PATH>` | decoy | Lay out a mounted hidden volume |
 | `check` | decoy | Report readiness to activate, leaving no file or mount behind but in rare cases |
 | `activate` | decoy | Soft-reboot into the hidden session |
-| `deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
-| `emergency` | either | Kill the hidden session at once and return (or power off); on the decoy, remove an interrupted activation |
+| `deactivate` | hidden session | End the hidden session and power off |
+| `emergency` | either | Kill the hidden session at once and power off (or reboot); on the decoy, remove an interrupted activation |
 | `recover` | decoy | Remove what an interrupted activation left in `/run` |
 | `status` | either | The live session, security posture and hidden-volume space |
 | `verify` | hidden session | Scan for known artifacts (live, or `--offline` against a decoy image) |
@@ -678,7 +675,7 @@ may run to several lines, and `next`: the command to run next, without the
 binary's path (`{"command": "recover"}`), or `null`. A cancel, whether a "no"
 at a prompt or a Ctrl+C (or SIGTERM) that stops a command before its result,
 reports the error `cancelled` (with no `data`) and exits `130`. A change that
-cannot stop halfway (the way back, `recover`, the deletion of `discard`, an
+cannot stop halfway (the end of a session, `recover`, the deletion of `discard`, an
 activation past its point of no return) runs to its end and reports its result.
 An internal error reports the error `internal_error` and exits `1`; one that
 comes after the command printed its result leaves that envelope as it is, `ok`
