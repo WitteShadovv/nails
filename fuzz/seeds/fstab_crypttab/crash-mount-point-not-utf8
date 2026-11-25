@@ -1,0 +1,6 @@
+/dev/vda2 / ext4 defaults 0 1
+/dev/vda3 /home/u\377 ext4 defaults 0 2
+/dev/vdb1 /srv/x etime - ext4 /dev/vda2 rw
+3 1 8:3 / /home/uÿ rw - ext4 /dev/vda3 rw
+8 1 253:0 / /mnt/data rw - ext4 /dev/mapper/dataþ rw
+9 1 0:9 / /srv/ý rw - tmpfs tmpfs rw,size=1ÿ

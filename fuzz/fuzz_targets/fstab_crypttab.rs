@@ -57,7 +57,7 @@ use nails_session::session::policy::{
     Decision, Unskippable, decide, decide_all, decide_hidden_fstab, decide_redirected,
     runtime_units,
 };
-use nails_teardown::mountinfo::parse_mountinfo;
+use nails_teardown::mountinfo::{escaped_text, parse_mountinfo};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 
@@ -80,9 +80,11 @@ const MOUNTS: &str = "\
 
 fuzz_target!(|data: &[u8]| {
     let parts = nails_fuzz::parts(data, 3);
-    let fstab = parse_fstab(&parts[0]);
-    // The mount table byte for byte, as NAILS reads it.
     let table = nails_fuzz::byte_parts(data, 3);
+    // The fstab as the session reads the decoy's: a byte that is not valid
+    // UTF-8 kept as its octal escape, so a mount point holds the byte.
+    let fstab = parse_fstab(&escaped_text(table[0]));
+    // The mount table byte for byte, as NAILS reads it.
     let mounts = parse_mountinfo(table.get(2).copied().unwrap_or(MOUNTS.as_bytes()));
     let hidden = Path::new(HIDDEN_ROOT);
 
@@ -284,23 +286,24 @@ fn check(entry: &FstabEntry, decision: &Decision, there: bool) {
                 entry.spec
             ),
         };
-        expect_unit(&units[0], &device, ".swap");
+        expect_unit(&units[0], device.as_bytes(), ".swap");
         return;
     }
-    let file = entry.file.to_string_lossy();
+    // The mount point byte for byte, as systemd names its units.
+    let file = entry.file.as_os_str().as_bytes();
     match decision {
         Decision::Mask { units, .. } => {
-            expect_unit(&units[0], &file, ".mount");
+            expect_unit(&units[0], file, ".mount");
             if entry.is_automount() {
-                expect_unit(&units[1], &file, ".automount");
+                expect_unit(&units[1], file, ".automount");
             }
         }
         Decision::Skip { skip, masked, .. } => {
             if entry.is_automount() {
-                expect_unit(&skip.units[0], &file, ".automount");
-                expect_unit(&masked[0], &file, ".mount");
+                expect_unit(&skip.units[0], file, ".automount");
+                expect_unit(&masked[0], file, ".mount");
             } else {
-                expect_unit(&skip.units[0], &file, ".mount");
+                expect_unit(&skip.units[0], file, ".mount");
             }
         }
         Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {
@@ -320,8 +323,13 @@ fn plain_absolute(path: &Path) -> bool {
 
 /// `unit` is the unit systemd generates for `path` with `suffix`, wherever
 /// the model knows that name.
-fn expect_unit(unit: &str, path: &str, suffix: &str) {
+fn expect_unit(unit: &str, path: &[u8], suffix: &str) {
     if let UnitName::Name(name) = unit_name_from_path(path, suffix) {
-        assert_eq!(unit, name, "the {suffix} unit for {path:?}");
+        assert_eq!(
+            unit,
+            name,
+            "the {suffix} unit for {:?}",
+            String::from_utf8_lossy(path)
+        );
     }
 }

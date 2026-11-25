@@ -51,7 +51,7 @@ fuzz_target!(|data: &[u8]| {
             );
         }
         if text.starts_with('/')
-            && let UnitName::Name(name) = unit_name_from_path(&text, suffix)
+            && let UnitName::Name(name) = unit_name_from_path(text.as_bytes(), suffix)
         {
             assert_eq!(
                 unit_path(&name, suffix),
