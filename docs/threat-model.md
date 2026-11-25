@@ -802,7 +802,8 @@ decoy disk:
   not from a disk image: after each way back, every file and folder on the
   decoy's disk mounts whose contents or inode changed since right before the
   entry must be one a plain soft-reboot also changes or one a run of the
-  decoy's own timer after the switch changes;
+  decoy's own timer after the switch changes, the login and boot record
+  files aside, which the records checks judge;
 - the nightly oracle, which images the whole disk powered off before, after
   two plain reboots and after one session of the release binary and its way
   back, and runs bulk_extractor and the restore carve over those images; it
