@@ -7,7 +7,9 @@
 use super::unit_dirs::Load;
 use super::{NativeUnit, UnitDirs, deps, pulls};
 use crate::session::fstab::{FstabEntry, automount_unit, mount_unit, required_by};
-use crate::session::policy::{Decision, KeptOff, NoautoNeeded, Present};
+use crate::session::policy::{
+    Decision, KeptOff, NoautoNeeded, Origin, Present, Unreached, Unskippable,
+};
 use nails_teardown::whole_root::plan::MaskCause;
 
 /// `decisions` with each unit of a `noauto` line's mask
@@ -185,6 +187,142 @@ pub(super) fn weigh_masks(
                  two devices: {held}. Make them agree before activating, {remedy}"
             )),
         }
+    }
+    warnings
+}
+
+/// Weigh what NAILS reads as held up only for a path, or only may be
+/// ([`KeptOff::unsure`], [`Origin::Needed`] with `may` or `by_path`),
+/// against the units a boot target links in its `.requires` directory
+/// (`native`): the skips among [`KeptOff::unsure`], and each mount the
+/// decisions mask for a target that needs it only for a path, or only may
+/// require it, without recording it. Where such a unit names the mount, as
+/// the link itself does or as the unit requires it through a chain of
+/// requirements NAILS reads whose last step names it
+/// ([`pulls::requires_among`]), the unit does not start while the mount is
+/// masked, so the target is not reached: the skip leaves
+/// [`KeptOff::unsure`], so that where it is masked after all the warning
+/// says will not and the mask is recorded ([`super::kept_off`]), and the
+/// mask is recorded now, among [`KeptOff::sure_needed`], with a warning
+/// that names that unit in place of the decision's own
+/// ([`KeptOff::warning`]). Returns the warnings.
+pub(super) fn weigh_unsure(
+    dirs: UnitDirs<'_>,
+    fstab: &[FstabEntry],
+    native: &[NativeUnit],
+    decisions: &[Decision],
+    covered: &[String],
+    kept: &mut KeptOff,
+) -> Vec<String> {
+    // Each such mask with its decision, as a target that names it would
+    // record it.
+    let masked: Vec<(&String, &Decision)> = decisions
+        .iter()
+        .filter_map(|decision| match decision {
+            Decision::Mask {
+                units,
+                unreached:
+                    Some(Unreached {
+                        cause: Unskippable::NoDevice(_) | Unskippable::Unread,
+                        origin: Origin::Needed { may, by_path, .. },
+                        ..
+                    }),
+                ..
+            } if *may || *by_path => {
+                // The line that needs it requires its mount, the first unit.
+                Some((units.first()?, decision))
+            }
+            _ => None,
+        })
+        .filter(|(unit, _)| {
+            kept.masks.contains(unit) && !kept.required_masks.iter().any(|mask| mask.unit == **unit)
+        })
+        .collect();
+    let candidates: Vec<String> = kept
+        .unsure
+        .iter()
+        .chain(masked.iter().map(|(unit, _)| *unit))
+        .cloned()
+        .collect();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+    // Each candidate a unit a target requires names, with that target, the
+    // unit it requires, and how: the link itself, or that unit's chain.
+    let mut named: Vec<(String, String, String, String)> = Vec::new();
+    for unit in &candidates {
+        if let Some(target) = native
+            .iter()
+            .find(|native| native.name == *unit)
+            .and_then(|native| native.required_by.clone())
+        {
+            let how = format!("{target} requires {unit} through a link in a .requires directory");
+            named.push((unit.clone(), target, unit.clone(), how));
+        }
+    }
+    // A skipped unit gets its start job too, and with it what it requires.
+    let starts: Vec<&NativeUnit> = native
+        .iter()
+        .filter(|native| {
+            native.required_by.is_some()
+                && !kept.masks.contains(&native.name)
+                && matches!(dirs.load(&native.name), Load::Loaded { .. })
+        })
+        .collect();
+    if !starts.is_empty() {
+        let graph = deps::Graph::new(dirs, fstab, covered);
+        for start in starts {
+            let target = start.required_by.as_deref().unwrap_or_default();
+            for (unit, chain, by_path) in
+                pulls::requires_among(&graph, &start.name, &kept.masks, &candidates)
+            {
+                if !by_path && !named.iter().any(|(seen, ..)| *seen == unit) {
+                    let how = format!("{}, which {target} requires, requires {chain}", start.name);
+                    named.push((unit, target.to_string(), start.name.clone(), how));
+                }
+            }
+        }
+    }
+    let mut warnings = Vec::new();
+    for (unit, target, required, how) in named {
+        kept.unsure.retain(|known| *known != unit);
+        let Some(&(_, decision)) = masked.iter().find(|(masked, _)| **masked == unit) else {
+            continue;
+        };
+        let Decision::Mask {
+            target: path,
+            reason,
+            unreached: Some(Unreached { cause, .. }),
+            ..
+        } = decision
+        else {
+            continue;
+        };
+        let unreached = format!(
+            "{how}, so the hidden session will not reach {target}, and the units only that \
+             target pulls in will not start there"
+        );
+        let path = path.display();
+        warnings.push(match cause {
+            Unskippable::NoDevice(device) => {
+                kept.record_masked(
+                    std::slice::from_ref(&unit),
+                    MaskCause::DeviceAbsent,
+                    Some(device),
+                );
+                format!(
+                    "{path} is masked rather than skipped, as its device {} is not there: \
+                     {unreached}. Attach the device before activating, or have {target} want \
+                     {required} rather than require it",
+                    device.display()
+                )
+            }
+            _ => {
+                kept.record_masked(std::slice::from_ref(&unit), MaskCause::Undetermined, None);
+                format!("{path} is masked, as {reason}: {unreached}")
+            }
+        });
+        kept.sure_needed.push(unit);
     }
     warnings
 }

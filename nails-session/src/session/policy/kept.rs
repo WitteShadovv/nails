@@ -44,11 +44,20 @@ pub struct KeptOff {
     /// target may require them, or that what requires them needs them only as
     /// the mount for a path (a mount point below, `RequiresMountsFor=`,
     /// `x-systemd.requires-mounts-for=`), not by name: systemd 260.5 started
-    /// such a unit without a masked mount. Where such a skip is masked after
-    /// all ([`super::super::mount_units::kept_off`]), the warning says the
-    /// target may not be reached, and the mask is not recorded as a required
-    /// one.
+    /// such a unit without a masked mount. A unit a boot target links in its
+    /// `.requires` directory that names it takes it out again
+    /// ([`super::super::mount_units::kept_off`]). Where such a skip is masked
+    /// after all, the warning says the target may not be reached, and the
+    /// mask is not recorded as a required one.
     pub unsure: Vec<String>,
+    /// The units the decisions mask for a boot target that needs them only
+    /// for a path, or only may require them ([`super::Origin::Needed`] with
+    /// `may` or `by_path`), that a unit a target links in its `.requires`
+    /// directory names: the target is not reached, the mask is recorded
+    /// ([`required_masks`](Self::required_masks)), and the unit pass's
+    /// warning, which names that unit, stands in place of the decision's own
+    /// ([`KeptOff::warning`]).
+    pub sure_needed: Vec<String>,
 }
 
 impl KeptOff {
@@ -64,6 +73,19 @@ impl KeptOff {
                 });
             }
         }
+    }
+}
+
+impl KeptOff {
+    /// The warning of `decision` ([`Decision::warning`]), unless a warning
+    /// of the unit pass stands in its place ([`KeptOff::sure_needed`]).
+    pub fn warning(&self, decision: &Decision) -> Option<String> {
+        let replaced = matches!(decision, Decision::Mask { .. })
+            && decision
+                .masked_units()
+                .first()
+                .is_some_and(|unit| self.sure_needed.contains(unit));
+        if replaced { None } else { decision.warning() }
     }
 }
 

@@ -547,3 +547,186 @@ fn a_needed_noauto_skip_masked_after_all_says_may_where_lines_need_it_for_a_path
         );
     }
 }
+
+/// The noauto line the tests below keep off for an fstab line that needs its
+/// mount only for a path.
+const NEEDED_LINE: &str = "/dev/vdn1 /n/a ext4 noauto 0 0\n";
+
+/// The fstab lines that need the mount of [`NEEDED_LINE`] only as the mount
+/// for a path: a tmpfs below it, and one naming a path in it with
+/// `x-systemd.requires-mounts-for=`.
+const PATH_NEEDERS: [&str; 2] = [
+    "tmpfs /n/a/t tmpfs defaults 0 0\n",
+    "tmpfs /srv/t tmpfs x-systemd.requires-mounts-for=/n/a/x 0 0\n",
+];
+
+/// The decoy of the tests below: `needer` aside, a tmpfs mount unit linked in
+/// local-fs.target.requires whose `Requires=` names the mount of
+/// [`NEEDED_LINE`] (`named`), or the line's own unit, the fstab generator's,
+/// linked there (`own`).
+fn named_by_a_target(kind: &str) -> Decoy {
+    let decoy = Decoy::new();
+    decoy.write(
+        "/run/systemd/generator/n-a.mount",
+        "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdn1\nWhere=/n/a\nType=ext4\n\
+         Options=noauto\n",
+    );
+    match kind {
+        "named" => {
+            decoy.write(
+                "/etc/systemd/system/srv-t9.mount",
+                "[Unit]\nRequires=n-a.mount\nAfter=n-a.mount\n[Mount]\nWhat=tmpfs\n\
+                 Where=/srv/t9\nType=tmpfs\n",
+            );
+            decoy.link(
+                "/etc/systemd/system/local-fs.target.requires/srv-t9.mount",
+                "../srv-t9.mount",
+            );
+        }
+        _ => decoy.link(
+            "/etc/systemd/system/local-fs.target.requires/n-a.mount",
+            "/run/systemd/generator/n-a.mount",
+        ),
+    }
+    decoy
+}
+
+/// A noauto line that fstab lines need only for a path is skipped as one
+/// the boot may not need, and a drop-in of the decoy's masks the skip after
+/// all. Where a unit linked in local-fs.target.requires names its mount
+/// (`Requires=`), or the line's own unit is linked there, systemd refuses
+/// that unit or the target's own requirement while the mount is masked, so
+/// the target is not reached: the warning says will not, and the mask is
+/// recorded. It said may, and recorded nothing, as the lines need it only
+/// for a path.
+#[test]
+fn a_path_skip_masked_after_all_says_will_not_where_a_target_s_unit_names_it() {
+    for kind in ["named", "own"] {
+        for needer in PATH_NEEDERS {
+            let decoy = named_by_a_target(kind);
+            reset_conditions(&decoy, "n-a.mount");
+            let (_, kept, warnings) = kept(&decoy, &format!("{NEEDED_LINE}{needer}"));
+            assert!(
+                kept.masks.iter().any(|mask| mask == "n-a.mount"),
+                "{kind} {needer}: {kept:?}"
+            );
+            assert!(kept.skips.is_empty(), "{kind} {needer}: {kept:?}");
+            assert!(kept.unsure.is_empty(), "{kind} {needer}: {kept:?}");
+            assert_eq!(
+                kept.required_masks,
+                [RequiredMask {
+                    unit: "n-a.mount".into(),
+                    cause: MaskCause::SkipUndone,
+                    device: None,
+                }],
+                "{kind} {needer}: {warnings:?}"
+            );
+            assert_eq!(warnings.len(), 1, "{kind} {needer}: {warnings:?}");
+            assert!(
+                warnings[0].contains(
+                    "n-a.mount is masked rather than skipped, as a drop-in of n-a.mount that \
+                     sorts after the skip's resets or hides its start conditions: the hidden \
+                     session will not reach the boot target that requires it"
+                ),
+                "{kind} {needer}: {warnings:?}"
+            );
+            assert!(
+                !warnings[0].contains("may not"),
+                "{kind} {needer}: {warnings:?}"
+            );
+        }
+    }
+}
+
+/// The same without the disk: the policy masks the line with its warning
+/// that the target may not be reached, for the line that needs it only for
+/// a path. As the unit or link names the mount, the target is not reached:
+/// the mask is recorded with its device, and the unit pass's warning, which
+/// says so and names the unit or link, stands in place of the policy's. It
+/// said may, and recorded nothing.
+#[test]
+fn a_path_mask_without_its_disk_is_recorded_where_a_target_s_unit_names_it() {
+    for (kind, how, wanted) in [
+        (
+            "named",
+            "srv-t9.mount, which local-fs.target requires, requires n-a.mount (Requires=)",
+            "srv-t9.mount",
+        ),
+        (
+            "own",
+            "local-fs.target requires n-a.mount through a link in a .requires directory",
+            "n-a.mount",
+        ),
+    ] {
+        for needer in PATH_NEEDERS {
+            let decoy = named_by_a_target(kind);
+            let (decisions, kept, warnings) =
+                kept_with(&decoy, &format!("{NEEDED_LINE}{needer}"), false);
+            assert!(
+                kept.masks.iter().any(|mask| mask == "n-a.mount"),
+                "{kind} {needer}: {kept:?}"
+            );
+            assert_eq!(
+                kept.required_masks,
+                [RequiredMask {
+                    unit: "n-a.mount".into(),
+                    cause: MaskCause::DeviceAbsent,
+                    device: Some("/dev/vdn1".into()),
+                }],
+                "{kind} {needer}: {warnings:?}"
+            );
+            assert_eq!(kept.sure_needed, ["n-a.mount"], "{kind} {needer}: {kept:?}");
+            assert_eq!(
+                warnings,
+                [format!(
+                    "/n/a is masked rather than skipped, as its device /dev/vdn1 is not there: \
+                     {how}, so the hidden session will not reach local-fs.target, and the units \
+                     only that target pulls in will not start there. Attach the device before \
+                     activating, or have local-fs.target want {wanted} rather than require it"
+                )],
+                "{kind} {needer}"
+            );
+            // The policy's own warning, which says may, gives way.
+            let mask = decisions
+                .iter()
+                .find(|decision| {
+                    decision
+                        .masked_units()
+                        .first()
+                        .is_some_and(|u| u == "n-a.mount")
+                })
+                .unwrap_or_else(|| panic!("{kind} {needer}: {decisions:?}"));
+            assert!(
+                mask.warning().is_some_and(|w| w.contains("may not reach")),
+                "{kind} {needer}: {mask:?}"
+            );
+            assert_eq!(kept.warning(mask), None, "{kind} {needer}");
+        }
+    }
+}
+
+/// Where no unit a target requires names the mount, a unit that requires it
+/// only for a path, the skip masked after all still says may.
+#[test]
+fn a_path_skip_masked_after_all_still_says_may_where_a_unit_needs_it_for_a_path() {
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-t9.mount",
+        "[Unit]\nRequiresMountsFor=/n/a/x\n[Mount]\nWhat=tmpfs\nWhere=/srv/t9\nType=tmpfs\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-t9.mount",
+        "../srv-t9.mount",
+    );
+    reset_conditions(&decoy, "n-a.mount");
+    let (_, kept, warnings) = kept(&decoy, &format!("{NEEDED_LINE}{}", PATH_NEEDERS[0]));
+    assert!(kept.required_masks.is_empty(), "{kept:?}");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].contains(
+            "and reads no unit a target requires that names it, so the hidden session may not \
+             reach that target"
+        ),
+        "{warnings:?}"
+    );
+}

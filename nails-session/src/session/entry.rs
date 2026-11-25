@@ -845,15 +845,15 @@ fn keep_units_off(
     decided.add(paths, layout, plan, Vec::new(), more, inputs)?;
     let (kept_off, unskipped) =
         mount_units::kept_off(dirs, &decided.fstab, &decided.decisions, present);
+    let decisions = decided.decisions.iter();
+    let warnings = decisions
+        .filter_map(|d| kept_off.warning(d))
+        .chain(unskipped)
+        .collect();
     plan.masks = kept_off.masks;
     plan.skips = kept_off.skips;
     plan.required_masks = kept_off.required_masks;
-    Ok(decided
-        .decisions
-        .iter()
-        .filter_map(Decision::warning)
-        .chain(unskipped)
-        .collect())
+    Ok(warnings)
 }
 
 /// The operator's home in the upper that covers it, before any overlay is
