@@ -416,6 +416,9 @@
         e2e-metadata = e2eTestMetadata;
         e2e-distro = distroTests;
         e2e-distro-metadata = distroMetadata;
+        # The program that builds the archinstall test image, which the
+        # test-images workflow runs and publishes (needs KVM and the network).
+        arch-install-image-builder = import ./nix/distro-tests/arch-install { inherit pkgs; };
       };
 
       checks.${system} = import ./nix/checks.nix {

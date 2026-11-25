@@ -1,0 +1,31 @@
+{
+  "archinstall-language": "English",
+  "bootloader_config": {
+    "bootloader": "Systemd-boot",
+    "uki": false,
+    "removable": false
+  },
+  "hostname": "archlinux",
+  "kernels": ["linux"],
+  "locale_config": {
+    "kb_layout": "us",
+    "sys_enc": "UTF-8",
+    "sys_lang": "en_US"
+  },
+  "network_config": {
+    "type": "iso"
+  },
+  "ntp": true,
+  "packages": [],
+  "profile_config": {
+    "profile": {
+      "main": "Minimal"
+    }
+  },
+  "script": "guided",
+  "swap": {
+    "enabled": true,
+    "algorithm": "zstd"
+  },
+  "timezone": "UTC"
+}

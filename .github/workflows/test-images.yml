@@ -1,0 +1,317 @@
+name: Test images
+
+# Builds the test images that no upstream publishes and publishes them to the
+# assets repository that nix/distro-tests/mirrors.nix names,
+# WitteShadovv/nails-test-images: today the archinstall image, the
+# `arch-install` entry of nix/distro-tests/images.json.
+#
+#   build    runs nix/distro-tests/arch-install (the arch-install-image-builder
+#            flake attribute) on a hosted KVM runner: the ISO that inputs.json
+#            pins by hash boots under UEFI, archinstall installs from the
+#            package snapshot it names, the result boots once to a login
+#            prompt, and the compressed qcow2 (under 2 GiB) is kept as an
+#            artifact with its SHA-256 and manifest
+#   publish  uploads them to the release images-arch-install (created when it
+#            is missing; an asset of the same name is replaced), replaces
+#            arch-install-latest.json with the new manifest, and deletes the
+#            older builds beyond the newest three that no images.json of
+#            main, next or this commit pins
+#   verify   downloads the asset from its public URL and checks its SHA-256
+#
+# Every build gets a name of its own (the ISO version, the UTC date and the
+# run ID), so a nightly build never replaces the asset that images.json pins;
+# a re-run of the same run replaces its own upload. `python3 -m ci.distro_images
+# repin arch-install` moves the pin to the newest build, which the latest
+# manifest names.
+#
+#   nightly schedule   build, publish and verify (runs on main only)
+#   dispatch           the same on any branch, unless `publish` is off
+#   pull request       build only, when the builder or this file changes
+#
+# The upload token, NAILS_TEST_IMAGES_TOKEN, is a fine-grained token with
+# Contents read and write on the assets repository alone. Only the upload step
+# of the publish job sees it; that job runs no code of the build, and it never
+# runs for a pull request.
+
+on:
+  schedule:
+    # Nightly at 01:23 UTC, before the NixOS (02:17) and distro (03:41) lanes.
+    - cron: "23 1 * * *"
+  pull_request:
+    branches: [main, next]
+    paths:
+      - nix/distro-tests/arch-install/**
+      - .github/workflows/test-images.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the image to the assets repository after it built
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to a pull request cancels its build in progress; a scheduled or
+  # dispatched run waits for the one before it, so two uploads never prune
+  # each other's assets.
+  group: test-images-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  ASSETS_REPO: WitteShadovv/nails-test-images
+  FAMILY: arch-install
+  RELEASE_TAG: images-arch-install
+  # The newest builds a prune keeps, besides the ones an images.json pins.
+  KEEP_BUILDS: 3
+
+jobs:
+  build:
+    name: Build the archinstall image
+    runs-on: ubuntu-26.04
+    # Booting the ISO and installing from the Arch Linux Archive takes 15 to
+    # 40 minutes, depending on the archive's speed.
+    timeout-minutes: 120
+    outputs:
+      asset: ${{ steps.name.outputs.asset }}
+      sha256: ${{ steps.result.outputs.sha256 }}
+      sha256-hex: ${{ steps.result.outputs.sha256-hex }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # install-nix-action (inside setup-nix) opens /dev/kvm to the runner user
+      # on hosted runners, which the install VM needs.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Name the build
+        id: name
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          iso=$(jq -er .iso.version nix/distro-tests/arch-install/inputs.json)
+          asset="$FAMILY-$iso-$(date -u +%Y%m%d)-$RUN_ID.qcow2"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "Building $asset"
+
+      - name: Build the image
+        env:
+          ASSET: ${{ steps.name.outputs.asset }}
+        run: nix run -L .#arch-install-image-builder -- "$RUNNER_TEMP/image" "$ASSET"
+
+      - name: Record the result
+        id: result
+        env:
+          ASSET: ${{ steps.name.outputs.asset }}
+        run: |
+          manifest="$RUNNER_TEMP/image/$ASSET.json"
+          sri=$(jq -er .sha256 "$manifest")
+          hex=$(jq -er .sha256Hex "$manifest")
+          size=$(jq -er .size "$manifest")
+          echo "sha256=$sri" >> "$GITHUB_OUTPUT"
+          echo "sha256-hex=$hex" >> "$GITHUB_OUTPUT"
+          {
+            echo "## archinstall image"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Asset | \`$ASSET\` |"
+            echo "| Size | $size bytes |"
+            echo "| SHA-256 | \`$hex\` |"
+            echo "| images.json sha256 | \`$sri\` |"
+            echo "| ISO | \`$(jq -r .iso.name "$manifest")\` |"
+            echo "| Packages | $(jq -r .packages.snapshot "$manifest") snapshot, $(jq -r '.installed | length' "$manifest") installed |"
+            echo "| archinstall | \`$(jq -r .archinstall "$manifest")\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "sha256 $hex ($sri)"
+
+      - name: Keep the image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-install-image
+          path: |
+            ${{ runner.temp }}/image/*.qcow2
+            ${{ runner.temp }}/image/*.qcow2.sha256
+            ${{ runner.temp }}/image/*.qcow2.json
+          retention-days: 3
+          compression-level: 0
+          if-no-files-found: error
+
+      - name: Keep the logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: arch-install-logs
+          path: ${{ runner.temp }}/image/logs/
+          retention-days: 14
+          if-no-files-found: warn
+
+  publish:
+    name: Publish the archinstall image
+    needs: build
+    # Only a run of this repository's own branches publishes: the nightly
+    # schedule, which runs on main, and a dispatch, from any branch. Never a
+    # pull request.
+    if: >-
+      github.repository == 'WitteShadovv/nails'
+      && startsWith(github.ref, 'refs/heads/')
+      && (github.event_name == 'schedule'
+          || (github.event_name == 'workflow_dispatch' && inputs.publish))
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Fetch the image
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        with:
+          name: arch-install-image
+          path: ${{ runner.temp }}/image
+
+      - name: Check the image against the build
+        env:
+          ASSET: ${{ needs.build.outputs.asset }}
+          SHA256_HEX: ${{ needs.build.outputs.sha256-hex }}
+        working-directory: ${{ runner.temp }}/image
+        run: |
+          sha256sum -c "$ASSET.sha256"
+          [ "$(sha256sum "$ASSET" | cut -d' ' -f1)" = "$SHA256_HEX" ]
+          size=$(stat -c %s "$ASSET")
+          [ "$size" -lt $((2 * 1024 * 1024 * 1024)) ]
+          cp "$ASSET.json" "$FAMILY-latest.json"
+
+      # The assets a prune must keep: the one each images.json of main, next
+      # and this commit pins, read from the public repository without a token.
+      - name: List the pinned assets
+        env:
+          REPOSITORY: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          : > "$RUNNER_TEMP/pinned"
+          for ref in main next "$SHA"; do
+            url="https://raw.githubusercontent.com/$REPOSITORY/$ref/nix/distro-tests/images.json"
+            if table=$(curl -fsSL --retry 3 "$url"); then
+              jq -r --arg family "$FAMILY" \
+                '.[] | .source | select(.kind == "mirror" and .family == $family and .asset != null) | .asset' \
+                <<< "$table" >> "$RUNNER_TEMP/pinned"
+            else
+              echo "::warning::Could not read images.json of $ref; its pin is not protected from the prune."
+            fi
+          done
+          sort -u -o "$RUNNER_TEMP/pinned" "$RUNNER_TEMP/pinned"
+          echo "Pinned assets:"
+          cat "$RUNNER_TEMP/pinned"
+
+      # The one step that holds the upload token. It runs gh alone, on the
+      # files the build job produced and their checked hash.
+      - name: Upload to the assets repository
+        env:
+          GH_TOKEN: ${{ secrets.NAILS_TEST_IMAGES_TOKEN }} # zizmor: ignore[secrets-outside-env]
+          ASSET: ${{ needs.build.outputs.asset }}
+        working-directory: ${{ runner.temp }}/image
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::NAILS_TEST_IMAGES_TOKEN is not set."
+            exit 1
+          fi
+          if ! gh release view "$RELEASE_TAG" --repo "$ASSETS_REPO" --json tagName > /dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$ASSETS_REPO" \
+              --title "$FAMILY test images" \
+              --notes "Nightly builds of the $FAMILY test image of WitteShadovv/nails (nix/distro-tests/arch-install). Each build is a qcow2 with its .sha256 and .json manifest; $FAMILY-latest.json names the newest. Test data, not a release of NAILS." \
+              --latest=false
+          fi
+          gh release upload "$RELEASE_TAG" --repo "$ASSETS_REPO" --clobber \
+            "$ASSET" "$ASSET.sha256" "$ASSET.json"
+          gh release upload "$RELEASE_TAG" --repo "$ASSETS_REPO" --clobber \
+            "$FAMILY-latest.json"
+
+          # Prune: keep the newest builds and every pinned one.
+          release_id=$(gh api "repos/$ASSETS_REPO/releases/tags/$RELEASE_TAG" --jq .id)
+          gh api --paginate "repos/$ASSETS_REPO/releases/$release_id/assets" \
+            --jq '.[] | [.id, .name, .created_at] | @tsv' > "$RUNNER_TEMP/assets"
+          grep -P '\t'"$FAMILY"'-[^\t]+\.qcow2\t' "$RUNNER_TEMP/assets" \
+            | sort -t "$(printf '\t')" -k3,3r | cut -f2 > "$RUNNER_TEMP/builds" || true
+          tail -n +"$((KEEP_BUILDS + 1))" "$RUNNER_TEMP/builds" | while read -r build; do
+            if [ "$build" = "$ASSET" ] || grep -qxF "$build" "$RUNNER_TEMP/pinned"; then
+              continue
+            fi
+            for name in "$build" "$build.sha256" "$build.json"; do
+              id=$(awk -F '\t' -v n="$name" '$2 == n { print $1 }' "$RUNNER_TEMP/assets")
+              if [ -n "$id" ]; then
+                echo "Deleting $name"
+                gh api -X DELETE "repos/$ASSETS_REPO/releases/assets/$id"
+              fi
+            done
+          done
+
+  verify:
+    name: Verify the published image
+    needs: [build, publish]
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Download and check the published asset
+        env:
+          ASSET: ${{ needs.build.outputs.asset }}
+          SHA256: ${{ needs.build.outputs.sha256 }}
+          SHA256_HEX: ${{ needs.build.outputs.sha256-hex }}
+        run: |
+          base="https://github.com/$ASSETS_REPO/releases/download/$RELEASE_TAG"
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 5 -o "$ASSET" "$base/$ASSET"
+          hex=$(sha256sum "$ASSET" | cut -d' ' -f1)
+          if [ "$hex" != "$SHA256_HEX" ]; then
+            echo "::error::The published $ASSET has SHA-256 $hex, the build $SHA256_HEX."
+            exit 1
+          fi
+          curl -fsSL --retry 5 -o latest.json "$base/$FAMILY-latest.json"
+          [ "$(jq -r .asset latest.json)" = "$ASSET" ]
+          [ "$(jq -r .sha256 latest.json)" = "$SHA256" ]
+          {
+            echo "## Published"
+            echo
+            echo "$base/$ASSET"
+            echo
+            echo "SHA-256 \`$hex\` matches the build. To pin it in nix/distro-tests/images.json:"
+            echo
+            echo "    \"asset\": \"$ASSET\","
+            echo "    \"sha256\": \"$SHA256\""
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "published $base/$ASSET sha256 $hex"
+
+  # A nightly nobody watches: a red one opens or comments on the
+  # 'CI red: Test images' issue, and the next green run closes it. Only runs
+  # of main report; a dispatch on another branch is watched by whoever
+  # started it.
+  report-status:
+    name: Report status
+    needs: [build, publish, verify]
+    if: ${{ !cancelled() && github.event_name == 'schedule' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
