@@ -2309,7 +2309,10 @@ class Gate:
                 )
                 if label is None:
                     continue
-                if label.split("-")[0] in ("enter", "leave", "control") and not (
+                # The end of a session ("leave") is a power-off and a cold
+                # boot, which loads the decoy's policy afresh, as every boot
+                # does: no switch is left to keep it.
+                if label.split("-")[0] in ("enter", "control") and not (
                     label.endswith("-end")
                 ):
                     # Each switch keeps the decoy's loaded policy: PID 1's load
