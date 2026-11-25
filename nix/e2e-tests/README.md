@@ -1103,7 +1103,10 @@ scenario resets the device as the way back does and runs the control again,
 with the disk aged afresh, until a control's start sets the zram swap up; after
 four controls that never do the run fails with a zram message. Where the stop
 of the warm-up switch, which nothing measures, left such a device, the scenario
-resets it and starts its swap again. No path is let through for any of this:
+resets it and starts its swap again. Fedora 45's console on tty1, kmscon, is
+masked before the first measured phase, as the decoy's timers are: at about one
+stop in five it starts its login once more as PID 1 stops it, a race no
+control can be made to hit. No path is let through for any of this:
 every read after a way back still needs a control of the same run that made
 it. Every read in the window of `nails check` is
 a finding. In two sessions, one left by `deactivate` and one by the emergency, a
