@@ -420,6 +420,10 @@ TIMERS_AFTER_WAY_BACK = "".join(
 )
 ROOT_KEY = "/var/lib/unbound/root.key"
 UNBOUND_STAMP = "/var/lib/systemd/timers/stamp-unbound-anchor.timer"
+# The entry, the leave mark and the end of the switch's last step of that way
+# back, as the gate takes them.
+TIMERS_SINCE = 1794959800.0
+TIMERS_SWITCH_US = 1794959960_500000
 
 
 def way_back_timers(**changes: Any) -> dict[str, Any]:
@@ -427,6 +431,8 @@ def way_back_timers(**changes: Any) -> dict[str, Any]:
     runs, now = fg.timer_runs(TIMERS_AFTER_WAY_BACK)
     timers: dict[str, Any] = {
         "lower": 1794959960.0,
+        "since": TIMERS_SINCE,
+        "switch": TIMERS_SWITCH_US / 1_000_000,
         "now": now,
         "runs": runs,
         "times": {
@@ -489,6 +495,61 @@ class DecoyTimersTest(unittest.TestCase):
     def test_a_run_before_the_switch_explains_nothing(self) -> None:
         late = way_back_timers(lower=1794959970.0)
         self.assertEqual(fg.timer_explained({ROOT_KEY, UNBOUND_STAMP}, late), {})
+
+    def test_a_run_the_hidden_root_started_before_the_switch_explains_nothing(
+        self,
+    ) -> None:
+        # unbound-anchor's run started after the leave mark, but before the
+        # switch's last step ended, or within TIMER_SLACK of it: the hidden
+        # root's PID 1 may have started it.
+        paths = {ROOT_KEY, "/var/lib/unbound", UNBOUND_STAMP}
+        for switch in (1794959962.5, 1794959961.2):
+            self.assertEqual(
+                fg.timer_explained(paths, way_back_timers(switch=switch)), {}, switch
+            )
+        # A way back whose switch's time is unknown has nothing explained.
+        self.assertEqual(fg.timer_explained(paths, way_back_timers(switch=None)), {})
+        self.assertEqual(len(fg.timer_explained(paths, way_back_timers())), 3)
+
+    def test_a_judged_way_back_is_bounded_by_its_switch(self) -> None:
+        # The same changes as test_a_way_back_passes_with_the_decoy_s_timer_runs,
+        # with a switch that ended after the timers' runs started, or with no
+        # switch's time: both fail the comparison and the positive control.
+        for carried in ({"switchUs": 1794959962_500000}, {"switchUs": None}, None):
+            run = gate()
+            run.disk = {
+                "control-1": set(),
+                "way-back-1": {ROOT_KEY, UNBOUND_STAMP, fg.GATE_TIMER_FILE},
+            }
+            run.timers = {"way-back-1": way_back_timers()}
+            if carried is not None:
+                run.facts["carried-1"] = carried
+            quiet(run.judge_disk)
+            self.assertEqual(
+                [c["passed"] for c in run.checks], [False, False], carried
+            )
+
+    def test_contents_changed_in_the_session_are_not_explained(self) -> None:
+        # The inode of the key changed while unbound-anchor ran after the way
+        # back, but its contents changed during the session, after the entry
+        # and before the run: that write stays unexplained.
+        session = way_back_timers(
+            times={ROOT_KEY: (1794959963.2, TIMERS_SINCE + 30)}
+        )
+        self.assertEqual(fg.timer_explained({ROOT_KEY}, session), {})
+        # Contents last changed before the entry, the inode by the run: the
+        # run's.
+        older = way_back_timers(times={ROOT_KEY: (1794959963.2, TIMERS_SINCE - 30)})
+        self.assertEqual(
+            fg.timer_explained({ROOT_KEY}, older),
+            {ROOT_KEY: "unbound-anchor.service"},
+        )
+        # Without the time the listing counts from, only contents changed in
+        # the run count.
+        unbounded = way_back_timers(
+            since=None, times={ROOT_KEY: (1794959963.2, TIMERS_SINCE - 30)}
+        )
+        self.assertEqual(fg.timer_explained({ROOT_KEY}, unbounded), {})
 
     def test_a_path_with_no_times_or_no_run_is_not_explained(self) -> None:
         self.assertEqual(fg.timer_explained({"/var/y"}, way_back_timers()), {})
@@ -555,7 +616,7 @@ class DecoyTimersTest(unittest.TestCase):
         run = gate()
         run.vm = MountsVm(*(whole_out(o) for o in (timers, times, rerun)))
         run.disk = {"control-1": set(), "way-back-1": {ROOT_KEY, "/var/lib/leaked"}}
-        quiet(run.decoy_timers, "way-back-1", 1794959960.0)
+        quiet(run.decoy_timers, "way-back-1", 1794959960.0, str(TIMERS_SINCE))
         self.assertEqual(
             run.timers["way-back-1"]["reruns"],
             {"unbound-anchor.service": [ROOT_KEY]},
@@ -576,7 +637,7 @@ class DecoyTimersTest(unittest.TestCase):
         run = gate()
         run.vm = MountsVm(whole_out(going), "", whole_out(TIMERS_AFTER_WAY_BACK))
         run.disk = {"way-back-1": set()}
-        quiet(run.decoy_timers, "way-back-1", 1794959960.0)
+        quiet(run.decoy_timers, "way-back-1", 1794959960.0, str(TIMERS_SINCE))
         self.assertIn("unbound-anchor.service", run.vm.commands[1])
         ends = [r["end"] for r in run.timers["way-back-1"]["runs"]]
         self.assertEqual(ends, [1794959964.0, 1794959962.0])
@@ -613,6 +674,7 @@ class DecoyTimersTest(unittest.TestCase):
             "control-2": {"/var/lib/chrony/drift"},
         }
         run.timers = {"way-back-1": way_back_timers()}
+        run.facts["carried-1"] = {"switchUs": TIMERS_SWITCH_US}
         quiet(run.judge_disk)
         self.assertEqual([c["passed"] for c in run.checks], [True, True], run.checks)
 
@@ -623,6 +685,7 @@ class DecoyTimersTest(unittest.TestCase):
             "way-back-1": {ROOT_KEY, UNBOUND_STAMP, fg.GATE_TIMER_FILE, "/etc/x"},
         }
         run.timers = {"way-back-1": way_back_timers()}
+        run.facts["carried-1"] = {"switchUs": TIMERS_SWITCH_US}
         quiet(run.judge_disk)
         self.assertEqual([c["passed"] for c in run.checks], [False, True])
         self.assertIn("'not in a control': ['/etc/x']", run.checks[0]["detail"])

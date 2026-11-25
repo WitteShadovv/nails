@@ -64,10 +64,13 @@ QEMU process:
    way-back assertions;
 8. a last plain soft-reboot, the second control; the decoy disk and ``/run``
    after each way back changed only where a control changed them, or, on the
-   disk, where a run of one of the decoy's own timers did that started once
-   the way back had begun: its change dated within the run, and the same
-   change made by the unit when the gate starts it once more by hand, or the
-   stamp of its persistent timer.
+   disk, where a run of one of the decoy's own timers did that started after
+   the switch: its change dated within the run, its contents unchanged since
+   before the entry or changed in the run, and the same change made by the
+   unit when the gate starts it once more by hand, or the stamp of its
+   persistent timer; in ``/run``, the link PID 1 keeps for a run the decoy's
+   PID 1 started after the switch, of a unit not NAILS's whose file lies
+   outside ``/run``.
    A timer the gate adds to the decoy before the first entry, which catches
    up at the first way back, is the positive control of that reading. And a
    login on the decoy, the positive control of the login records.
@@ -426,7 +429,8 @@ KMSG_TRIES = 5
 # triggered, and when its unit last left and last entered its inactive state.
 # PID 1 carries these times across a soft-reboot, so the last run it reports
 # can be one of the root before the switch, or of an earlier start: the gate
-# reads only a run that started from the time a comparison counts from on
+# reads only a run that started from the time a comparison counts from on,
+# and after a way back only one that started after its switch
 # (:func:`timer_explained`). Times are to the second, the guest's wall clock
 # last.
 DECOY_TIMERS = r"""
@@ -656,15 +660,20 @@ def file_times(text: str) -> dict[str, tuple[float, float]]:
     return found
 
 
-def timer_run_counts(run: Mapping[str, Any], lower: float) -> bool:
+def timer_run_counts(
+    run: Mapping[str, Any], lower: float, switch: float | None = None
+) -> bool:
     """Whether ``run`` (one of :func:`timer_runs`) may explain a change: it
-    started at or after ``lower``, it has ended, and its timer triggered it,
-    as the timer's last trigger came when the run started. A run something
-    else started, one still going, or one from before ``lower`` explains
-    nothing."""
+    started at or after ``lower`` and, given the time ``switch`` a way back's
+    switch ended, after that switch (:func:`after_switch`), it has ended, and
+    its timer triggered it, as the timer's last trigger came when the run
+    started. A run something else started, one still going, one from before
+    ``lower``, or one the hidden root's PID 1 started before the switch
+    explains nothing."""
     last = run.get("last")
     return (
         run["start"] >= lower
+        and (switch is None or after_switch(run["start"], switch))
         and run["end"] is not None
         and last is not None
         and abs(last - run["start"]) <= TIMER_SLACK
@@ -678,20 +687,30 @@ def timer_explained(
     """The paths of ``paths`` a run of the decoy's own timer explains, each
     with the unit or timer that explains it. ``timers`` is what the gate took
     of the decoy's timers right after the listing of the changes: ``lower``,
-    the time from which a run counts (after the hidden session's last mark,
-    for a way back), ``runs`` (:func:`timer_runs`), ``times``
-    (:func:`file_times`) and ``reruns``, the paths each unit changed when the
-    gate started it once more by hand and nothing else changed in the quiet
-    times around that start (:func:`rerun_changes`).
+    the time from which a run counts (the hidden session's last mark, for a
+    way back), ``since``, the time the listing counts changes from (right
+    before the entry, for a way back), for a way back ``switch``, the time
+    its switch's last step ended (:meth:`Gate.switch_of`), ``runs``
+    (:func:`timer_runs`), ``times`` (:func:`file_times`) and ``reruns``, the
+    paths each unit changed when the gate started it once more by hand and
+    nothing else changed in the quiet times around that start
+    (:func:`rerun_changes`).
 
-    A path counts as a run's when that run counts (:func:`timer_run_counts`)
-    and the path's inode changed while it ran, and either the unit's run by
-    hand changed the path too, or the path is the stamp of the run's
-    persistent timer, dated at its trigger. A path with no times, one no
-    counting run changed, or one changed only outside the run of the unit, is
-    not explained: a write of the session or of NAILS on the decoy disk
-    shows."""
+    A path counts as a run's when that run counts (:func:`timer_run_counts`,
+    bounded by ``switch``), the path's inode changed while it ran, its
+    contents last changed before ``since`` or while the unit ran, and either
+    the unit's run by hand changed the path too, or the path is the stamp of
+    the run's persistent timer, dated at its trigger. A path with no times,
+    one no counting run changed, one changed only outside the run of the
+    unit, or one whose contents changed after ``since`` but outside the run,
+    is not explained: a write of the session or of NAILS on the decoy disk
+    shows. A way back whose switch's time is unknown (``switch`` given as
+    None) has nothing explained."""
+    if "switch" in timers and timers["switch"] is None:
+        return {}
     lower = float(timers.get("lower") or 0.0)
+    switch = timers.get("switch")
+    since = timers.get("since")
     runs = timers.get("runs") or []
     times = timers.get("times") or {}
     reruns = timers.get("reruns") or {}
@@ -701,10 +720,15 @@ def timer_explained(
             continue
         changed, modified = times[path]
         for run in runs:
-            if not timer_run_counts(run, lower):
+            if not timer_run_counts(run, lower, switch):
                 continue
             start, end = run["start"], run["end"]
             if not start - TIMER_SLACK <= changed <= end + TIMER_SLACK:
+                continue
+            if not (
+                (since is not None and modified < since)
+                or start - TIMER_SLACK <= modified <= end + TIMER_SLACK
+            ):
                 continue
             if path in reruns.get(run["unit"], ()):
                 found[path] = run["unit"]
@@ -1797,14 +1821,15 @@ class Gate:
             or target.startswith(HIDDEN + "/")
         ]
 
-    def decoy_timers(self, label: str, lower: float) -> None:
+    def decoy_timers(self, label: str, lower: float, since: str) -> None:
         """What the decoy's own timers did around the switch of ``label``,
-        taken right after the listing of its changes on the decoy disk: the
-        last run of each that PID 1 reports, once every run started since
-        ``lower`` has ended (two minutes at most), the times of each path the
-        listing has that no control taken so far has, and, for each unit whose
-        counting run (:func:`timer_run_counts`) held such a change, the paths
-        that unit changed when the gate started it once more by hand
+        taken right after the listing of its changes on the decoy disk since
+        ``since``: the last run of each that PID 1 reports, once every run
+        started since ``lower`` has ended (two minutes at most), the times of
+        each path the listing has that no control taken so far has, and, for
+        each unit whose counting run (:func:`timer_run_counts`, not yet bounded
+        by the switch, whose time the gate reads later) held such a change, the
+        paths that unit changed when the gate started it once more by hand
         (:func:`rerun_changes`; :func:`timer_explained` reads them)."""
         runs, now = timer_runs(self.fact(f"decoy-timers-{label}", DECOY_TIMERS))
         going = sorted(
@@ -1879,6 +1904,7 @@ class Gate:
             reruns[run["unit"]] = rerun_changes(out, self.other_mounts())
         self.timers[label] = {
             "lower": lower,
+            "since": float(since),
             "now": now,
             "runs": runs,
             "times": times,
@@ -2857,7 +2883,9 @@ class Gate:
             )
         after = self.records_capture(f"after-{n}")
         self.disk_changes(f"way-back-{n}", state["since"])
-        self.decoy_timers(f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]))
+        self.decoy_timers(
+            f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]), state["since"]
+        )
         self.enforcing(f"after way back {n}")
         try:
             self.session.assert_decoy_root(vm)
@@ -3212,7 +3240,7 @@ class Gate:
         self.wait_reconcile()
         self.runs[label] = (run, self.run_listing(f"after-{label}"))
         self.disk_changes(label, since)
-        self.decoy_timers(label, float(since))
+        self.decoy_timers(label, float(since), since)
         self.enforcing(f"after {label}")
         failed = self.failed_units(f"failed-{label}")
         swap = self.fact(f"swap-{label}", "swapon --show --noheadings; true")
@@ -3235,19 +3263,25 @@ class Gate:
     def judge_disk(self) -> None:
         """The decoy disk after each way back changed only where a plain
         soft-reboot changed it or a run of the decoy's own timer after the
-        switch did (:func:`timer_explained`), its login records aside, which
+        switch did (:func:`timer_explained`, bounded by the switch's time of
+        :meth:`switch_of`), its login records aside, which
         the records checks judge: a label or a file the session or NAILS wrote
         on the decoy would show as a path neither explains. A path that only a
         timer's run explains in one control is not part of the reference
         (:func:`decoy_reference`)."""
         self.where = "the decoy disk"
+        timers = {label: dict(found) for label, found in self.timers.items()}
+        for label in self.disk:
+            if label.startswith("way-back-"):
+                n = int(label.rsplit("-", 1)[-1])
+                timers.setdefault(label, {})["switch"] = self.switch_of(n)
         explained = {
-            label: timer_explained(paths, self.timers.get(label, {}))
+            label: timer_explained(paths, timers.get(label, {}))
             for label, paths in self.disk.items()
         }
         self.facts["disk-timers"] = {
-            label: {**self.timers[label], "explained": explained.get(label, {})}
-            for label in self.timers
+            label: {**timers[label], "explained": explained.get(label, {})}
+            for label in timers
         }
         controls_by_label = {
             label: paths for label, paths in self.disk.items() if "control" in label
