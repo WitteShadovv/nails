@@ -459,9 +459,10 @@ def link_check(
     ``BUILDER_INPUTS``) are probed too, the installer ISO and the package
     snapshot, since the nightly rebuild fails once either is gone; that
     happens before its first asset is pinned as well. An entry that pins no
-    asset yet, or a mirror with no base, names that in its line: among the
-    checked entries when its build inputs were probed, and among the
-    unchecked ones otherwise. A
+    asset yet, or a mirror with no base, names that in its line when its
+    build inputs were probed and could be read, and is among the unchecked
+    ones when nothing of it was probed; where a probe failed, the entry is
+    among the checked ones and the run fails. A
     run that could check no enabled entry fails as well: a pass would claim a
     check of the images CI boots that never happened, whatever it found for
     the staged ones.
