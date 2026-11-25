@@ -43,8 +43,9 @@ GRANULARITY = 512
 #: What the mark unit prints on the serial console at each userspace start
 #: after the first boot, then waits.
 HOLD = "blkstat-mark hold"
-#: What it prints when it stops waiting.
-RELEASE = "blkstat-mark release"
+#: What it prints when it stops waiting (its start: a kernel line can cut
+#: the rest off).
+RELEASE = "blkstat-mark rel"
 #: What the host types on the serial console to end the wait, once it cut.
 GO = "blkstat-go\n"
 

@@ -343,8 +343,13 @@ reach it; it records every write, write-zeroes and discard.
   overlay at `/`) drops it. The decoy's `blkstat-mark` unit (`lib/vm-config.nix`;
   `setupHiddenRoot` installs it on a distribution VM) prints `blkstat-mark hold`
   on the serial console at every start of the service manager after 8 s of
-  uptime and waits 3 s, before the units that write early in a start; the host
-  cuts the bitmaps at that line, and fails when the `release` line came first.
+  uptime, before the units that write early in a start, again each second (a
+  kernel line can cut one in two), and waits, at most 15 s, for the line
+  `blkstat-go`. The host cuts the bitmaps at the first hold line it reads and
+  then types `blkstat-go` on the serial console (`send_console`): the driver's
+  console reader can fall seconds behind the guest in the burst of lines a
+  switch prints, so a wait of fixed length would not do. The test fails when the
+  `release` line came before the cut, and when a way back brings no hold line.
   At the hidden root's start the cut splits the window into the phases `switch`
   and `session`. On the way back it ends the window, so the decoy's own start
   does not count. While a window is open QEMU pauses at a guest power-off
