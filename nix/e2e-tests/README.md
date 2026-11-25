@@ -1437,10 +1437,9 @@ TMPDIR=/var/tmp/g XDG_RUNTIME_DIR=/var/tmp/g NAILS_GATE_OUT=/var/tmp/g/out \
 Arch is admitted in one commit with its CI matrix entry, once its admission
 gate passes. The drivers that gate runs before that commit are in
 `arch-gate.nix`, one set per Arch image its `expectations` name (arch-boxes
-today; the archinstall image joins with a row of its own once it is pinned),
-and run in the staged suite of `distro-e2e.yml`, beside the smoke and records
-scenarios of arch-boxes. Each is a host driver that writes what it found into
-the directory `NAILS_GATE_OUT` names.
+alone today), and run in the staged suite of `distro-e2e.yml`, beside the
+smoke and records scenarios of arch-boxes. Each is a host driver that writes
+what it found into the directory `NAILS_GATE_OUT` names.
 
 `<image>-gate` is the Fedora gate's scenario run on Arch (`py/arch_gate.py`,
 which builds on `py/fedora_gate.py`), with a test-only build that admits Arch
@@ -1454,16 +1453,17 @@ Arch:
 
 - before the decoy is prepared, check on the stock image must refuse its
   swap file and its persistent journal, and warn of a lid that suspends and
-  of freed memory that is not zeroed; the decoy is then prepared as the Arch
-  section of the decoy requirements asks (the swap line `noauto` and the
-  swap off, `init_on_free=1` through GRUB, which the next boot's command line
-  must show, the lid locking the screen, the journal made volatile after
-  check refused it, then the core dumps discarded after check warned of
-  them, a warning the journal's refusal hid in the same row), and check must
-  refuse nothing and warn only of what the harness and the VM bring and,
-  from fstab-policy, of exactly what the hidden session does with the
-  image's own filesystems (its swap line masked, the ESP at `/efi` bound
-  read-only and masked, `/var/lib/machines` masked);
+  of freed memory that is not zeroed; the decoy is then prepared as
+  [the decoy requirements](../../docs/decoy-requirements.md) ask of any decoy
+  (every swap line of the fstab `noauto` and the swap off, `init_on_free=1`
+  through GRUB, which the next boot's command line must show, the lid locking
+  the screen, the journal made volatile after check refused it, then the core
+  dumps discarded after check warned of them, a warning the journal's refusal
+  hid in the same row), and check must refuse nothing and warn only of what
+  the harness and the VM bring and, from fstab-policy, of exactly what the
+  hidden session does with the image's own filesystems (its swap line masked,
+  the ESP at `/efi` bound read-only and masked, `/var/lib/machines` masked)
+  with no other note or warning in that row;
 - no mandatory access control runs: in every root the kernel's list of
   security modules (`/sys/kernel/security/lsm`) holds neither SELinux nor
   AppArmor and is the first boot's, no selinuxfs exists, and `lsm-status`
@@ -1478,9 +1478,15 @@ Arch:
   cryptsetup;
 - the drift control is a package the gate builds in RAM and installs with
   pacman (no signature checked, as the image's keyring is never set up): on
-  the decoy, then a newer version in the first session, then a newer one
-  again on the decoy, so that hidden sessions list it twice; check must warn
-  of it with pacman's fix and the second entry show the advisory;
+  the decoy before the reference boot, then a newer version in the first
+  session, then a newer one again on the decoy, so that hidden sessions list
+  it twice; check must warn of it with pacman's fix and the second entry show
+  the advisory with that fix. pacman's hook leaves `/etc` and `/var` out of
+  date with `/usr` after each transaction, and the next start of PID 1 runs
+  the units that bring them up to date: the reference boot runs them for the
+  first version, and the gate runs them by hand after the third, before the
+  second entry, so every plain soft-reboot and every entry starts with no
+  update pending;
 - the zram checks run only where the cold boot set up zram or the image
   ships zram-generator. arch-boxes does neither, so they do not run there;
 - the guest runs the driver's Python from the Nix store the harness mounts,
@@ -1489,11 +1495,33 @@ Arch:
   image has one).
 
 It writes `<image>-gate.json` and `<image>-gate.kmsg.txt`, and fails at its
-end when an assertion does not hold.
+end when an assertion does not hold. The decoy disk it compares is what is
+mounted from it, read file by file, and its partitions that nothing mounts,
+read byte for byte. On arch-boxes the first are the btrfs root and the ESP,
+which the run finds mounted at `/efi` through its automount point whenever it
+compares, and the second the BIOS boot partition.
 
 `<image>-btrfs` runs the btrfs scan controls of the Fedora gate on the stock
 image, for an image whose root is btrfs. On arch-boxes the controls' folder is
 on the root, the top level of the filesystem, so discard is turned off on `/`.
+
+What the gate leaves to the admission:
+
+- it runs on arch-boxes alone, which boots SeaBIOS and GRUB with a swap file.
+  So UEFI and systemd-boot are not covered, and neither is the zram swap the
+  zram checks would judge.
+- the archinstall image (`arch-install` in `images.json`) boots UEFI with
+  systemd-boot, its ESP at `/boot`, and swaps on zram. A row in
+  `expectations` alone does not bring it into the gate: `arch_gate.py` sets
+  `init_on_free=1` through GRUB (`PREPARE_DECOY`) and expects the stock swap
+  file refused (`STOCK_VERDICTS`). Its gate needs that argument in its loader
+  entries instead, stock verdicts of its own, a driver that boots it with
+  UEFI firmware, and the `fstabPolicy` its own layout gives.
+- the oracle nightly's records scan does not run on arch-boxes, as it plants
+  a Fedora decoy's record controls, and no oracle runs on the archinstall
+  image.
+- no desktop session runs in the gate, as arch-boxes is a console image, and
+  the tests with one (`lib/graphical-vm-config.nix`) boot NixOS alone.
 
 ### Running and CI
 

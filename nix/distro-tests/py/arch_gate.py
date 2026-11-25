@@ -21,7 +21,8 @@ with a plain soft-reboot. What differs is what Arch is:
   (:meth:`ArchGate.judge_denials`): no record lost, every marker in it, no
   notice of a suppressed record from the gate's first marker on, and no gap
   in the audit serial numbers;
-- the decoy is prepared as the Arch section of the decoy requirements asks:
+- the decoy is prepared as ``docs/decoy-requirements.md`` asks of any decoy
+  (what NAILS enforces, and the lid switch), in the way arch-boxes needs it:
   the journal volatile (check refuses the stock persistent one first), the
   fstab's swap line ``noauto`` and the swap off, ``init_on_free=1`` on the
   kernel command line through GRUB, core dumps discarded, the lid switch
@@ -95,8 +96,10 @@ mkdir -p {fg.HIDDEN}/root/work {fg.HIDDEN}/config
 # The decoy prepared as its requirements ask, beyond what the gate checks
 # before and after its fix: the kernel log's settings at every start, core
 # dumps discarded, the lid switch locking the screen, and freed memory zeroed
-# (init_on_free=1 through GRUB, from the next boot on). The swap is turned off
-# apart (:meth:`ArchGate.swap_off`).
+# (init_on_free=1 through GRUB, from the next boot on: arch-boxes boots
+# SeaBIOS and GRUB; an image that boots systemd-boot needs the argument in its
+# loader entries instead). The swap is turned off apart
+# (:meth:`ArchGate.swap_off`).
 PREPARE_DECOY = (
     """
 set -eu
@@ -156,9 +159,10 @@ UPDATE_UNITS = (
 # The update state of a decoy whose /etc and /var follow /usr
 # (:func:`fedora_gate.update_state`).
 UP_TO_DATE = "/etc current; /var current"
-# What check gives on the stock image before the decoy is prepared, as the
-# Arch section of the decoy requirements says: each row, its verdict, the words
-# its message and fix name, and the assertion.
+# What check gives on the stock arch-boxes image before the decoy is prepared:
+# each row, its verdict, the words its message and fix name, and the
+# assertion. The swap row is arch-boxes's swap file; an image with another
+# swap or none needs rows of its own.
 STOCK_VERDICTS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
     ("swap", "fail", (), "check refuses the stock image's active swap file"),
     (
@@ -422,11 +426,11 @@ class ArchGate(fg.Gate):
 
     def stock(self) -> None:
         """check on the stock image, with a hidden root mounted, before the
-        decoy is prepared: what the Arch section of the decoy requirements
-        says check gives there. It refuses the swap file arch-boxes turns on
-        and its persistent journal, and warns of the core dumps
-        systemd-coredump keeps, of a lid that suspends and of freed memory
-        that is not zeroed."""
+        decoy is prepared (:data:`STOCK_VERDICTS`): it refuses the swap file
+        arch-boxes turns on and its persistent journal, and warns of a lid
+        that suspends and of freed memory that is not zeroed. Its warning of
+        the core dumps systemd-coredump keeps shows once the journal is
+        volatile (:meth:`ArchGate.coredump`)."""
         self.sh("hidden-root-stock", self.hidden_root)
         status, rows = self.check_rows("check-stock")
         self.facts["check-stock"] = {
