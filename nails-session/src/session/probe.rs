@@ -12,7 +12,9 @@
 //! left behind; one below a file is not there.
 
 use super::layout::Paths;
-use nails_teardown::mountinfo::{MountEntry, read_mountinfo, root_is_hidden_overlay};
+use nails_teardown::mountinfo::{
+    MountEntry, SELF_MOUNTINFO, read_mountinfo_at, root_is_hidden_overlay,
+};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{Direction, Plan, PlanError, unix_now};
 use nails_teardown::whole_root::ret;
@@ -64,7 +66,16 @@ fn owner_alive(plan: &Plan) -> bool {
 /// The mount table cannot be read: without it this side cannot be told from
 /// the other, and an empty table would show the hidden session as the decoy.
 pub fn probe(paths: &Paths, hidden_root: &Path) -> std::io::Result<SessionView> {
-    Ok(probe_with(paths, hidden_root, &read_mountinfo()?))
+    probe_at(paths, hidden_root, Path::new(SELF_MOUNTINFO))
+}
+
+/// [`probe`] with the mount table read from `mountinfo`.
+fn probe_at(paths: &Paths, hidden_root: &Path, mountinfo: &Path) -> std::io::Result<SessionView> {
+    Ok(probe_with(
+        paths,
+        hidden_root,
+        &read_mountinfo_at(mountinfo)?,
+    ))
 }
 
 /// [`probe`] on a given mount table.
@@ -119,6 +130,33 @@ mod tests {
         Paths {
             root: dir.join("root"),
             run: dir.join("run"),
+        }
+    }
+
+    /// Without the mount table this side cannot be told from the other: an
+    /// empty table would show the hidden session, whose overlay root it does
+    /// not hold, as the decoy. The probe fails then, for a table that is not
+    /// there as for one that cannot be read.
+    #[test]
+    fn a_mount_table_that_cannot_be_read_fails_the_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let hidden = dir.path().join("mountinfo");
+        std::fs::write(
+            &hidden,
+            "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            probe_at(&paths, Path::new("/mnt/data"), &hidden),
+            Ok(SessionView::HiddenWithoutPlan(_))
+        ));
+        for unread in [dir.path().join("none"), dir.path().to_path_buf()] {
+            assert!(
+                probe_at(&paths, Path::new("/mnt/data"), &unread).is_err(),
+                "{}",
+                unread.display()
+            );
         }
     }
 
