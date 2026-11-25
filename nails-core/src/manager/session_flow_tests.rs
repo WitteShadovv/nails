@@ -95,13 +95,10 @@ impl GuardHost for FakeEntryHost {
         // where the real system runs it.
         let binary = std::path::Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
             .join(nails_teardown::whole_root::plan::BINARY_NAME);
-        let (exec_start, failure_action) = crate::session::guards::loaded_switch_step(&binary);
         assert_eq!(unit, crate::session::guards::SWITCH_STEP_UNIT);
-        Ok(match property {
-            "ExecStart" => exec_start,
-            "FailureAction" => failure_action,
-            other => panic!("asked for {other}"),
-        })
+        Ok(crate::session::guards::loaded_switch_step(
+            &binary, property,
+        ))
     }
     fn selinux_context(&self, _: &str) -> Result<String> {
         Ok(self.unit_context.to_string())

@@ -555,11 +555,10 @@ fn a_refused_way_back_names_the_power_off_and_the_emergency() {
     );
 }
 
-/// A PID 1 that answers only for the switch step's unit: its `ExecStart` and
-/// `FailureAction` with every drop-in loaded.
+/// A PID 1 that answers only for the switch step's unit: NAILS's own
+/// properties, but for those `changed` sets.
 struct Step {
-    exec_start: String,
-    failure_action: String,
+    changed: Vec<(&'static str, String)>,
 }
 
 impl GuardHost for Step {
@@ -577,50 +576,80 @@ impl GuardHost for Step {
     }
     fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
         assert_eq!(unit, SWITCH_STEP_UNIT);
-        Ok(match property {
-            "ExecStart" => self.exec_start.clone(),
-            "FailureAction" => self.failure_action.clone(),
-            other => panic!("asked for {other}"),
-        })
+        Ok(self
+            .changed
+            .iter()
+            .find(|(name, _)| *name == property)
+            .map_or_else(
+                || loaded_switch_step(Path::new(BINARY), property),
+                |(_, value)| value.clone(),
+            ))
     }
 }
 
+const BINARY: &str = "/run/overlay-runtime/control";
+
 /// The step as NAILS installs it passes. A decoy drop-in that sorts after
-/// NAILS's (`override.conf` from `systemctl edit`) and adds a start command,
-/// marks it `-`, replaces it or sets another failure action refuses the
-/// entry: the step would no longer fail closed.
+/// NAILS's (`override.conf` from `systemctl edit`) and changes how the step
+/// starts or fails refuses the entry: the step would no longer run, or no
+/// longer fail closed.
 #[test]
 fn the_switch_step_must_start_and_fail_as_nails_installed_it() {
-    let binary = Path::new("/run/overlay-runtime/control");
-    let (exec_start, failure_action) = loaded_switch_step(binary);
-    let ours = Step {
-        exec_start: exec_start.clone(),
-        failure_action: failure_action.clone(),
-    };
-    assert!(check_switch_step(&ours, binary).is_ok());
-
-    let ignored = exec_start.replace("ignore_errors=no", "ignore_errors=yes");
-    let another =
-        format!("{exec_start}\n{{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }}");
-    let replaced = "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }".to_string();
-    for (exec_start, failure_action, what) in [
-        (ignored, failure_action.clone(), "a failure ignored"),
-        (another, failure_action.clone(), "a second start command"),
-        (replaced, failure_action.clone(), "another start command"),
-        (String::new(), failure_action.clone(), "no start command"),
-        (exec_start.clone(), "none".to_string(), "no failure action"),
+    let binary = Path::new(BINARY);
+    assert!(
+        check_switch_step(
+            &Step {
+                changed: Vec::new()
+            },
+            binary
+        )
+        .is_ok()
+    );
+    let ours = loaded_switch_step(binary, "ExecStart");
+    let other = "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }";
+    let changes: Vec<(&'static str, String, &str)> = vec![
         (
-            exec_start.clone(),
+            "ExecStart",
+            ours.replace("ignore_errors=no", "ignore_errors=yes"),
+            "a failure ignored",
+        ),
+        (
+            "ExecStart",
+            format!("{ours}\n{other}"),
+            "a second start command",
+        ),
+        ("ExecStart", other.to_string(), "another start command"),
+        ("ExecStart", String::new(), "no start command"),
+        (
+            "ExecStart",
+            ours.replace(
+                &format!("path={BINARY}"),
+                "path=/run/current-system/sw/bin/true",
+            ),
+            "another program with the step's arguments (an @ prefix)",
+        ),
+        ("ExecCondition", other.to_string(), "a condition"),
+        ("ExecStartPre", other.to_string(), "a command before"),
+        ("ExecStartPost", other.to_string(), "a command after"),
+        (
+            "SuccessExitStatus",
+            "1".to_string(),
+            "a failure counted as success",
+        ),
+        ("FailureAction", "none".to_string(), "no failure action"),
+        (
+            "FailureAction",
             "soft-reboot-force".to_string(),
             "a switch on failure",
         ),
-    ] {
+    ];
+    for (property, value, what) in changes {
         let step = Step {
-            exec_start,
-            failure_action,
+            changed: vec![(property, value)],
         };
-        let (check, _, fix) = refusal(&check_switch_step(&step, binary).unwrap_err());
+        let (check, reason, fix) = refusal(&check_switch_step(&step, binary).unwrap_err());
         assert_eq!(check, "switch-step", "{what}");
+        assert!(reason.contains(property), "{what}: {reason}");
         assert!(
             fix.contains("systemctl cat systemd-soft-reboot.service"),
             "{what}: {fix}"

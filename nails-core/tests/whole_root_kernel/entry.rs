@@ -48,6 +48,9 @@ pub(crate) struct FakeHost {
     watchdogs: Option<&'static str>,
     /// The switch's job timeout, when it is not the unit's own 30 minutes.
     timeout: Option<&'static str>,
+    /// The switch step's start commands once the drop-ins are loaded, when a
+    /// later drop-in sets them again; else NAILS's own.
+    exec_start: Option<&'static str>,
 }
 
 impl FakeHost {
@@ -79,16 +82,15 @@ impl GuardHost for FakeHost {
         Ok(self.watchdogs.unwrap_or("yes").to_string())
     }
     fn unit_property(&self, unit: &str, property: &str) -> nails_core::Result<String> {
-        // The step's unit as NAILS installs it: the drop-in names the RAM copy
-        // where the real system runs it.
+        // The step's unit as NAILS installs it, the drop-in naming the RAM
+        // copy where the real system runs it, but where the test sets the
+        // start command a later drop-in leaves.
         let binary = std::path::Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
             .join(nails_teardown::whole_root::plan::BINARY_NAME);
-        let (exec_start, failure_action) = nails_core::session::guards::loaded_switch_step(&binary);
         assert_eq!(unit, nails_core::session::guards::SWITCH_STEP_UNIT);
-        Ok(match property {
-            "ExecStart" => exec_start,
-            "FailureAction" => failure_action,
-            other => panic!("asked for {other}"),
+        Ok(match (property, self.exec_start) {
+            ("ExecStart", Some(exec_start)) => exec_start.to_string(),
+            _ => nails_core::session::guards::loaded_switch_step(&binary, property),
         })
     }
 }
@@ -1576,6 +1578,50 @@ fn an_entry_whose_switch_would_not_power_off_at_its_timeout_is_refused() {
             // One reload loads the guards, one forgets them again.
             assert_eq!(host.reloads.get(), 2, "{said}");
         }
+    });
+}
+
+/// A drop-in of the decoy's that sorts after NAILS's and starts another
+/// program in the step's place, its arguments left as NAILS's (an `@`
+/// prefix), refuses the entry once the reload has loaded it, and the entry is
+/// undone: PID 1 would run that program and switch without the step.
+#[test]
+fn an_entry_whose_switch_step_another_drop_in_changes_is_refused() {
+    let _ = Rerun::new(test_path!(
+        an_entry_whose_switch_step_another_drop_in_changes_is_refused
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let host = FakeHost {
+            exec_start: Some(
+                "{ path=/run/current-system/sw/bin/true ; argv[]=/run/overlay-runtime/control \
+                 transition ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; \
+                 code=(null) ; status=0/0 }",
+            ),
+            ..FakeHost::default()
+        };
+        let world = World::new();
+        let paths = world.paths();
+        let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+        let NailsError::PreFlightCheckFailed(failures) = &error else {
+            panic!("{error}");
+        };
+        assert_eq!(failures[0].0, "switch-step", "{error}");
+        assert!(
+            failures[0]
+                .1
+                .contains("path=/run/current-system/sw/bin/true"),
+            "{error}"
+        );
+        assert!(
+            !read_mountinfo()
+                .unwrap()
+                .iter()
+                .any(|e| e.mount_point.starts_with(paths.nextroot())),
+            "nothing was mounted at the next root"
+        );
+        assert!(!paths.runtime().exists());
+        assert!(!world.run.path().join(DROPIN_DIR).exists());
     });
 }
 

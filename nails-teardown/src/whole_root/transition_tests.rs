@@ -937,6 +937,24 @@ fn a_leftover_whose_runtime_directory_stays_ends_the_session() {
     );
 }
 
+/// A leftover whose `/run` was `noexec` before the activation, which cannot
+/// be made `noexec` again (here a directory that is no mount point, as no
+/// test may remount the real `/run`), ends the session: the decoy's start
+/// would run with an executable `/run`.
+#[test]
+fn a_leftover_whose_run_cannot_be_made_noexec_again_ends_the_session() {
+    let mut leftover = armed(Direction::Enter);
+    leftover.armed = None;
+    leftover.run_noexec = true;
+    let world = World::new();
+    world.write_plan(&leftover);
+    let why = ends(&world, &world.env(true, 1_000));
+    assert!(
+        why.starts_with("not armed for this transition, and /run could not be made noexec again"),
+        "{why}"
+    );
+}
+
 #[test]
 fn a_reboot_that_meets_an_unarmed_tree_records_nothing_on_the_volume() {
     let world = World::new();
