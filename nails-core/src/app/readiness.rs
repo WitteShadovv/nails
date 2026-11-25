@@ -423,6 +423,7 @@ impl Readiness {
             manager.filesystem(),
             nails_teardown::mountinfo::read_mountinfo(),
             &config.hidden_volume_root,
+            &crate::session::policy::device_present,
         );
         let profile = profile_summary(
             manager
@@ -475,12 +476,13 @@ fn attach_refusal<F: Filesystem>(
 }
 
 /// [`decoy_filesystems`] of the live decoy root `/`, with `mounts` the mount
-/// table as it was read: a table that cannot be read is named, never judged
-/// as an empty one.
+/// table as it was read and `present` telling whether a device is there: a
+/// table that cannot be read is named, never judged as an empty one.
 fn decoy_filesystems_on<F: Filesystem>(
     fs: &F,
     mounts: std::io::Result<Vec<MountEntry>>,
     hidden_root: &Path,
+    present: crate::session::policy::Present<'_>,
 ) -> Vec<String> {
     match mounts {
         Ok(mounts) => decoy_filesystems(
@@ -489,6 +491,7 @@ fn decoy_filesystems_on<F: Filesystem>(
             Path::new("/"),
             &mounts,
             hidden_root,
+            present,
         ),
         Err(error) => filesystems_without_mount_table(&error.to_string()),
     }
@@ -507,8 +510,11 @@ fn filesystems_without_mount_table(error: &str) -> Vec<String> {
 /// What the fstab policy would do with each filesystem in the fstab of the
 /// decoy root at `root` (`/`, but in tests), its mount points resolved in that
 /// root as activation resolves them, given the decoy's mount table `mounts`,
-/// and with the decoy's mount, swap and automount units outside its fstab. An
-/// entry the policy leaves as it is, such as the root itself, is not listed.
+/// and with the decoy's mount, swap and automount units outside its fstab.
+/// `present` tells whether a device is there now. An entry the policy leaves
+/// as it is, such as the root itself, is not listed, and a `noauto` line whose
+/// mount the hidden session skips in place of its mask is listed as skipped
+/// ([`crate::session::policy::Decision::describe_kept`]).
 ///
 /// Each lookup is asked of the automount guard by `snapshot` first, as the
 /// `fstab-policy` row asks it: what lies behind an automount point that
@@ -521,6 +527,7 @@ fn decoy_filesystems<F: Filesystem>(
     root: &Path,
     mounts: &[MountEntry],
     hidden_root: &Path,
+    present: crate::session::policy::Present<'_>,
 ) -> Vec<String> {
     use crate::filesystem::automount::{Guarded, Lookup, unnamed};
     use crate::session::{checks, fstab, mount_units, policy};
@@ -551,7 +558,7 @@ fn decoy_filesystems<F: Filesystem>(
         }
     };
     let entries = fstab::parse_in_root_guarded(&text, root, Some(guard));
-    let mut decisions = policy::decide_all(&entries, mounts, hidden_root, &policy::device_present);
+    let mut decisions = policy::decide_all(&entries, mounts, hidden_root, present);
     let run = root.join("run");
     let dirs = mount_units::UnitDirs {
         root,
@@ -560,10 +567,11 @@ fn decoy_filesystems<F: Filesystem>(
     };
     let native = checks::decoy_units(dirs, &decisions, mounts, hidden_root);
     decisions.extend(native);
+    let (kept, _) = mount_units::kept_off(dirs, &entries, &decisions, present);
     let mut lines: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
-        .map(policy::Decision::describe)
+        .map(|d| d.describe_kept(&kept.skips))
         .collect();
     lines.extend(unread);
     let named = lines.join("\n");

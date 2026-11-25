@@ -145,6 +145,40 @@ fn an_entering_result_lists_the_system_filesystems_and_masks() {
     assert!(value["data"].get("failed_checks").is_none(), "{value}");
 }
 
+/// A noauto line of a decoy disk that the entry skips in place of its mask
+/// ([`Plan::skips`], as a unit a boot target requires needs its mount) is
+/// listed as skipped, as `check` lists it. It was listed as masked, as the
+/// decision for the line alone says. Without the skip it stays masked.
+///
+/// [`Plan::skips`]: nails_teardown::whole_root::plan::Plan::skips
+#[test]
+fn a_noauto_line_the_entry_skips_is_listed_as_skipped() {
+    use nails_core::session::{fstab::parse_fstab, policy};
+    use nails_teardown::whole_root::plan::Skip;
+    let mounts = nails_teardown::mountinfo::parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let decisions = policy::decide_all(
+        &parse_fstab("/dev/vdy1 /r/a ext4 noauto 0 2\n"),
+        &mounts,
+        std::path::Path::new("/mnt/data"),
+        &|_| true,
+    );
+    let line = "(noauto, but a unit that pulls it in would have the hidden session mount it \
+                read-write)";
+    for (skipped, said) in [(true, "skipped"), (false, "masked")] {
+        let mut entry = entry(Vec::new());
+        entry.decisions = decisions.clone();
+        if skipped {
+            entry.plan.skips = vec![Skip {
+                units: vec!["r-a.mount".to_string()],
+                pulled: Vec::new(),
+                device: Some("/dev/vdy1".into()),
+            }];
+        }
+        let data = activate_data(&ActivateResult::Entering(&entry), 1.0);
+        assert_eq!(data.filesystems, [format!("/r/a: {said} {line}")]);
+    }
+}
+
 #[test]
 fn an_entry_with_warnings_reports_its_own_status_and_carries_them() {
     let entry = entry(vec![

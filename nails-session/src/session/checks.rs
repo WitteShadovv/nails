@@ -416,7 +416,7 @@ fn judge_fstab_not_looked_up(
     let notable: Vec<String> = decisions
         .iter()
         .filter(|d| !matches!(d, Decision::Leave { .. }))
-        .map(|d| skipped_noauto(d, skips).unwrap_or_else(|| d.describe()))
+        .map(|d| d.describe_kept(skips))
         .collect();
     let kept_off_mounts = decisions.iter().any(|d| {
         let units = d
@@ -450,27 +450,6 @@ fn judge_fstab_not_looked_up(
     } else {
         CheckResult::Warn(format!("{summary}. {}", notes.join(" ")))
     }
-}
-
-/// How `check` describes `decision` where it is the mask of a `noauto` line
-/// ([`Decision::is_noauto_mask`]) whose mount the hidden session skips in its
-/// place ([`mount_units::kept_off`]): a unit a boot target requires needs
-/// it, or a skip of the same unit waits for its device. `None` for any other
-/// decision, which is described as it is.
-fn skipped_noauto(decision: &Decision, skips: &[Skip]) -> Option<String> {
-    let Decision::Mask {
-        target,
-        units,
-        reason,
-        ..
-    } = decision
-    else {
-        return None;
-    };
-    let mount = units.first()?;
-    let skipped = skips.iter().any(|skip| skip.units.contains(mount));
-    (decision.is_noauto_mask() && skipped)
-        .then(|| format!("{}: skipped ({reason})", target.display()))
 }
 
 /// The decisions for the decoy's mount, swap and automount units outside its

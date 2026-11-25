@@ -218,7 +218,7 @@ fn filesystems(entry: &Entry) -> Vec<String> {
         .decisions
         .iter()
         .filter(|d| !matches!(d, nails_core::session::policy::Decision::Leave { .. }))
-        .map(nails_core::session::policy::Decision::describe)
+        .map(|d| d.describe_kept(&entry.plan.skips))
         .collect()
 }
 
