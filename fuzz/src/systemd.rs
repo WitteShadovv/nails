@@ -37,25 +37,31 @@ pub enum UnitName {
 /// dropped, and `..` components at the start of an absolute path, which
 /// cannot climb above `/`.
 pub fn path_simplify(path: &str) -> String {
+    String::from_utf8(simplify(path.as_bytes())).expect("simplifying keeps UTF-8")
+}
+
+/// [`path_simplify`] byte for byte: systemd reads a path as bytes, valid
+/// UTF-8 or not.
+fn simplify(path: &[u8]) -> Vec<u8> {
     if path.is_empty() {
-        return String::new();
+        return Vec::new();
     }
-    let absolute = path.starts_with('/');
-    let mut kept: Vec<&str> = Vec::new();
-    for component in path.split('/') {
-        if component.is_empty() || component == "." {
+    let absolute = path.first() == Some(&b'/');
+    let mut kept: Vec<&[u8]> = Vec::new();
+    for component in path.split(|&byte| byte == b'/') {
+        if component.is_empty() || component == b"." {
             continue;
         }
-        if absolute && kept.is_empty() && component == ".." {
+        if absolute && kept.is_empty() && component == b".." {
             continue;
         }
         kept.push(component);
     }
-    let joined = kept.join("/");
+    let joined = kept.join(&b'/');
     if absolute {
-        format!("/{joined}")
+        [b"/".as_slice(), &joined].concat()
     } else if joined.is_empty() {
-        ".".to_string()
+        b".".to_vec()
     } else {
         joined
     }
@@ -63,19 +69,19 @@ pub fn path_simplify(path: &str) -> String {
 
 /// `path_is_normalized()` for a path `path_simplify()` returned: no `..`
 /// component, no component longer than `NAME_MAX`, shorter than `PATH_MAX`.
-fn normalized(path: &str) -> bool {
-    path != "."
+fn normalized(path: &[u8]) -> bool {
+    path != b"."
         && path.len() < PATH_MAX
         && path
-            .split('/')
-            .all(|component| component != ".." && component.len() <= NAME_MAX)
+            .split(|&byte| byte == b'/')
+            .all(|component| component != b".." && component.len() <= NAME_MAX)
 }
 
 /// `do_escape()`: `/` becomes `-`, a leading `.` and every byte outside
-/// `[A-Za-z0-9:_.]` become `\xNN`.
-fn escape(text: &str) -> String {
+/// `[A-Za-z0-9:_.]` become `\xNN`, valid UTF-8 or not.
+fn escape(text: &[u8]) -> String {
     let mut out = String::with_capacity(text.len());
-    for (index, byte) in text.bytes().enumerate() {
+    for (index, &byte) in text.iter().enumerate() {
         match byte {
             b'/' => out.push('-'),
             b'.' if index == 0 => out.push_str("\\x2e"),
@@ -89,20 +95,29 @@ fn escape(text: &str) -> String {
 }
 
 /// `unit_name_from_path()`: the unit with `suffix` (`.mount`, `.swap`,
-/// `.automount`) systemd generates for `path`.
-pub fn unit_name_from_path(path: &str, suffix: &str) -> UnitName {
+/// `.automount`) systemd generates for `path`, read byte for byte.
+pub fn unit_name_from_path(path: impl AsRef<[u8]>, suffix: &str) -> UnitName {
+    let path = path.as_ref();
     // A C string ends at its first NUL; such a line never reaches systemd as
     // NAILS reads it.
-    if path.contains('\0') {
+    if path.contains(&0) {
         return UnitName::Refused;
     }
-    let simple = path_simplify(path);
-    let escaped = if simple.is_empty() || simple == "/" {
+    let simple = simplify(path);
+    let escaped = if simple.is_empty() || simple == b"/" {
         "-".to_string()
     } else if !normalized(&simple) {
         return UnitName::Refused;
     } else {
-        escape(simple.trim_matches('/'))
+        let start = simple
+            .iter()
+            .position(|&byte| byte != b'/')
+            .unwrap_or(simple.len());
+        let end = simple
+            .iter()
+            .rposition(|&byte| byte != b'/')
+            .map_or(start, |at| at + 1);
+        escape(&simple[start..end])
     };
     let name = format!("{escaped}{suffix}");
     if name.len() >= UNIT_NAME_MAX {
