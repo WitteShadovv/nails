@@ -43,8 +43,10 @@ logs=$out/logs
 work=$(mktemp -d "${TMPDIR:-/tmp}/arch-install.XXXXXX")
 http_pid=
 boot_pid=
+install_pid=
 cleanup() {
   [ -z "$http_pid" ] || kill "$http_pid" 2>/dev/null || true
+  [ -z "$install_pid" ] || kill "$install_pid" 2>/dev/null || true
   [ -z "$boot_pid" ] || kill "$boot_pid" 2>/dev/null || true
   rm -rf "$work"
 }
@@ -91,17 +93,42 @@ common=(
 )
 
 echo "Installing from $(basename "$ISO") (live system $iso_uuid)"
-timeout 5400 qemu-system-x86_64 "${common[@]}" \
+# The ISO goes on a virtio-scsi CD drive, as archiso's own run_archiso attaches
+# it: the live initramfs finds no IDE CD drive.
+qemu-system-x86_64 "${common[@]}" \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$work/vars.fd" \
   -kernel "$work/iso/arch/boot/x86_64/vmlinuz-linux" \
   -initrd "$work/iso/arch/boot/x86_64/initramfs-linux.img" \
   -append "$live_options console=tty0 console=ttyS0,115200 script=http://10.0.2.2:$port/install.sh" \
-  -drive file="$ISO",media=cdrom,if=ide,readonly=on \
+  -device virtio-scsi-pci,id=scsi0 \
+  -device scsi-cd,bus=scsi0.0,drive=cdrom0 \
+  -drive id=cdrom0,if=none,format=raw,media=cdrom,readonly=on,file="$ISO" \
   -drive file="$work/disk.qcow2",format=qcow2,if=ide,discard=unmap \
   -drive file="$work/out.img",format=raw,if=virtio \
-  -serial file:"$logs/install-serial.log" ||
-  die "the install VM failed or timed out (see logs/install-serial.log)"
+  -serial file:"$logs/install-serial.log" &
+install_pid=$!
+
+# Watch the install: stop at once when the live system cannot start (the
+# initramfs drops to its rescue shell, or the kernel panics), and after 90
+# minutes in any case, rather than wait out the job's timeout.
+for _ in $(seq 5400); do
+  kill -0 "$install_pid" 2>/dev/null || break
+  if grep -q -e 'ERROR: Device' -e 'Kernel panic' -e "can't access tty" "$logs/install-serial.log" 2>/dev/null; then
+    kill "$install_pid" 2>/dev/null || true
+    wait "$install_pid" 2>/dev/null || true
+    tail -n 40 "$logs/install-serial.log" >&2 || true
+    die "the live system did not start (see logs/install-serial.log)"
+  fi
+  sleep 1
+done
+if kill -0 "$install_pid" 2>/dev/null; then
+  kill "$install_pid" 2>/dev/null || true
+  wait "$install_pid" 2>/dev/null || true
+  tail -n 80 "$logs/install-serial.log" >&2 || true
+  die "the install VM did not finish within 90 minutes (see logs/install-serial.log)"
+fi
+wait "$install_pid" || die "the install VM failed (see logs/install-serial.log)"
 
 mcopy -s -n -i "$work/out.img" '::*' "$logs/" || true
 status=$(cat "$logs/status" 2>/dev/null || echo "no status written")
