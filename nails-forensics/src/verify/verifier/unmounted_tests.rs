@@ -231,14 +231,19 @@ fn each_mount_point_says_how_to_mount_it_by_how_its_device_is_mounted_now() {
 }
 
 /// Where the mount table here cannot be read, whether a device is mounted is
-/// not known: the line says the table could not be read and gives the mount
-/// for either case, never the one for a device that is not mounted alone.
+/// not known, and no mount writes nothing in every case: a mount again with
+/// `remount,bind,ro` makes a btrfs mounted read-only read-write, and it
+/// commits. The line names the unread table and asks for a run where it can
+/// be read, and gives no command.
 #[test]
-fn a_mount_table_that_cannot_be_read_is_named_with_both_mounts() {
+fn a_mount_table_that_cannot_be_read_is_named_and_no_mount_is_given() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
     fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
-    fs.mock_add_file("/mnt/decoy/etc/fstab", "UUID=r /home ext4 defaults 0 2\n");
+    fs.mock_add_file(
+        "/mnt/decoy/etc/fstab",
+        "UUID=r /home btrfs rw,subvol=/@home 0 0\n",
+    );
     fs.mock_set_path_type("/mnt/decoy/home", PathKind::Dir);
     fs.mock_set_directory_contents(Path::new("/mnt/decoy/home"), Vec::new());
     fs.mock_set_mount_table_error("no proc");
@@ -247,19 +252,18 @@ fn a_mount_table_that_cannot_be_read_is_named_with_both_mounts() {
         .offline_under("/mnt/decoy".into())
         .run(false)
         .unwrap();
+    let lines = unmounted(&result.areas_not_checked);
     assert_eq!(
-        unmounted(&result.areas_not_checked),
+        lines,
         [
             "/home, which the decoy's /etc/fstab mounts (missing or empty under the root. The \
-             mount table here could not be read (/proc/self/mountinfo: no proc), so whether its \
-             device is mounted here is not known. Where it is, mount it there again and make \
-             that mount read-only before the scan, with `sudo mount /dev/disk/by-uuid/r \
-             /mnt/decoy/home && sudo mount -o remount,bind,ro /mnt/decoy/home`. Where it is not, \
-             make it read-only and mount it there without a journal replay before the scan, with \
-             `sudo blockdev --setro /dev/disk/by-uuid/r && sudo mount -o ro,noload \
-             /dev/disk/by-uuid/r /mnt/decoy/home`)"
+             mount table here could not be read (/proc/self/mountinfo: no proc), so it is not \
+             known whether its device is mounted here, nor which mount of it writes nothing to \
+             it: run verify again where /proc is mounted and readable, and it says how to mount \
+             it)"
         ]
     );
+    assert!(!lines[0].contains("sudo"), "{}", lines[0]);
 }
 
 #[test]

@@ -241,7 +241,11 @@ impl<F: Filesystem> Verifier<F> {
     /// read-only as it is or made read-only once mounted. Any other device is
     /// made read-only first and mounted without a journal replay. Where the
     /// mount table here cannot be read, whether the device is mounted is not
-    /// known: the line says so and gives the mount for either case.
+    /// known, and no one command writes nothing in every case: the second
+    /// mount for a device mounted read-write here, made read-only once
+    /// mounted, makes a btrfs that is mounted read-only read-write, and it
+    /// commits. The line names the table and asks for a run where it can be
+    /// read, and gives no command.
     fn how_to_mount(
         &self,
         entry: &FstabEntry,
@@ -294,13 +298,10 @@ impl<F: Filesystem> Verifier<F> {
             Ok(table) => table,
             Err(error) => {
                 return format!(
-                    "The mount table here could not be read ({error}), so whether its device is \
-                     mounted here is not known. Where it is, mount it there again and make that \
-                     mount read-only before the scan, with `sudo mount {}{device} {at} && sudo \
-                     mount -o remount,bind,ro {at}`. Where it is not, make it read-only and mount \
-                     it there without a journal replay before the scan, with `sudo blockdev \
-                     --setro {device} && sudo mount {replay_free}{device} {at}`",
-                    with(None)
+                    "The mount table here could not be read ({error}), so it is not known \
+                     whether its device is mounted here, nor which mount of it writes nothing to \
+                     it: run verify again where /proc is mounted and readable, and it says how to \
+                     mount it"
                 );
             }
         };
