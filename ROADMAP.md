@@ -18,7 +18,7 @@ Work in progress for the current release line.
   and runs the same whole-root session, with the hidden configuration in the upper's `/etc` instead
   of a NixOS build.
 - **Safer activation, deactivation and recovery.** Reduce partial-failure cases during activation
-  and the way back, tighten handling of a lost hidden volume, and improve recovery when an
+  and at the end of a session, tighten handling of a lost hidden volume, and improve recovery when an
   operation is interrupted or the operator falls back to `nails emergency` / `nails recover`.
 - **Stronger post-deactivation verification.** Widen `nails verify` coverage for common host-side
   artifacts and keep its output explicit about what was and was not checked, without implying broader
@@ -46,7 +46,7 @@ Planned once the current line is stable.
 Longer-horizon work and open questions, not yet scheduled.
 
 - **Memory forensics.** Study and harden against RAM-resident traces of a hidden session. The
-  open items (RAM after the way back, crash-dump channels, swap enabled mid-session) are tracked
+  open items (RAM after the power-off, crash-dump channels, swap enabled mid-session) are tracked
   in [#5](https://github.com/WitteShadovv/nails/issues/5).
 - **Cross-backend evaluation.** Extend the disk-image leak checks and the VM/container smoke tiers so
   every supported distribution is exercised end-to-end, with adding a distribution being one

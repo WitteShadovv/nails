@@ -115,7 +115,8 @@ We prioritize issues based on impact to user safety, data exposure, isolation fa
 Examples of potentially high-priority reports include:
 
 - exposure of hidden-environment artifacts after documented cleanup
-- bypasses of the session's isolation, the way back or the rollback of an interrupted entry
+- bypasses of the session's isolation, the power-off that ends a session or the rollback of an
+  interrupted entry
 - privilege escalation through NAILS-managed operations
 - release artifact integrity problems
 

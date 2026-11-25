@@ -55,7 +55,7 @@ NAILS does at runtime is:
    the activation command to a history file on the decoy (see
    [the flush race](#the-flush-race), and its exception for terminal
    multiplexers). `nails emergency` kills them the same way before it starts
-   the way back or the power-off.
+   the power-off.
 3. **Make no write to decoy history.** NAILS never edits or reads a history file
    on the decoy: an access would itself leave a fresh timestamp. Decoy-history
    hygiene is decoy configuration and the operator's pre-activation routine.
@@ -170,8 +170,8 @@ ones among them, and the order only narrows that race. Keep those options off
 on the decoy (see
 [decoy-requirements.md](decoy-requirements.md#shell-history-hardening)).
 
-Inside the hidden session there is no such window: the shells stop before the
-switch back, while the overlay is still the root.
+Inside the hidden session there is no such window: the shells stop in the
+power-off, while the overlay is still the root.
 
 ## Verifying on the decoy
 

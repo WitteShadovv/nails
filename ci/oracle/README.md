@@ -286,7 +286,7 @@ is a btrfs filesystem compressed with zstd, with `root`, `boot`, `home` and
 `var` subvolumes and a vfat ESP beside it on both releases (the probes of the
 two images record the same layout), and keeps the whole disk four times,
 powered off: before, after one plain reboot (control), after a second plain
-reboot (control2), and after one more boot, a hidden session and the way back
+reboot (control2), and after one more boot, a hidden session and its power-off
 (after). The run stays in one QEMU process, which pauses at the guest's
 power-off instead of exiting, so the images are one disk's lineage: each is a
 copy of the paused disk, and a reset boots it again.

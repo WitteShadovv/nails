@@ -51,13 +51,13 @@ What runs in this tier:
 
 | Tests | Covers |
 | --- | --- |
-| `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the SELinux labels copied from the decoy's directories onto an upper and along the way to the operator's home, never onto or through a link, and the entry that gives them to the roots of its uppers and to the way to the home or is refused and undone (on a host without SELinux), the read-only ESP, the fstab policy and the units outside the fstab, the skips the transition step writes, the transition step against a live mount table, the way back, the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
-| `nails-core/tests/boot_records_kernel.rs` | The way back's login- and boot-record pieces: `/run` left executable for them and made `noexec` again by the reconcile step, the decoy's wtmp and the wtmpdb writer's unit read without touching their access times on a `strictatime` filesystem, and the wtmpdb writer started in a time namespace whose boot clock starts at the switch, kept from the system bus; the copy left for the decoy's first start carrying the SELinux label the plan records, written through the running kernel, none where the plan records none, and left out with the units that would start it, `/run` made `noexec` again at once, on a filesystem that stores no labels |
+| `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the SELinux labels copied from the decoy's directories onto an upper and along the way to the operator's home, never onto or through a link, and the entry that gives them to the roots of its uppers and to the way to the home or is refused and undone (on a host without SELinux), the read-only ESP, the fstab policy and the units outside the fstab, the skips the transition step writes, the transition step against a live mount table, the pieces of the old way back (which no session reaches now), the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
+| `nails-core/tests/boot_records_kernel.rs` | The login- and boot-record pieces of the old way back, which no session reaches now: `/run` left executable for them and made `noexec` again by the reconcile step, the decoy's wtmp and the wtmpdb writer's unit read without touching their access times on a `strictatime` filesystem, and the wtmpdb writer started in a time namespace whose boot clock starts at the switch, kept from the system bus; the copy left for the decoy's first start carrying the SELinux label the plan records, written through the running kernel, none where the plan records none, and left out with the units that would start it, `/run` made `noexec` again at once, on a filesystem that stores no labels |
 | The `kernel_tests` modules of `nails-cli/tests/config_write.rs`, `nails-core/src/app/config_edit_tests.rs` and `nails-base/src/filesystem/pinned_dir_tests.rs` | The settings writer on a tmpfs hidden volume, through the real attach gate: `config set` and `config unset` from the binary bound into the volume as `<volume>/nails`, the template's comments kept, an invalid value, a link at the file and a `--config` file off the volume refused with the file elsewhere left as it was, and eight processes at once each landing their change; a volume with no NAILS layout refused; a tmpfs or a file bound inside the volume refused as another filesystem on the way |
 | `nails-cli/tests/early_dispatch.rs` and the `kernel_tests` module of `nails-cli/src/cli/early_tests.rs` | `emergency` detaching a leftover next root before it reads the configuration; in a PID namespace of its own, only a child of PID 1 counting as started by PID 1, which the check of the program's domain asks |
 | `nails-cli/tests/maintenance_cli.rs` and the `kernel_tests` modules of `rehearse_cli.rs`, `cli_contract.rs`, `activate_gate.rs`, `helper_stdio.rs`, `nails-cli/src/cli/helper/switch_tests.rs` and `maintain_tests.rs` (the window's helper, when the `gui` feature is on), `nails-cli/src/cli/logging/tests.rs` and `nails-cli/src/cli/commands/init/tests.rs` | The real binary's write paths (state, lock, rehearsal state, log file, the init layout) on a tmpfs hidden root, through the real attach gate: the binary they spawn inherits the namespace, so no test hook stands in for a mounted volume. `activate_gate.rs` also mounts a second tmpfs over the root and checks that neither receives a file, and that `activate --json` writes exactly one envelope of its schema to stdout. The helper's tests run a discard, an activation, init, a rehearsal plant and a configuration change through it and compare each answer with the CLI's envelope and exit code for the same command, and check that a window closing its pipe before the point of no return cancels the activation and that a configuration change writes only with its token and while the file is still what its plan read |
 | `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
-| `nails-core/tests/network_way_back_kernel.rs` | The way back's network restore in a throwaway network namespace, over netlink: the session's links (made with the real `ip`, one made again under the name of a decoy link included) and its policy-routing rules deleted, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the session's firewall tables (made with the real `nft`) deleted while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
+| `nails-core/tests/network_way_back_kernel.rs` | The network restore of the old way back, which no session reaches now, in a throwaway network namespace, over netlink: the session's links (made with the real `ip`, one made again under the name of a decoy link included) and its policy-routing rules deleted, setting a decoy device's address back on a link that is up and on one that is down, the settings below `/proc/sys/net` written back to what entry found in that namespace, not to the kernel's defaults (the namespace starts with the host's IPv4 settings, so forwarding is on where the host forwards, and the decoy's own `arp_ignore` and `src_valid_mark` are not the defaults), and the session's firewall tables (made with the real `nft`) deleted while the decoy's keeps its handle. A host without the `dummy` link type, `ip`, `nft` or nf_tables skips the test that needs it, and `NAILS_REQUIRE_USERNS=1` fails it |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
 | `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`, the `kernel-modules` check against what the kernel leaves in an upper, the whole upper-filesystem probe as `check` runs it, with the label copy the host asks for and with the SELinux label required, a child started with every mount `noatime`, a read under the quiet mounts of a reload and a lookup through a quiet copy of the tree leaving the access times of a file and of a link alone on btrfs mounted `relatime`, and the loop driver's record of the file behind a real loop device, on a tmpfs and on btrfs, which tells the session's own storage below the hidden root; all but the whiteout test, the kernel-modules test, the two probe tests, the two loop tests and the access-time test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |
@@ -126,56 +126,32 @@ boot records as a power cycle would. CI runs both on hosted KVM runners, nightly
 and on the pull requests that change what they are built from
 ([ci.md](ci.md#the-vm-tests-distro-e2eyml)).
 
-The dummy links of `network_way_back_kernel.rs` take a new MAC address while
-they are up, so the way back's retry for a driver that refuses one (it takes
-the device down for the change and brings it up again) is tested in a VM, by
-`session-mac-restore`: on QEMU's emulated NE2000 card, whose driver refuses a
-live change as many USB Ethernet adapters and Wi-Fi cards do, the card has its
-permanent address back, and is up, after `deactivate` and after a plain
-`emergency`.
-
-A way back that leaves a link, MAC address, rule or table it set out to undo as
-the session left it powers off instead of returning, and writes nothing on the
-screen. The decision and the power-off itself are unit tests (a fake kernel
-for the network state, a fake `systemctl`, and a stand-in for the kernel's
-power-off); a
-real-kernel test runs that way back with a file bound over `/dev/console` and
-finds it empty; the whole path is tested in a VM, by
-`session-wayback-poweroff`: a session that loads `ipip`, whose fallback device
-`tunl0` the kernel keeps when asked to delete it, ends with a power-off and
-nothing on the console that says why or names the decoy, with PID 1's status
-lines turned on, after `deactivate` and after a plain `emergency`, while a
-session whose dummy link the way back deletes still returns.
+Every session ends in a power-off. Unit tests check that each ending asks
+for it: `deactivate`, the emergency, the backend watcher, the sleep guard and
+each failure of the transition step, through a stand-in `systemctl` and a
+kernel power-off function that refuses. No test runs a real power action. The
+VM tests follow each ending to a real power-off and boot the decoy again where
+the test goes on. Some unit and real-kernel tests still cover code of the old
+way back (the network restore, the login- and boot-record pieces, the mounts
+made again), which no session reaches now. They stay until that code goes.
 
 A switch that hangs until `soft-reboot.target`'s job timeout powers the
 machine off instead of being forced through without the transition step. The
 drop-in that sets this and the entry's check that it holds once loaded (its
 action, service watchdogs on and a timeout set) are unit tests and real-kernel
-tests, and so is its removal on each path that removes it: the way back, a
-switch refused on the decoy, an entry rolled back (cancelled, failed, or
-refused before or at its soft-reboot), `recover` and an emergency on the
-decoy. The way back's check of the same, and of the stop guard of
-`blk-availability.service`, in the hidden session's PID 1 is a unit test, down
-to the refusal `deactivate` prints before the lines that say the session ends,
-and a power-off asks nothing. A unit test in namespaces of its own gives the
-handle that `deactivate` leaves with stand-ins for `systemctl` and `busctl`
-where the system directories begin: it refuses a return and lets a power-off
-go. The whole path is tested in a VM, by `session-switch-timeout`: a test-only
-unit whose stop never ends holds up the switch, and a test-only drop-in
-shortens the timeout to a minute. The way back and the way in each power the
-machine off, with PID 1's own line for it on the console and no userspace
-coming up first. Without the drop-in the same hold forces a plain soft-reboot
-of the decoy through, and a way back whose drop-in a test-only unit's stop
-removes during the switch, after `deactivate` checked it, goes on by force
-into the decoy, which comes up with the session's files still in `/run`. With
-a plain `poweroff` set for the timeout instead, PID 1 skips that action during
-the switch ("Shutdown is already active"), and a switch held up for 90 seconds
-goes on only when the hold ends: why the drop-in powers off by force. In the
-same test activation refuses with no timeout and goes on after a `systemctl
-service-watchdogs no`, which its own reload undoes, and `deactivate` refuses
-with service watchdogs off, with no timeout and without the drop-in, the
-session going on each time and nothing said about its end. `deactivate
---poweroff` in a session with service watchdogs off powers the machine off.
+tests, and so is its removal on each path that removes it: a switch refused on
+the decoy, an entry rolled back (cancelled, failed, or refused before or at its
+soft-reboot), `recover` and an emergency on the decoy. The guard stays for the
+whole session. The whole path is tested in a VM, by `session-switch-timeout`:
+a test-only unit whose stop never ends holds up the switch, and a test-only
+drop-in shortens the timeout to a minute. The way in powers the machine off,
+with PID 1's own line for it on the console and no userspace coming up first.
+Without the drop-in the same hold forces a plain soft-reboot of the decoy
+through. With a plain `poweroff` set for the timeout instead, PID 1 skips that
+action during the switch ("Shutdown is already active"), and a switch held up
+for 90 seconds goes on only when the hold ends: why the drop-in powers off by
+force. In the same test activation refuses with no timeout and goes on after a
+`systemctl service-watchdogs no`, which its own reload undoes.
 Activation's refusal with service watchdogs off, which only
 `systemd.service_watchdogs=` on the kernel command line (or with systemd 257
 and older in the `SystemdOptions` EFI variable) leaves after its reload, is a
@@ -220,7 +196,7 @@ A mock is **not enough on its own** when:
    budget when the cost matters.
 
 And for every test: **assert the effect, not the call.** Check the state file,
-the bytes in the upper, the mount table after the way back. A recorded operation
+the bytes in the upper, the mount table after the entry. A recorded operation
 list is a supplement, never the only assertion.
 
 The doubles in use, and what backs them: `MockFilesystem`
@@ -306,8 +282,8 @@ cover marks then goes unchecked.
 - **The activation step order**, in `nails-base/src/reporter/progress/proofs.rs`.
   The run order lists every phase once. It puts the runtime first, the overlay
   before the mount policy, the policy before the hidden system's build, the
-  closure kept before that system is activated, the masks and the way back after
-  the build, and the arming of the switch last. The steps an activation shows are
+  closure kept before that system is activated, the masks and the `WayBack`
+  phase (the mounts the entry carries) after the build, and the arming of the switch last. The steps an activation shows are
   numbered from 1 to the number of phases it runs, in that order, none skipped
   or repeated, and a build phase of an activation that builds nothing gets no
   number. The numbering proof takes any two phases and both kinds of
