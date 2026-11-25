@@ -12,15 +12,19 @@ name: Test images
 #            prompt, and the compressed qcow2 (under 2 GiB) is kept as an
 #            artifact with its SHA-256 and manifest
 #   publish  uploads them to the release images-arch-install (created when it
-#            is missing; an asset of the same name is replaced), replaces
-#            arch-install-latest.json with the new manifest, and deletes the
-#            older builds beyond the newest three that no images.json of
-#            main, next or this commit pins
+#            is missing), replaces arch-install-latest.json with the new
+#            manifest, and deletes the older builds beyond the newest three
+#            that no images.json of main, next or this commit pins. It
+#            deletes nothing, and replaces no asset of the same name, unless
+#            it could read all three images.json, and it never replaces a
+#            pinned asset
 #   verify   downloads the asset from its public URL and checks its SHA-256
 #
-# Every build gets a name of its own (the ISO version, the UTC date and the
-# run ID), so a nightly build never replaces the asset that images.json pins;
-# a re-run of the same run replaces its own upload. `python3 -m ci.distro_images
+# Every build gets a name of its own (the ISO version, the UTC date, the run
+# ID and the attempt), so a nightly build never replaces the asset that
+# images.json pins; only a re-run of the publish job alone, which keeps the
+# build's name, meets an asset of its own name, and replaces it only when no
+# images.json pins it. `python3 -m ci.distro_images
 # repin arch-install` moves the pin to the newest build, which the latest
 # manifest names.
 #
@@ -107,9 +111,10 @@ jobs:
         id: name
         env:
           RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           iso=$(jq -er .iso.version nix/distro-tests/arch-install/inputs.json)
-          asset="$FAMILY-$iso-$(date -u +%Y%m%d)-$RUN_ID.qcow2"
+          asset="$FAMILY-$iso-$(date -u +%Y%m%d)-$RUN_ID-$RUN_ATTEMPT.qcow2"
           echo "asset=$asset" >> "$GITHUB_OUTPUT"
           echo "Building $asset"
 
@@ -183,7 +188,7 @@ jobs:
 
     steps:
       - name: Fetch the image
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: arch-install-image
           path: ${{ runner.temp }}/image
@@ -201,26 +206,46 @@ jobs:
           cp "$ASSET.json" "$FAMILY-latest.json"
 
       # The assets a prune must keep: the one each images.json of main, next
-      # and this commit pins, read from the public repository without a token.
+      # and this commit pins, read with the job's own read-only token. The
+      # list is complete only when every read succeeded; a branch that does
+      # not exist pins nothing, but any other failed read leaves the list
+      # incomplete, and then nothing is pruned and no asset is replaced.
       - name: List the pinned assets
+        id: pins
         env:
+          GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
           SHA: ${{ github.sha }}
         run: |
-          : > "$RUNNER_TEMP/pinned"
+          pinned="$RUNNER_TEMP/pinned"
+          : > "$pinned"
+          complete=yes
           for ref in main next "$SHA"; do
-            url="https://raw.githubusercontent.com/$REPOSITORY/$ref/nix/distro-tests/images.json"
-            if table=$(curl -fsSL --retry 3 "$url"); then
-              jq -r --arg family "$FAMILY" \
+            if table=$(gh api -H "Accept: application/vnd.github.raw+json" \
+              "repos/$REPOSITORY/contents/nix/distro-tests/images.json?ref=$ref" 2> "$RUNNER_TEMP/read-error"); then
+              if ! jq -r --arg family "$FAMILY" \
                 '.[] | .source | select(.kind == "mirror" and .family == $family and .asset != null) | .asset' \
-                <<< "$table" >> "$RUNNER_TEMP/pinned"
-            else
-              echo "::warning::Could not read images.json of $ref; its pin is not protected from the prune."
+                <<< "$table" >> "$pinned"; then
+                complete=no
+                echo "::warning::images.json of $ref is not the table this step reads."
+              fi
+              continue
             fi
+            if [ "$ref" != "$SHA" ]; then
+              if gh api "repos/$REPOSITORY/branches/$ref" --jq .name > /dev/null 2> "$RUNNER_TEMP/branch-error"; then
+                :
+              elif grep -q '(HTTP 404)' "$RUNNER_TEMP/branch-error"; then
+                echo "There is no branch $ref, so it pins nothing."
+                continue
+              fi
+            fi
+            complete=no
+            echo "::warning::Could not read images.json of $ref: $(head -c 300 "$RUNNER_TEMP/read-error")"
           done
-          sort -u -o "$RUNNER_TEMP/pinned" "$RUNNER_TEMP/pinned"
-          echo "Pinned assets:"
-          cat "$RUNNER_TEMP/pinned"
+          sort -u -o "$pinned" "$pinned"
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+          echo "Pinned assets (list complete: $complete):"
+          cat "$pinned"
 
       # The one step that holds the upload token. It runs gh alone, on the
       # files the build job produced and their checked hash.
@@ -228,6 +253,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.NAILS_TEST_IMAGES_TOKEN }} # zizmor: ignore[secrets-outside-env]
           ASSET: ${{ needs.build.outputs.asset }}
+          PINS_COMPLETE: ${{ steps.pins.outputs.complete }}
         working-directory: ${{ runner.temp }}/image
         run: |
           if [ -z "$GH_TOKEN" ]; then
@@ -240,15 +266,35 @@ jobs:
               --notes "Nightly builds of the $FAMILY test image of WitteShadovv/nails (nix/distro-tests/arch-install). Each build is a qcow2 with its .sha256 and .json manifest; $FAMILY-latest.json names the newest. Test data, not a release of NAILS." \
               --latest=false
           fi
+          list_assets() {
+            release_id=$(gh api "repos/$ASSETS_REPO/releases/tags/$RELEASE_TAG" --jq .id)
+            gh api --paginate "repos/$ASSETS_REPO/releases/$release_id/assets" \
+              --jq '.[] | [.id, .name, .created_at] | @tsv' > "$RUNNER_TEMP/assets"
+          }
+
+          # Replace an asset of the same name (a re-run of the publish job
+          # alone keeps the build's name) only when no protected ref pins it,
+          # and only when that is known.
+          list_assets
+          if awk -F '\t' -v n="$ASSET" '$2 == n { found = 1 } END { exit !found }' "$RUNNER_TEMP/assets"; then
+            if [ "$PINS_COMPLETE" != yes ] || grep -qxF "$ASSET" "$RUNNER_TEMP/pinned"; then
+              echo "::error::$ASSET is in the release already and is pinned, or the pins could not all be read; it is not replaced."
+              exit 1
+            fi
+            echo "Replacing $ASSET, which no images.json pins."
+          fi
           gh release upload "$RELEASE_TAG" --repo "$ASSETS_REPO" --clobber \
             "$ASSET" "$ASSET.sha256" "$ASSET.json"
           gh release upload "$RELEASE_TAG" --repo "$ASSETS_REPO" --clobber \
             "$FAMILY-latest.json"
 
-          # Prune: keep the newest builds and every pinned one.
-          release_id=$(gh api "repos/$ASSETS_REPO/releases/tags/$RELEASE_TAG" --jq .id)
-          gh api --paginate "repos/$ASSETS_REPO/releases/$release_id/assets" \
-            --jq '.[] | [.id, .name, .created_at] | @tsv' > "$RUNNER_TEMP/assets"
+          # Prune: keep the newest builds and every pinned one, and nothing at
+          # all when a pin could not be read.
+          if [ "$PINS_COMPLETE" != yes ]; then
+            echo "::warning::Not every images.json could be read, so no old build is deleted."
+            exit 0
+          fi
+          list_assets
           grep -P '\t'"$FAMILY"'-[^\t]+\.qcow2\t' "$RUNNER_TEMP/assets" \
             | sort -t "$(printf '\t')" -k3,3r | cut -f2 > "$RUNNER_TEMP/builds" || true
           tail -n +"$((KEEP_BUILDS + 1))" "$RUNNER_TEMP/builds" | while read -r build; do
