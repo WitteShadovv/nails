@@ -45,6 +45,8 @@ GRANULARITY = 512
 HOLD = "blkstat-mark hold"
 #: What it prints when it stops waiting.
 RELEASE = "blkstat-mark release"
+#: What the host types on the serial console to end the wait, once it cut.
+GO = "blkstat-go\n"
 
 #: The phase a window starts with: the activation, the decoy's shutdown, the
 #: switch.
@@ -53,7 +55,7 @@ SWITCH = "switch"
 SESSION = "session"
 
 #: The tool names :func:`install` takes.
-TOOLS = ("qemu_img", "debugfs", "dumpe2fs", "sfdisk")
+TOOLS = ("qemu_img", "debugfs", "sfdisk")
 
 #: The most blocks of one range the report names a writer for.
 ATTRIBUTE_LIMIT = 64
@@ -204,7 +206,7 @@ def hold_and_release(lines: list[str]) -> tuple[int | None, int | None]:
 
 @dataclass
 class Ext4Layout:
-    """What ``dumpe2fs`` says of an ext4 filesystem's layout."""
+    """What ``debugfs stats`` says of an ext4 filesystem's layout."""
 
     block_size: int
     inodes_per_group: int
@@ -215,8 +217,22 @@ class Ext4Layout:
     tables: list[tuple[int, int, int]] = field(default_factory=list)
 
 
-def parse_dumpe2fs(text: str) -> Ext4Layout | None:
-    """The layout in ``dumpe2fs`` output, ``None`` when it shows none."""
+def _backup_groups(groups: int) -> list[int]:
+    """The groups that hold a superblock copy under ``sparse_super``: 0, 1
+    and the powers of 3, 5 and 7."""
+    found = {0, 1}
+    for base in (3, 5, 7):
+        power = base
+        while power < groups:
+            found.add(power)
+            power *= base
+    return sorted(g for g in found if g < groups)
+
+
+def parse_stats(text: str) -> Ext4Layout | None:
+    """The layout in ``debugfs -R stats`` output, ``None`` when it shows
+    none. The superblock copies and group descriptors are placed as
+    ``sparse_super`` places them."""
 
     def header(name: str) -> int | None:
         m = re.search(rf"^{re.escape(name)}:\s+(\d+)", text, re.MULTILINE)
@@ -228,25 +244,32 @@ def parse_dumpe2fs(text: str) -> Ext4Layout | None:
     if not block_size or not per_group or not inode_size:
         return None
     layout = Ext4Layout(block_size, per_group, inode_size)
-    group = -1
-    for line in text.splitlines():
-        m = re.match(r"Group (\d+):", line)
-        if m:
-            group = int(m.group(1))
-        for pattern, what in (
-            (r"superblock at (\d+)", "superblock"),
-            (r"Group descriptors at (\d+)-(\d+)", "group descriptors"),
-            (r"Reserved GDT blocks at (\d+)-(\d+)", "reserved GDT blocks"),
-            (r"Block bitmap at (\d+)", "block bitmap"),
-            (r"Inode bitmap at (\d+)", "inode bitmap"),
-        ):
-            for found in re.finditer(pattern, line):
-                first = int(found.group(1))
-                last = int(found.group(2)) if found.lastindex == 2 else first
-                layout.areas.append((first, last, f"{what} of group {group}"))
-        m = re.search(r"Inode table at (\d+)-(\d+)", line)
-        if m:
-            layout.tables.append((int(m.group(1)), int(m.group(2)), group))
+    first = header("First block") or 0
+    blocks_per_group = header("Blocks per group") or 0
+    table_blocks = header("Inode blocks per group") or 1
+    reserved = header("Reserved GDT blocks") or 0
+    desc_size = header("Group descriptor size") or 32
+    groups = 0
+    for m in re.finditer(
+        r"Group\s+(\d+): block bitmap at (\d+), inode bitmap at (\d+), "
+        r"inode table at (\d+)",
+        text,
+    ):
+        group = int(m.group(1))
+        groups = max(groups, group + 1)
+        for at, what in ((int(m.group(2)), "block"), (int(m.group(3)), "inode")):
+            layout.areas.append((at, at, f"{what} bitmap of group {group}"))
+        table = int(m.group(4))
+        layout.tables.append((table, table + table_blocks - 1, group))
+    if blocks_per_group:
+        gdt = -(-groups * desc_size // block_size)
+        for group in _backup_groups(groups):
+            start = group * blocks_per_group + first
+            layout.areas.append((start, start, f"superblock of group {group}"))
+            if gdt + reserved:
+                last = start + gdt + reserved
+                what = f"group descriptors of group {group}"
+                layout.areas.append((start + 1, last, what))
     return layout
 
 
@@ -293,7 +316,7 @@ def parse_ncheck(text: str) -> dict[int, str]:
     for line in text.splitlines():
         parts = line.split(None, 1)
         if len(parts) == 2 and parts[0].isdigit():
-            found.setdefault(int(parts[0]), parts[1].strip())
+            found.setdefault(int(parts[0]), re.sub(r"^/+", "/", parts[1].strip()))
     return found
 
 
@@ -617,6 +640,7 @@ def describe(raw: str, ranges: list[Range], tools: dict[str, str]) -> list[str]:
     """One line per range: the partition it falls in and, on ext4, what each
     written block holds."""
     lines: list[str] = []
+    layouts: dict[str, tuple[Ext4Layout | None, str]] = {}
     parts = partitions(raw, tools)
     for start, length in ranges:
         sectors = sector_text([(start, length)])
@@ -626,12 +650,13 @@ def describe(raw: str, ranges: list[Range], tools: dict[str, str]) -> list[str]:
             continue
         offset, _, name = part
         device = f"{raw}?offset={offset}" if offset else raw
-        try:
-            layout = parse_dumpe2fs(_run([tools["dumpe2fs"], device]))
-        except Exception:  # noqa: BLE001 - not ext4
-            layout = None
+        if device not in layouts:
+            layouts[device] = _layout(device, tools)
+        layout, why = layouts[device]
         if layout is None:
-            lines.append(f"sectors {sectors}: {name}, not ext4: writer not told")
+            lines.append(
+                f"sectors {sectors}: {name}, not ext4 ({why}): writer not told"
+            )
             continue
         first = (start - offset) // layout.block_size
         last = (start - offset + length - 1) // layout.block_size
@@ -642,6 +667,18 @@ def describe(raw: str, ranges: list[Range], tools: dict[str, str]) -> list[str]:
             f"sectors {sectors}: {name}, ext4 blocks {first}-{last}{cut}: {held}"
         )
     return lines
+
+
+def _layout(device: str, tools: dict[str, str]) -> tuple[Ext4Layout | None, str]:
+    """The ext4 layout of ``device``, or ``None`` and why not."""
+    try:
+        layout = parse_stats(_run([tools["debugfs"], "-R", "stats", device]))
+    except subprocess.CalledProcessError as e:
+        said = (e.stderr or "").strip().splitlines()
+        return None, said[-1] if said else str(e)
+    except Exception as e:  # noqa: BLE001 - not ext4
+        return None, str(e)
+    return layout, "" if layout else "debugfs shows no ext4 layout"
 
 
 def _ext4_writers(
@@ -766,10 +803,15 @@ def finish_power_off(machine: Any) -> None:
     if oracle is None:
         return
     oracle.close("a power-off")
+    # The monitor's quit, as the driver's own crash() sends it: a QMP quit
+    # can end QEMU before its reply, which the driver's QMP reader would
+    # wait for without end.
     try:
-        oracle._qmp("quit")
+        machine.send_monitor_command("quit")
     except Exception:  # noqa: BLE001 - QEMU exits as it answers
-        pass
+        process = getattr(machine, "process", None)
+        if process is not None and process.poll() is None:
+            process.terminate()
 
 
 def wait_for_exit(machine: Any, timeout: float | None) -> bool:
@@ -803,12 +845,21 @@ def before_switch(machine: Any, label: str) -> bool:
 
 
 def at_hold(machine: Any, opened_here: bool) -> int:
-    """At the mark unit's hold line: cut the window. Returns the console index
-    of the cut, to check the release line came after it."""
+    """At the mark unit's hold line: cut the window, then end the unit's wait
+    by typing :data:`GO` on the serial console, unless it already stopped
+    waiting. Returns the console index of the cut, to check the release line
+    came after it. The driver's console reader can fall seconds behind the
+    guest in the burst of lines a switch prints, so a wait of fixed length
+    would end before the host saw the hold line."""
     oracle = oracle_of(machine)
     if oracle is not None and oracle.window is not None:
         oracle.cut(SESSION if opened_here else "after the way back")
-    return len(machine.full_console_log)
+    cut_at = len(machine.full_console_log)
+    _, release = hold_and_release(machine.full_console_log[-200:])
+    send = getattr(machine, "send_console", None)
+    if send is not None and release is None:
+        send(GO)
+    return cut_at
 
 
 def after_switch(

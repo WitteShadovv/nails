@@ -172,7 +172,6 @@ let
     _NAILS_ORACLE_TOOLS = {
         "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
         "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
-        "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
         "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
     }
 

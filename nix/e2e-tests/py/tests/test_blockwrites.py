@@ -81,6 +81,8 @@ class FakeMachine:
         self.ran: list[str] = []
         self.waited = 0
         self.crashed = 0
+        self.monitor: list[str] = []
+        self.typed: list[str] = []
 
     def succeed(self, *commands: str, timeout: int | None = None) -> str:
         self.ran.extend(commands)
@@ -91,6 +93,15 @@ class FakeMachine:
 
     def wait_for_shutdown(self) -> None:
         self.waited += 1
+
+    def send_console(self, chars: str) -> None:
+        self.typed.append(chars)
+
+    def send_monitor_command(self, command: str) -> str:
+        self.monitor.append(command)
+        if command == "quit":
+            self.process.code = 0
+        return ""
 
     def crash(self) -> None:
         self.crashed += 1
@@ -183,28 +194,28 @@ class Marks(unittest.TestCase):
         self.assertEqual(blockwrites.hold_and_release(["x"]), (None, None))
 
 
-DUMPE2FS = """\
+STATS = """\
 Block size:               4096
 Inodes per group:         8192
-Inode size:               256
-
-Group 0: (Blocks 0-32767) csum 0x1234 [ITABLE_ZEROED]
-  Primary superblock at 0, Group descriptors at 1-3
-  Reserved GDT blocks at 4-1026
-  Block bitmap at 1027 (+1027)
-  Inode bitmap at 1043 (+1043)
-  Inode table at 1059-1570 (+1059)
-Group 1: (Blocks 32768-65535) csum 0x5678 [INODE_UNINIT]
-  Backup superblock at 32768, Group descriptors at 32769-32771
-  Block bitmap at 1028 (bg #0 + 1028)
-  Inode bitmap at 1044 (bg #0 + 1044)
-  Inode table at 1571-2082 (bg #0 + 1571)
+Inode size:\t          256
+First block:              0
+Blocks per group:         32768
+Reserved GDT blocks:      1023
+Group descriptor size:    64
+Inode blocks per group:   512
+Directories:              2
+ Group  0: block bitmap at 1027, inode bitmap at 1043, inode table at 1059
+           5318 free blocks, 2036 free inodes, 2 used directories
+ Group  1: block bitmap at 1028, inode bitmap at 1044, inode table at 1571
+           [Inode not init, Checksum 0x0e58]
+ Group  2: block bitmap at 1029, inode bitmap at 1045, inode table at 2083
+ Group  3: block bitmap at 1030, inode bitmap at 1046, inode table at 2595
 """
 
 
 class Ext4(unittest.TestCase):
     def test_the_layout_names_each_metadata_area(self) -> None:
-        layout = blockwrites.parse_dumpe2fs(DUMPE2FS)
+        layout = blockwrites.parse_stats(STATS)
         assert layout is not None
         self.assertEqual(blockwrites.classify(layout, 0).area, "superblock of group 0")
         self.assertEqual(
@@ -216,12 +227,19 @@ class Ext4(unittest.TestCase):
         self.assertEqual(
             blockwrites.classify(layout, 1044).area, "inode bitmap of group 1"
         )
+        self.assertEqual(
+            blockwrites.classify(layout, 98304).area, "superblock of group 3"
+        )
+        self.assertEqual(
+            blockwrites.classify(layout, 1024).area, "group descriptors of group 0"
+        )
+        self.assertEqual(blockwrites.classify(layout, 65536), blockwrites.BlockKind())
         self.assertEqual(blockwrites.classify(layout, 1059).inodes, (1, 16))
         self.assertEqual(blockwrites.classify(layout, 1572).inodes, (8209, 8224))
         self.assertEqual(blockwrites.classify(layout, 40000), blockwrites.BlockKind())
 
     def test_no_layout_without_the_header(self) -> None:
-        self.assertIsNone(blockwrites.parse_dumpe2fs("nothing"))
+        self.assertIsNone(blockwrites.parse_stats("nothing"))
 
     def test_icheck_and_ncheck_output(self) -> None:
         self.assertEqual(
@@ -239,6 +257,19 @@ class Ext4(unittest.TestCase):
 
 
 class Windows(unittest.TestCase):
+    def test_the_hold_is_answered_after_the_cut_unless_it_ended(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        machine.full_console_log += ["x", "blkstat-mark hold"]
+        cut = blockwrites.at_hold(machine, opened_here=True)
+        self.assertEqual(cut, 2)
+        assert oracle.window is not None
+        self.assertEqual(machine.typed, ["blkstat-go\n"])
+        self.assertEqual([p.name for p in oracle.window.phases], ["switch", "session"])
+        machine.full_console_log += ["blkstat-mark hold", "blkstat-mark release"]
+        blockwrites.at_hold(machine, opened_here=False)
+        self.assertEqual(machine.typed, ["blkstat-go\n"])
+
     def test_a_window_with_no_write_finds_nothing(self) -> None:
         machine, oracle = installed()
         self.assertTrue(blockwrites.before_switch(machine, "activate"))
@@ -334,17 +365,10 @@ class Windows(unittest.TestCase):
         machine, oracle = installed()
         blockwrites.before_switch(machine, "activate")
         machine.qmp_client.status = "shutdown"
-
-        def quit_exits(command: str, args: dict[str, Any] | None = None) -> Any:
-            reply = FakeQmp.send(machine.qmp_client, command, args)
-            if command == "quit":
-                machine.process.code = 0
-            return reply
-
-        machine.qmp_client.send = quit_exits  # type: ignore[method-assign]
         machine.wait_for_shutdown()
         self.assertEqual(machine.waited, 1)
-        self.assertIn("quit", machine.qmp_client.commands())
+        self.assertEqual(machine.monitor, ["quit"])
+        self.assertNotIn("quit", machine.qmp_client.commands())
         self.assertFalse(blockwrites.watching(machine))
         self.assertIn("closed at a power-off", " ".join(machine.logged))
 

@@ -324,6 +324,46 @@ forensic-clean (04) is the oracle's own null and positive control.
 A Plaso (log2timeline) super-timeline lane was considered; Plaso is not
 packaged in nixpkgs, so there is none. The bodyfiles feed `mactime` directly.
 
+### The block-write oracle
+
+`py/nails_e2e/blockwrites.py` proves, per session, that nothing wrote to the
+decoy disk, without knowing which program might. QEMU keeps a dirty bitmap
+(512-byte granularity) of every decoy drive on the host, where the guest cannot
+reach it; it records every write, write-zeroes and discard.
+
+- **Decoy drives**: every writable drive but the extra disks of
+  `emptyDiskImages` (`empty<N>.qcow2`: the hidden `data` disk, external disks),
+  whose writes are reported, never asserted. On NixOS that is the root disk and
+  the writable UEFI variable store where the VM has one; on a distribution VM
+  the image's one drive. No allowed extent is set: every fixture keeps the
+  hidden volume on another disk or in RAM.
+- **The window** opens in `session.follow_soft_reboot`, just before the
+  trigger, after a guest `sync`: it covers the activation, the decoy's own
+  shutdown and the switch. A switch that does not land in the hidden root (no
+  overlay at `/`) drops it. The decoy's `blkstat-mark` unit (`lib/vm-config.nix`;
+  `setupHiddenRoot` installs it on a distribution VM) prints `blkstat-mark hold`
+  on the serial console at every start of the service manager after 8 s of
+  uptime and waits 3 s, before the units that write early in a start; the host
+  cuts the bitmaps at that line, and fails when the `release` line came first.
+  At the hidden root's start the cut splits the window into the phases `switch`
+  and `session`. On the way back it ends the window, so the decoy's own start
+  does not count. While a window is open QEMU pauses at a guest power-off
+  (`set-action shutdown=pause`) until the host has read the bitmaps, then quits;
+  `machine.crash()` and the end of the script read an open window live.
+- **The verdict** comes at the end of the test script (the closing step of
+  every NixOS test, `blockwrites.finish([vm])` in the distribution tests): one
+  failure listing, per window, drive and phase, the sector ranges written and,
+  on ext4, what each holds (the superblock, a group descriptor, a bitmap, the
+  inode-table slots with the paths of the inodes in use, the journal, or a
+  file's data block), from a raw copy of the drive and host `dumpe2fs` and
+  `debugfs`. btrfs and other filesystems get the sector ranges only.
+
+Not covered: a session entered without `follow_soft_reboot`, the access-time
+scenarios, the Fedora gate and the oracle images; a hidden NixOS system built
+without the mark unit splits no phase at its start (the way back's cut is the
+decoy's); and a switch that is refused and restarts the decoy drops its window,
+the activation's writes included.
+
 ## Assertions must be able to fail
 
 A test earns its keep only when a regression turns it red, so an assertion that

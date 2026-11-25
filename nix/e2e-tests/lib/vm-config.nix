@@ -67,12 +67,14 @@
   };
 
   # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py):
-  # at every start of the service manager after the first boot (a soft-reboot
-  # into the hidden root, or back to the decoy), print a hold line on the
-  # serial console the driver reads, and wait while the host cuts the dirty
-  # bitmaps it keeps of the decoy disk. Ordered before the units that write to
-  # the disk early in a start, so what the decoy's own start writes after the
-  # way back lands after the cut. It writes nothing but the two lines.
+  # at every start of the service manager after 8 s of uptime (a soft-reboot
+  # into the hidden root, or back to the decoy; a cold boot reaches it sooner),
+  # print a hold line on the serial console the driver reads, and wait, at
+  # most 15 s, for the line the host types on that console once it has cut
+  # the dirty bitmaps it keeps of the decoy disk. Ordered
+  # before the units that write to the disk early in a start, so what the
+  # decoy's own start writes after the way back lands after the cut. It writes
+  # nothing but the two lines.
   systemd.services.blkstat-mark = {
     description = "Boot marker";
     unitConfig.DefaultDependencies = false;
@@ -94,10 +96,11 @@
     };
     script = ''
       read -r up _ < /proc/uptime
-      if [ "''${up%%.*}" -ge 30 ]; then
-        echo 'blkstat-mark hold' > /dev/ttyS0
-        sleep 3
-        echo 'blkstat-mark release' > /dev/ttyS0
+      if [ "''${up%%.*}" -ge 8 ]; then
+        exec 3<>/dev/ttyS0
+        echo 'blkstat-mark hold' >&3
+        timeout 15 head -n 1 <&3 >/dev/null || true
+        echo 'blkstat-mark release' >&3
       fi
     '';
   };

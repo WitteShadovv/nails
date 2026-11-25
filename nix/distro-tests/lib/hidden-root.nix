@@ -33,19 +33,21 @@
 
     # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py),
     # as nix/e2e-tests/lib/vm-config.nix has it on NixOS: at every start of the
-    # service manager after the first 30 s of uptime, a hold line on the serial
-    # console and a wait while the host cuts its dirty bitmaps of the decoy
-    # disk, before the units that write to the disk early in a start. Written
+    # service manager after the first 8 s of uptime, a hold line on the serial
+    # console and a wait, at most 15 s, for the line the host types there once
+    # it has cut its dirty bitmaps of the decoy disk, before the units that
+    # write to the disk early in a start. Written
     # once, before any session, so the image carries it as its own.
     if [ ! -e /etc/systemd/system/blkstat-mark.service ]; then
       mkdir -p /usr/local/sbin
       cat > /usr/local/sbin/blkstat-mark <<'MARK'
     #!/bin/sh
     read -r up _ < /proc/uptime
-    if [ "''${up%%.*}" -ge 30 ]; then
-      echo 'blkstat-mark hold' > /dev/ttyS0
-      sleep 3
-      echo 'blkstat-mark release' > /dev/ttyS0
+    if [ "''${up%%.*}" -ge 8 ]; then
+      exec 3<>/dev/ttyS0
+      echo 'blkstat-mark hold' >&3
+      timeout 15 head -n 1 <&3 >/dev/null || true
+      echo 'blkstat-mark release' >&3
     fi
     MARK
       chmod 0755 /usr/local/sbin/blkstat-mark
