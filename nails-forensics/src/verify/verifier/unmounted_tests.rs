@@ -230,6 +230,38 @@ fn each_mount_point_says_how_to_mount_it_by_how_its_device_is_mounted_now() {
     );
 }
 
+/// Where the mount table here cannot be read, whether a device is mounted is
+/// not known: the line says the table could not be read and gives the mount
+/// for either case, never the one for a device that is not mounted alone.
+#[test]
+fn a_mount_table_that_cannot_be_read_is_named_with_both_mounts() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type("/mnt/decoy", PathKind::Dir);
+    fs.mock_set_path_type("/mnt/decoy/etc", PathKind::Dir);
+    fs.mock_add_file("/mnt/decoy/etc/fstab", "UUID=r /home ext4 defaults 0 2\n");
+    fs.mock_set_path_type("/mnt/decoy/home", PathKind::Dir);
+    fs.mock_set_directory_contents(Path::new("/mnt/decoy/home"), Vec::new());
+    fs.mock_set_mount_table_error("no proc");
+
+    let result = Verifier::new(fs)
+        .offline_under("/mnt/decoy".into())
+        .run(false)
+        .unwrap();
+    assert_eq!(
+        unmounted(&result.areas_not_checked),
+        [
+            "/home, which the decoy's /etc/fstab mounts (missing or empty under the root. The \
+             mount table here could not be read (/proc/self/mountinfo: no proc), so whether its \
+             device is mounted here is not known. Where it is, mount it there again and make \
+             that mount read-only before the scan, with `sudo mount /dev/disk/by-uuid/r \
+             /mnt/decoy/home && sudo mount -o remount,bind,ro /mnt/decoy/home`. Where it is not, \
+             make it read-only and mount it there without a journal replay before the scan, with \
+             `sudo blockdev --setro /dev/disk/by-uuid/r && sudo mount -o ro,noload \
+             /dev/disk/by-uuid/r /mnt/decoy/home`)"
+        ]
+    );
+}
+
 #[test]
 fn a_file_or_a_mapping_that_is_not_open_is_opened_read_only_before_its_mount() {
     // A disk image the decoy mounts is attached to a loop device read-only,
