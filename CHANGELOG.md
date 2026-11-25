@@ -1115,8 +1115,9 @@ of this changelog for that version becomes the release notes word for word, and
   that filesystem lies on, as `hardware-configuration.nix` usually does, with the flag too: it reads
   text and cannot tell whether Nix uses such a name only for the decoy's own mounts. Its fix now
   says so. A later release may tell these apart by evaluating the configuration. The check now also
-  reads a `.` part between the parts of a path as the kernel does (`/mnt/./data` is `/mnt/data`). A
-  `.` part right after the leading slash (`/./mnt/data`) still passes, as before.
+  reads a `.` part between the parts of a path as the kernel does (`/mnt/./data` is `/mnt/data`),
+  and a `.` or `..` part right after its leading slash (`/./mnt/data` and `/../mnt/data` are
+  `/mnt/data` too).
 
 ### Fixed
 
@@ -1235,6 +1236,15 @@ of this changelog for that version becomes the release notes word for word, and
   `"/dev/mapper/d\ata"`, `luks.devices."d\ata"`, `inherit "d\ata";` in a `luks.devices` block) is
   refused as the plain name is, and so is a crypttab line that starts after a newline a string
   writes as an escape (`"x /dev/a none\ndata /dev/sdc1 none luks"`). Before, such a line passed.
+- On NixOS, `suspicious-nails-reference` also reads fstab's octal escapes, which NixOS writes into
+  `/etc/fstab` unchanged and libmount decodes there (`\141` is `a`):
+  `"/dev/mapper/d\\141ta"` as a `fileSystems` entry's device and `fileSystems."/mnt/d\\141ta"` are
+  refused as `/dev/mapper/data` and `/mnt/data` are, and so is the own name of a folder or
+  subvolume root written so in a `subvol=` or `X-mount.subdir=` option or a bind's device. It ends a
+  comment where Nix's lexer ends it, a block comment at its first `*/` whatever quotes it holds,
+  also one right after a word (`true/* a 5" disk */`), and a `#` comment at a carriage return too,
+  and `''` in a name or a URI (`let a'' = 1; in a''`) starts no string, as in Nix. A `luks.devices`
+  block after such a place names its mapping as it does elsewhere. Before, these lines passed.
 
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or
