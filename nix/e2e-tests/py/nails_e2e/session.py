@@ -39,6 +39,9 @@ STUCK_MARKERS = (
 #: The new backdoor's announcement on the console.
 BACKDOOR_MARKER = "connecting to host"
 
+#: Where the kernel's own message starts on a console line: its timestamp.
+_KERNEL_MESSAGE = re.compile(r"\[ *\d+\.\d+\] ")
+
 #: Written to the serial console when the trigger returns, with its exit
 #: status and, when that is not 0, the service manager's state.
 TRIGGER_EXIT_MARKER = "nails-trigger-exit="
@@ -131,6 +134,40 @@ def stuck_lines(lines: list[str]) -> list[str]:
     return [line for line in lines if any(marker in line for marker in STUCK_MARKERS)]
 
 
+def uncut_lines(lines: list[str]) -> list[str]:
+    """The console lines with every line a kernel message cut put together again.
+
+    The kernel writes its own lines to the serial port between the pieces of a
+    line that a process sends there: the line's start, then the kernel's line,
+    then the rest of the line on the next one, after any further kernel lines.
+    Each kernel line stays a line of its own, so no text is lost, and a line
+    whose rest has not arrived yet ends the list as it is.
+    """
+    uncut: list[str] = []
+    start = ""
+    for line in lines:
+        if start and _KERNEL_MESSAGE.match(line):
+            uncut.append(line)
+            continue
+        line = start + line
+        cut = _KERNEL_MESSAGE.search(line, 1)
+        if cut is None:
+            start = ""
+            uncut.append(line)
+        else:
+            start = line[: cut.start()]
+            uncut.append(line[cut.start() :])
+    if start:
+        uncut.append(start)
+    return uncut
+
+
+def backdoor_announced(lines: list[str]) -> bool:
+    """Whether the new backdoor announced itself in ``lines``, also where a
+    kernel message cut its announcement in two (:func:`uncut_lines`)."""
+    return any(BACKDOOR_MARKER in line for line in uncut_lines(lines))
+
+
 def trigger_failure(lines: list[str]) -> str | None:
     """Why the trigger will never switch, from the report it left on the console.
 
@@ -211,7 +248,9 @@ def follow_soft_reboot(
     or copy it to :data:`SERIAL_CONSOLE`. When the trigger returns, its exit
     status lands on the serial console, and a failure while nothing is
     stopping fails the wait at once (:func:`trigger_failure`), as does a
-    machine that powers off or reboots instead, which ends QEMU. ``start``, when
+    machine that powers off or reboots instead, which ends QEMU. The new
+    backdoor's announcement counts where a kernel line cut it in two as well
+    (:func:`backdoor_announced`). ``start``, when
     given, starts the soft-reboot instead (for example typed keystrokes on a
     tty) and ``trigger`` is only logged; a typed command reports its own
     failure the same way.
@@ -251,7 +290,7 @@ def follow_soft_reboot(
             raise AssertionError(
                 f"{label}: the trigger failed ({failed}) and never soft-rebooted"
             )
-        if any(BACKDOOR_MARKER in line for line in lines):
+        if backdoor_announced(lines):
             break
         # A power-off, a full reboot or a kernel panic instead of the switch
         # ends QEMU (the suite starts every machine with the driver's
@@ -485,7 +524,7 @@ def follow_power_off(
             raise AssertionError(
                 f"{label}: the trigger failed ({failed}) and never switched"
             )
-        came_up = [line for line in lines if BACKDOOR_MARKER in line]
+        came_up = backdoor_announced(lines)
         stuck = stuck_lines(lines)
         if came_up or stuck:
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))

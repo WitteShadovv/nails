@@ -1108,7 +1108,9 @@ times, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
 journal from the activation to the switch, which PID 1 writes at debug level
 for that time, so a read can be lined up with what PID 1 did. An activation,
 `deactivate` or emergency that exits non-zero while the system is not stopping
-has not switched, and the run fails at once with its output. CI runs it in the
+has not switched, and the run fails at once with its output. A switch ends
+when the new backdoor's announcement reaches the console, also where a kernel
+line cut it in two (`session.backdoor_announced`). CI runs it in the
 records suite of `distro-e2e.yml`.
 
 ### The refusal of Arch
