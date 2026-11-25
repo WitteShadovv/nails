@@ -59,6 +59,7 @@
 
     [Service]
     Type=oneshot
+    TimeoutStartSec=30
     StandardOutput=null
     StandardError=null
     ExecStart=/usr/local/sbin/blkstat-mark

@@ -93,6 +93,8 @@
       Type = "oneshot";
       StandardOutput = "null";
       StandardError = "null";
+      # A backstop: no mark may hold a start for longer.
+      TimeoutStartSec = "30s";
     };
     script = ''
       read -r up _ < /proc/uptime
