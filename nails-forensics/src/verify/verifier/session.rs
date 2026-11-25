@@ -146,8 +146,8 @@ impl<F: Filesystem> Verifier<F> {
                     Severity::Info,
                     "session",
                     "verify runs inside the hidden session: its runtime files in /run, the \
-                     mounted hidden volume and the active state are expected, and the return \
-                     to the decoy removes the runtime files",
+                     mounted hidden volume and the active state are expected, and the \
+                     power-off that ends the session removes the runtime files",
                 )
                 .with_fix_guidance(format!(
                     "The session cannot see what its hidden layer covers on the decoy; to \

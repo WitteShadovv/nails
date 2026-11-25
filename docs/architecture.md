@@ -266,9 +266,11 @@ An activation moves through these layers; each names its modules and crates:
   and, opted in, the read-only rule for unused disks, masks the units the
   hidden root does not need (best effort), drops the `utab` lines of the mounts
   the switch leaves behind and records the entry. It fails closed: every other
-  outcome powers the machine off. The exceptions are no plan at all, a plan
-  armed for nothing, and a `/run/nextroot` nobody armed, which it detaches
-  while nothing stays mounted there. The drop-in's
+  outcome powers the machine off. In a hidden session every soft-reboot
+  powers off, whatever sits at `/run/nextroot`. On the decoy the exceptions
+  are no plan at all, a plan armed for nothing, and a `/run/nextroot` nobody
+  armed, which it detaches while nothing stays mounted there and its runtime
+  pieces can be removed. The drop-in's
   `FailureAction=poweroff-force` powers off a step that fails, dies or cannot
   start. libmount joins a
   `utab` line to the

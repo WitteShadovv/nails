@@ -155,7 +155,7 @@ soft-reboot.
 |---|---|---|
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
 | Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
-| Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
+| Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session (the decoy's next boot starts them afresh); see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
 | Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
 | Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |

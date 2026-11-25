@@ -173,16 +173,16 @@ pub(crate) struct FamilyRow {
 
 /// The warning the Ubuntu 26.04 row carries. 26.04 is a tested release, but a
 /// known upstream issue affects it: after the switch into the hidden session,
-/// AppArmor keeps chrony and CUPS from reaching systemd and the journal, and on
-/// the way back the decoy reports chrony failed until a full reboot. The fault
-/// is upstream, so 26.04 stays validated and NAILS warns rather than refuses.
+/// AppArmor keeps chrony and CUPS from reaching systemd and the journal. The
+/// session ends in a power-off, so the decoy's next boot starts chrony
+/// afresh. The fault is upstream, so 26.04 stays validated and NAILS warns
+/// rather than refuses.
 const UBUNTU_2604_CAVEAT: &str = "Ubuntu 26.04 is tested, but a known upstream issue affects it: after the \
      switch into the hidden session, AppArmor blocks chrony (time sync) and CUPS \
      (printing) from reaching systemd and the journal, so the clock does not sync \
-     and printing times out. After the way back the decoy lists chrony as failed \
-     until its next full reboot, which hints a soft-reboot happened; reboot the \
-     decoy fully after a session to clear it. The fault is upstream, not in NAILS, \
-     and remains until Ubuntu fixes it.";
+     and printing times out. The session ends in a power-off, so the decoy's next \
+     boot starts chrony afresh. The fault is upstream, not in NAILS, and remains \
+     until Ubuntu fixes it.";
 
 /// The family table. Admitting a family is a data change here (its `admitted`
 /// flag) plus its gate run — the backend ([`FhsPlatform`](super::FhsPlatform))

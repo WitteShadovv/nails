@@ -199,7 +199,7 @@ pub const ARTIFACTS: &[Artifact] = &[
         scope: ArtifactScope::Runtime,
         severity: ArtifactSeverity::Warn,
         value: "/run/udev/rules.d/60-overlay-runtime.rules",
-        description: "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); removed on the way back, so a leftover on the decoy is a teardown failure.",
+        description: "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); it lives in RAM and the power-off that ends the session removes it, so a leftover on the decoy is a teardown failure.",
     },
     Artifact {
         id: "boot-records-copy",

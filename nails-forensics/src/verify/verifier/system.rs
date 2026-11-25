@@ -132,7 +132,7 @@ impl<F: Filesystem> Verifier<F> {
         };
         Finding::new(map_artifact_severity(severity), "file", found).with_fix_guidance(format!(
             "{layer}. Deleting it here only hides it in the hidden layer: remove it on the decoy \
-             after the return, or first confirm it ({})",
+             after the session, or first confirm it ({})",
             check_decoy_offline()
         ))
     }

@@ -588,10 +588,9 @@ CAVEAT_2604 = (
     "Ubuntu 26.04 is tested, but a known upstream issue affects it: after the"
     " switch into the hidden session, AppArmor blocks chrony (time sync) and CUPS"
     " (printing) from reaching systemd and the journal, so the clock does not sync"
-    " and printing times out. After the way back the decoy lists chrony as failed"
-    " until its next full reboot, which hints a soft-reboot happened; reboot the"
-    " decoy fully after a session to clear it. The fault is upstream, not in NAILS,"
-    " and remains until Ubuntu fixes it."
+    " and printing times out. The session ends in a power-off, so the decoy's next"
+    " boot starts chrony afresh. The fault is upstream, not in NAILS, and remains"
+    " until Ubuntu fixes it."
 )
 
 NOTIFY_LINE = "Could not send notification to $NOTIFY_SOCKET"

@@ -50,16 +50,17 @@ let
     environment.systemPackages = [ nailsPackage ];
   };
 
-  # A neighbour node: a decoy that, once the test arms it, enters a hidden
-  # session and then soft-reboots inside it on every start of its userspace.
-  # The soft-reboot ends this oneshot with userspace, and the next start runs
-  # it again, so the neighbour churns on its own without the driver steering
-  # it. Deactivate would power the neighbour off, so it never leaves: a plain
-  # soft-reboot in the hidden root, with nothing armed and no next root,
-  # starts the hidden userspace again (the transition step allows it). It is a
-  # best-effort load source: every step ignores its own failure, and the test
-  # asserts nothing about the neighbours, so a neighbour that falls behind only
-  # lightens the host load and never fails the run.
+  # A neighbour node: a plain decoy that, once the test arms it, soft-reboots
+  # into itself on every start of its userspace, with no hidden session. The
+  # soft-reboot ends this oneshot with userspace, and the next start runs it
+  # again, so the neighbour churns on its own without the driver steering it.
+  # It enters no hidden session: there every soft-reboot powers off (a hidden
+  # session never goes back, nor starts its userspace again), which would end
+  # the churn at its first round. The host load it gives is the same, a
+  # soft-reboot after another. It is a best-effort load source: every step
+  # ignores its own failure, and the test asserts nothing about the
+  # neighbours, so a neighbour that falls behind only lightens the host load
+  # and never fails the run.
   neighbourNode = {
     imports = [ ./../../lib/vm-config.nix ];
     environment.systemPackages = [ nailsPackage ];
@@ -71,41 +72,22 @@ let
       after = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";
-        # nails and systemctl return only once PID 1 holds the soft-reboot, and
+        # systemctl returns only once PID 1 holds the soft-reboot, and
         # the switch
         # then stops this unit too, usually while its script still runs: the
         # stop's SIGTERM ends the script, which a oneshot counts as a failure
         # ('signal'). That is this unit's normal end, so it counts as success.
-        # A transition that fails still exits non-zero and fails the unit.
+        # A soft-reboot that fails still exits non-zero and fails the unit.
         SuccessExitStatus = "SIGTERM";
       };
-      path = [
-        nailsPackage
-        pkgs.cryptsetup
-        pkgs.util-linux
-        pkgs.coreutils
-        pkgs.gnugrep
-      ];
       script = ''
         set +e
-        # Disarmed until the test has formatted the hidden volume and written
-        # the marker on the decoy root (visible through the overlay in the
-        # hidden session too), so the first boot before setup does nothing.
+        # Disarmed until the test has written the marker on the decoy root,
+        # so the first boot before setup does nothing.
         [ -e /var/lib/nails-soak-armed ] || exit 0
-        config=/mnt/data/config/nails.toml
-        if findmnt -no FSTYPE / | grep -qx overlay; then
-          # In the hidden root: start its userspace again.
-          systemctl soft-reboot
-        else
-          # On the decoy: reopen the hidden volume and enter.
-          if [ ! -e /dev/mapper/data ]; then
-            echo -n 'test-passphrase' \
-              | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
-          fi
-          mkdir -p /mnt/data
-          mountpoint -q /mnt/data || mount /dev/mapper/data /mnt/data
-          nails --config "$config" activate -y --overlay-only
-        fi
+        # A plain soft-reboot of the decoy into itself: no session plan, so
+        # nothing of NAILS takes part in it.
+        systemctl soft-reboot
       '';
     };
   };
@@ -231,12 +213,10 @@ in
     for node in [soaker] + [globals()[name] for name in neighbours]:
         node.wait_for_unit("multi-user.target")
 
-    # Arm the neighbours: format their hidden volumes, then let their boot
-    # service churn on its own. --no-block so the activation it triggers (and
-    # the soft-reboot with it) does not hang the driver here.
+    # Arm the neighbours and let their boot service churn on its own.
+    # --no-block so the soft-reboot it starts does not hang the driver here.
     for name in neighbours:
         neighbour = globals()[name]
-        setup(neighbour)
         neighbour.succeed("touch /var/lib/nails-soak-armed")
         neighbour.execute("systemctl start --no-block nails-soak.service")
 

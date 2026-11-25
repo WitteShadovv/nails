@@ -5,10 +5,10 @@
 //! never on the decoy disk.
 //!
 //! The [`transition`](crate::whole_root::transition) step runs with no output
-//! and no log: a soft-reboot that cannot switch root
-//! ([`Disarmed`](crate::whole_root::transition::Outcome::Disarmed)) leaves PID 1
-//! on the root it is already on, and the reason would go nowhere. This module
-//! keeps that one reason, and when it was given:
+//! and no log: a switch it refuses ends in a power-off
+//! ([`Ended`](crate::whole_root::transition::Outcome::Ended)), and the reason
+//! would go nowhere. This module keeps that one reason, and when it was
+//! given:
 //!
 //! - **A refused entry** keeps it on the hidden volume, beside the state file,
 //!   where `status` reads it once the volume is open again. The transition
@@ -22,16 +22,16 @@
 //!   operator accepted on the decoy's own storage (`--allow-decoy-storage`)
 //!   gets no record either: there the volume is the decoy's disk, and the
 //!   transition writes nothing to it.
-//! - **A refused way back** keeps it in the runtime directory, in RAM. The
+//! - **A soft-reboot in the hidden session**, which powers off, keeps it in
+//!   the runtime directory, in RAM, where the power-off erases it: the
 //!   hidden session's shutdown has unmounted the volume too, and no path
-//!   reaches it any more. PID 1 stays in the hidden root and keeps `/run`, so
-//!   the next `status` there reads the record, and every way back to the decoy
-//!   removes the runtime directory with it.
+//!   reaches it any more. Only a power-off that the kernel refuses (a test's
+//!   stand-in) leaves it for `status` to read.
 //!
 //! A soft-reboot that meets a tree nothing armed (an activation that died
 //! before arming it, then a plain reboot) records nothing. The record is the
-//! most recent switch's outcome only: a new activation or deactivation clears
-//! it when it arms its own switch (the session flow one layer up).
+//! most recent switch's outcome only: a new activation, or a deactivation,
+//! clears it (the session flow one layer up).
 
 use crate::mountinfo::{MountEntry, top_mount_at};
 use crate::whole_root::nextroot;

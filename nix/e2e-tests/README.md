@@ -456,8 +456,9 @@ weekly and on demand, never on the gate; a red run on `main` opens or comments
 on the `CI red: Soak` issue.
 
 - `soak-reentry`: takes one VM through 300 cycles of activation, `deactivate`'s
-  power-off and a cold boot, beside neighbour VMs that soft-reboot inside their
-  own hidden roots, and asserts every entry reaches the hidden root's backdoor
+  power-off and a cold boot, beside neighbour VMs that soft-reboot their plain
+  decoys into themselves (in a hidden session every soft-reboot powers off),
+  and asserts every entry reaches the hidden root's backdoor
   within the deadline. Every 25 cycles, and after the last, it checks that each
   canary the hidden sessions wrote so far is in the upper and that none of them
   reached the decoy disk. Since every session ends in a power-off, each entry

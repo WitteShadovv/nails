@@ -200,7 +200,11 @@ fn ubuntu_2604_is_tested_but_carries_a_caveat() {
                 "{warning}"
             );
             assert!(warning.contains("AppArmor blocks chrony"), "{warning}");
-            assert!(warning.contains("reboot the decoy fully"), "{warning}");
+            assert!(
+                warning.contains("the decoy's next boot starts chrony afresh"),
+                "{warning}"
+            );
+            assert!(!warning.contains("way back"), "{warning}");
             assert!(warning.contains("not in NAILS"), "{warning}");
         }
         other => panic!("expected a tested release with a caveat, got {other:?}"),
