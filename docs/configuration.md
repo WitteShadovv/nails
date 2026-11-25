@@ -397,17 +397,20 @@ require the unit or that what the target requires needs it only as the mount for
 a path (a `noauto` entry that a tmpfs below it needs, say), and `nails status`
 then does not list the mask. Where a mount, swap or automount unit linked in a
 target's `.requires` directory names such a unit's mount (`Requires=`,
-`BindsTo=`), itself or as the last step of a chain of requirements NAILS reads
-(through a service, say), or the unit itself is linked there, systemd refuses
+`BindsTo=`, or a link in the `.requires` directory of a unit on the way),
+itself or as the last step of a chain of requirements NAILS reads (through a
+service, say), or the unit itself is linked there, systemd refuses
 that unit or the target's own requirement while the mount is masked: the
 warning says that the target will not be reached, `nails status` lists the
 mask, and where the policy masks it already (its device is not there, say),
 the warning names that unit. In two rare cases the warning says will not, and
 `nails status` lists the mask, where systemd ignores the step and reaches the
-target, and no disk is mounted in either: a chain with a step for a path
-(`RequiresMountsFor=`) to a unit the session masks only later, as a skip it
-masks after all, and a link of the unit's own name in a `.requires` directory
-that points to `/dev/null`. A device that is gone by the switch has its
+target, and no disk is mounted in either: a chain with a step for a path (a
+mount point below, a source, `RequiresMountsFor=` or
+`x-systemd.requires-mounts-for=`) into a unit the session masks only later, as
+a skip it masks after all, and a link in a `.requires` directory on the way,
+the target's or that of a unit on the chain, that points to `/dev/null`. A
+device that is gone by the switch has its
 units masked then. An entry with `nofail` is masked: its target only wants it. In the session
 `nails status` lists each unit a target requires that is kept off, skipped or
 masked, with why (`required_units` in `status --json`): its device was not there
