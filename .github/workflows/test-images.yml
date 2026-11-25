@@ -27,6 +27,11 @@ name: Test images
 #   nightly schedule   build, publish and verify (runs on main only)
 #   dispatch           the same on any branch, unless `publish` is off
 #   pull request       build only, when the builder or this file changes
+#   push to a branch   build only, under the same path filter, on any branch
+#                      but main and next. GitHub dispatches a workflow that
+#                      is not on the default branch only once it has run, so
+#                      this run is also what lets a branch with a new or
+#                      changed copy of this file be dispatched.
 #
 # The upload token, NAILS_TEST_IMAGES_TOKEN, is a fine-grained token with
 # Contents read and write on the assets repository alone. Only the upload step
@@ -42,6 +47,11 @@ on:
     paths:
       - nix/distro-tests/arch-install/**
       - .github/workflows/test-images.yml
+  push:
+    branches-ignore: [main, next]
+    paths:
+      - nix/distro-tests/arch-install/**
+      - .github/workflows/test-images.yml
   workflow_dispatch:
     inputs:
       publish:
@@ -53,11 +63,11 @@ permissions:
   contents: read
 
 concurrency:
-  # A new push to a pull request cancels its build in progress; a scheduled or
-  # dispatched run waits for the one before it, so two uploads never prune
-  # each other's assets.
-  group: test-images-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A new push to a pull request or a branch cancels its build in progress; a
+  # scheduled or dispatched run waits for the one before it, so two uploads
+  # never prune each other's assets.
+  group: test-images-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.event_name == 'push' && format('push-{0}', github.ref) || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 defaults:
   run:
@@ -160,7 +170,7 @@ jobs:
     needs: build
     # Only a run of this repository's own branches publishes: the nightly
     # schedule, which runs on main, and a dispatch, from any branch. Never a
-    # pull request.
+    # pull request or a push.
     if: >-
       github.repository == 'WitteShadovv/nails'
       && startsWith(github.ref, 'refs/heads/')
