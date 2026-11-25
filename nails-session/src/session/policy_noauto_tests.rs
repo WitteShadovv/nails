@@ -512,8 +512,8 @@ fn a_needed_noauto_line_warns_will_not_only_where_a_line_names_its_mount() {
 /// A noauto line that a line the boot starts needs, here through an option
 /// with a backslash or a tmpfs below it: only the mount is kept off as a
 /// needed line is, and the rest of the line's own mask, a decoy disk's
-/// automount, stays masked, so a unit that pulls the automount in cannot
-/// start the mount on access. The needed decision dropped the automount,
+/// automount, stays masked, as the mask of every noauto line of a decoy
+/// disk has it, so that no autofs goes over the mount point. The needed decision dropped the automount,
 /// which the fuzz target found
 /// (fuzz/seeds/fstab_crypttab/crash-needed-noauto-automount-*):
 /// `var-cache.automount` was neither masked nor skipped. A network share's

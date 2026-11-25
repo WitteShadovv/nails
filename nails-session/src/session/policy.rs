@@ -413,6 +413,27 @@ impl Decision {
         matches!(self, Decision::Mask { reason, unreached: None, .. } if reason == NOAUTO_KEPT)
     }
 
+    /// The units of this decision that only the mask of a `noauto` line
+    /// nothing NAILS reads pulls in holds: every unit of that mask
+    /// ([`Decision::is_noauto_mask`]), and the rest of it, the automount,
+    /// that the decision for such a line carries where a line the boot
+    /// starts needs its mount ([`needed::needed_below`]). Each yields as
+    /// that mask does: to a skip of the same unit that waits for the line's
+    /// device ([`runtime_units`]), and to a unit file of its name that a
+    /// boot target links ([`super::mount_units`]).
+    pub fn noauto_held(&self) -> &[String] {
+        if self.is_noauto_mask() {
+            return self.masked_units();
+        }
+        match self {
+            Decision::Skip { masked, reason, .. } if needed::carries_noauto(reason) => masked,
+            Decision::Mask { units, reason, .. } if needed::carries_noauto(reason) => {
+                units.get(1..).unwrap_or_default()
+            }
+            _ => &[],
+        }
+    }
+
     /// The units to skip, if this is a skip.
     pub fn skip(&self) -> Option<&Skip> {
         match self {

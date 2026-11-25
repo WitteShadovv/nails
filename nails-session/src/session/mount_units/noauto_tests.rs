@@ -834,3 +834,59 @@ fn an_unread_mask_for_a_path_is_recorded_where_a_target_s_unit_names_it() {
         assert_eq!(kept.warning(mask), None, "{present}");
     }
 }
+
+/// The automount the decision for a needed noauto line carries yields as
+/// the line's own mask does: an automount unit file of its name linked in
+/// local-fs.target.requires, or a second fstab line for the mount point
+/// with `x-systemd.automount`, is decided as its own, and skipped, with or
+/// without a line that needs the noauto mount. Carried as a plain mask, the
+/// automount was masked over that skip, recorded as one the lines disagree
+/// about, and local-fs.target was not reached.
+#[test]
+fn a_needed_noauto_line_s_automount_yields_as_its_mask_does() {
+    for kind in ["unit", "line"] {
+        for needer in ["", "tmpfs /r/a/t tmpfs defaults 0 0\n"] {
+            let decoy = Decoy::new();
+            let mut fstab = format!("{PULLED_LINE}{needer}");
+            if kind == "unit" {
+                decoy.write(
+                    "/run/systemd/generator/r-a.mount",
+                    "[Unit]\nSourcePath=/etc/fstab\n[Mount]\nWhat=/dev/vdy1\nWhere=/r/a\n\
+                     Type=ext4\nOptions=noauto\n",
+                );
+                decoy.write(
+                    "/etc/systemd/system/r-a.automount",
+                    "[Automount]\nWhere=/r/a\n",
+                );
+                decoy.link(
+                    "/etc/systemd/system/local-fs.target.requires/r-a.automount",
+                    "../r-a.automount",
+                );
+            } else {
+                fstab.push_str("/dev/vdy1 /r/a ext4 x-systemd.automount 0 2\n");
+            }
+            let (_, kept, warnings) = kept(&decoy, &fstab);
+            assert!(
+                kept.skips
+                    .iter()
+                    .any(|skip| skip.units == ["r-a.automount"]),
+                "{kind} {needer}: {kept:?} {warnings:?}"
+            );
+            assert!(
+                !kept.masks.iter().any(|mask| mask == "r-a.automount"),
+                "{kind} {needer}: {kept:?}"
+            );
+            assert!(
+                !kept
+                    .required_masks
+                    .iter()
+                    .any(|mask| mask.unit == "r-a.automount"),
+                "{kind} {needer}: {kept:?}"
+            );
+            assert!(
+                !warnings.iter().any(|w| w.contains("r-a.automount")),
+                "{kind} {needer}: {warnings:?}"
+            );
+        }
+    }
+}

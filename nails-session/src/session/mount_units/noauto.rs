@@ -12,12 +12,13 @@ use crate::session::policy::{
 };
 use nails_teardown::whole_root::plan::MaskCause;
 
-/// `decisions` with each unit of a `noauto` line's mask
-/// ([`Decision::is_noauto_mask`]) left out whose file the hidden systemd
+/// `decisions` with each unit that only a `noauto` line's mask holds
+/// ([`Decision::noauto_held`]) left out whose file the hidden systemd
 /// loads from a unit directory it reads before the fstab generator's
 /// ([`UnitDirs::outranks_fstab_generator`]) and that a boot target links
 /// (`native`): no fstab line makes what that name loads, and the unit pass
-/// decided the file it loads ([`super::decide`]). A mask left without units goes.
+/// decided the file it loads ([`super::decide`]). A mask left without units
+/// goes.
 pub(super) fn yield_masks(
     dirs: UnitDirs<'_>,
     native: &[NativeUnit],
@@ -28,26 +29,42 @@ pub(super) fn yield_masks(
     };
     decisions
         .iter()
-        .filter_map(|decision| match decision {
-            Decision::Mask {
-                target,
-                units,
-                reason,
-                unreached,
-            } if decision.is_noauto_mask() && units.iter().any(decided) => {
-                let units: Vec<String> = units
-                    .iter()
-                    .filter(|unit| !decided(unit))
-                    .cloned()
-                    .collect();
-                (!units.is_empty()).then(|| Decision::Mask {
-                    target: target.clone(),
-                    units,
-                    reason: reason.clone(),
-                    unreached: unreached.clone(),
-                })
+        .filter_map(|decision| {
+            let held = decision.noauto_held();
+            let stays = |unit: &&String| !(held.contains(unit) && decided(unit));
+            if !held.iter().any(decided) {
+                return Some(decision.clone());
             }
-            _ => Some(decision.clone()),
+            match decision {
+                Decision::Mask {
+                    target,
+                    units,
+                    reason,
+                    unreached,
+                } => {
+                    let units: Vec<String> = units.iter().filter(stays).cloned().collect();
+                    (!units.is_empty()).then(|| Decision::Mask {
+                        target: target.clone(),
+                        units,
+                        reason: reason.clone(),
+                        unreached: unreached.clone(),
+                    })
+                }
+                Decision::Skip {
+                    target,
+                    skip,
+                    masked,
+                    reason,
+                    may,
+                } => Some(Decision::Skip {
+                    target: target.clone(),
+                    skip: skip.clone(),
+                    masked: masked.iter().filter(stays).cloned().collect(),
+                    reason: reason.clone(),
+                    may: *may,
+                }),
+                _ => Some(decision.clone()),
+            }
         })
         .collect()
 }

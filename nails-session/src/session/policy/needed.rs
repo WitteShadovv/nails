@@ -91,9 +91,12 @@ struct Reach {
 /// A line with an option NAILS does not read ([`unread_fstab_options`]) stays
 /// masked, as that option may have the boot mount it in other ways too:
 /// where a target requires it, or may, the mask names that target
-/// ([`Unskippable::Unread`]). Only the mount is skipped: the rest of the
-/// mask, the line's automount, stays masked, as a unit that pulls it in
-/// would start the mount on access. `None` where the decision stands.
+/// ([`Unskippable::Unread`]). Only the mount is kept off this way: the rest
+/// of the mask, the line's automount, stays masked, as the mask of every
+/// `noauto` line of a decoy disk has it, so that no autofs goes over the
+/// mount point, and where the line is one nothing NAILS reads pulls in, it
+/// yields as that mask does ([`Decision::noauto_held`]). `None` where the
+/// decision stands.
 pub(super) fn needed_below(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -191,7 +194,7 @@ pub(super) fn needed_below(
     );
     // The reason it was kept off for leads where there is one.
     let reason = if kept_for == NOAUTO_KEPT {
-        format!("noauto, but {needs}")
+        format!("{NOAUTO_NEEDED}{needs}")
     } else {
         format!("{kept_for}, and {needs}")
     };
@@ -213,8 +216,10 @@ pub(super) fn needed_below(
     }
     // Only a mount starts: a swap is always kept off.
     let mount = mount_unit(&entry.file);
-    // The rest of the mask, the line's automount, stays masked: a unit that
-    // pulls the automount in would start the mount on access.
+    // The rest of the mask, the line's automount, stays masked as the mask
+    // of every noauto line of a decoy disk has it, so that no autofs goes
+    // over the mount point, and yields as that mask does
+    // ([`Decision::noauto_held`]).
     let automounts: Vec<String> = masked
         .iter()
         .filter(|unit| **unit != mount)
@@ -239,6 +244,21 @@ pub(super) fn needed_below(
         _ => {}
     }
     Some(decision)
+}
+
+/// How the reason of the decision for a `noauto` line nothing NAILS reads
+/// pulls in begins where a line the boot starts needs its mount
+/// ([`needed_below`]).
+const NOAUTO_NEEDED: &str = "noauto, but ";
+
+/// Whether `reason` is that of the decision for a `noauto` line nothing
+/// NAILS reads pulls in, made where a line the boot starts needs its mount
+/// ([`needed_below`]): what it masks beside the mount only the line's mask
+/// held ([`Decision::noauto_held`]).
+pub(super) fn carries_noauto(reason: &str) -> bool {
+    reason
+        .strip_prefix(NOAUTO_NEEDED)
+        .is_some_and(|rest| rest.starts_with("the line for "))
 }
 
 /// What makes a boot target want the fstab `lines` that hold up a `noauto`

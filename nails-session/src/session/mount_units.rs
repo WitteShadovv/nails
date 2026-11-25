@@ -730,24 +730,26 @@ fn mounted_at<'a>(mounts: &'a [MountEntry], target: &Path) -> Option<&'a MountEn
 /// line the policy leaves as it is covers no unit: its unit may differ from
 /// the line (a drop-in, a link to a `noauto` line's unit) and is decided as
 /// a unit of its own. Nor does the mask of a `noauto` line nothing NAILS
-/// reads pulls in ([`Decision::is_noauto_mask`]): a unit of it a target
-/// links is decided as a unit of its own, and the mask yields to a skip of
-/// it that waits for the line's device ([`policy::runtime_units`]).
+/// reads pulls in, or what of it the decision for such a line carries
+/// where a line needs its mount ([`Decision::noauto_held`]): a unit of it a
+/// target links is decided as a unit of its own, and the mask yields to a
+/// skip of it that waits for the line's device ([`policy::runtime_units`]).
 fn covered_units(decisions: &[Decision]) -> Vec<String> {
     let mut units = Vec::new();
-    for decision in decisions.iter().filter(|d| !d.is_noauto_mask()) {
-        match decision {
+    for decision in decisions {
+        let covers: Vec<String> = match decision {
             Decision::ReadOnlyBind { target } | Decision::Overlay { target } => {
-                units.push(mount_unit(target));
-                units.push(automount_unit(target));
+                vec![mount_unit(target), automount_unit(target)]
             }
-            Decision::Mask { units: masked, .. } => units.extend(masked.iter().cloned()),
+            Decision::Mask { units: masked, .. } => masked.clone(),
             Decision::Skip { skip, masked, .. } => {
-                units.extend(skip.units.iter().cloned());
-                units.extend(masked.iter().cloned());
+                skip.units.iter().chain(masked).cloned().collect()
             }
-            Decision::Leave { .. } | Decision::Refuse { .. } => {}
-        }
+            Decision::Leave { .. } | Decision::Refuse { .. } => Vec::new(),
+        };
+        // What only a noauto line's mask holds covers nothing.
+        let held = decision.noauto_held();
+        units.extend(covers.into_iter().filter(|unit| !held.contains(unit)));
     }
     units
 }
