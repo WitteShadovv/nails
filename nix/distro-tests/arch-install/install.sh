@@ -54,6 +54,16 @@ timeout 900 systemctl is-system-running --wait || true
 systemctl stop reflector.service reflector.timer || true
 curl -fsS --retry 5 "$base/mirrorlist" -o /etc/pacman.d/mirrorlist
 cat /etc/pacman.d/mirrorlist
+# The archive is one server that stalls under load: pacman's default gives up
+# on a download that moves less than a byte a second for ten seconds, and
+# after a few such errors skips the server for the rest of the transaction.
+# pacstrap runs with this pacman.conf, so turn that timeout off and download
+# fewer files at once.
+sed -i \
+  -e 's/^#\?ParallelDownloads.*/ParallelDownloads = 3/' \
+  -e '/^\[options\]/a DisableDownloadTimeout' \
+  /etc/pacman.conf
+grep -E '^(ParallelDownloads|DisableDownloadTimeout)' /etc/pacman.conf
 
 work=/root/nails-install
 mkdir -p "$work"
@@ -78,15 +88,28 @@ cp "$work/config.json" "$out/config.json"
 # --skip-ntp: the live clock comes from the host's RTC, and an NTP sync over
 # QEMU's user network may never finish. --skip-wkd: the keyring is the ISO's,
 # from the same day as the snapshot.
-archinstall \
-  --config "$work/config.json" \
-  --creds "$work/user_credentials.json" \
-  --silent \
-  --skip-ntp \
-  --skip-wkd \
-  --skip-version-check \
-  --skip-wifi-check
-grep -q 'Installation completed without any errors' /var/log/archinstall/install.log
+# A failed download still fails pacstrap, so a failed run is tried again from
+# a wiped disk, up to three times; each run's log is kept.
+installed=
+for attempt in 1 2 3; do
+  rm -f /var/log/archinstall/install.log
+  if archinstall \
+    --config "$work/config.json" \
+    --creds "$work/user_credentials.json" \
+    --silent \
+    --skip-ntp \
+    --skip-wkd \
+    --skip-version-check \
+    --skip-wifi-check &&
+    grep -q 'Installation completed without any errors' /var/log/archinstall/install.log; then
+    installed=yes
+    break
+  fi
+  echo "nails-arch-install: archinstall run $attempt failed"
+  cp /var/log/archinstall/install.log "$out/archinstall-attempt-$attempt.log" 2>/dev/null || true
+  umount -R /mnt 2>/dev/null || true
+done
+[ -n "$installed" ]
 
 # archinstall leaves the target mounted at /mnt.
 mountpoint -q /mnt
