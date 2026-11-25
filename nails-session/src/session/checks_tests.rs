@@ -903,3 +903,58 @@ fn check_says_skipped_for_a_noauto_line_the_hidden_session_skips() {
         );
     }
 }
+
+/// A noauto line a tmpfs below it needs only for a path, its disk not there,
+/// and a mount unit linked in local-fs.target.requires that requires its
+/// mount by name: `check` gives one warning, that local-fs.target will not
+/// be reached, naming that unit. It gave the policy's warning that the
+/// target may not be reached as well.
+#[test]
+fn check_says_will_not_once_where_a_target_s_unit_names_a_path_mask() {
+    let root = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let units = root.path().join("etc/systemd/system");
+    std::fs::create_dir_all(units.join("local-fs.target.requires")).unwrap();
+    std::fs::write(
+        units.join("srv-t9.mount"),
+        "[Unit]\nRequires=n-a.mount\nAfter=n-a.mount\n[Mount]\nWhat=tmpfs\nWhere=/srv/t9\n\
+         Type=tmpfs\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../srv-t9.mount",
+        units.join("local-fs.target.requires/srv-t9.mount"),
+    )
+    .unwrap();
+    let dirs = crate::session::mount_units::UnitDirs {
+        root: root.path(),
+        run: run.path(),
+        guard: None,
+    };
+    let entries = parse_fstab("/dev/vdn1 /n/a ext4 noauto 0 0\ntmpfs /n/a/t tmpfs defaults 0 0\n");
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let hidden = Path::new("/mnt/data");
+    let mut decisions = policy::decide_all(&entries, &mounts, hidden, &|_| false);
+    let native = mount_units::read(dirs).unwrap();
+    decisions.extend(mount_units::decide(
+        dirs,
+        &native,
+        &decisions,
+        &mounts,
+        hidden,
+        &|_| false,
+        Path::new("/sys"),
+    ));
+    let (kept, unskipped) = mount_units::kept_off(dirs, &entries, &decisions, &|_| false);
+    let result = judge_fstab_not_looked_up(&decisions, &kept, &unskipped, &|_| false);
+    let message = result.message();
+    assert_eq!(message.matches("/n/a is masked").count(), 1, "{result:?}");
+    assert!(
+        message.contains(
+            "srv-t9.mount, which local-fs.target requires, requires n-a.mount (Requires=), so \
+             the hidden session will not reach local-fs.target"
+        ),
+        "{result:?}"
+    );
+    assert!(!message.contains("may not reach"), "{result:?}");
+}

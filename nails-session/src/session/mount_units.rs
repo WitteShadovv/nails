@@ -434,13 +434,17 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// mount for a path ([`pulls::walk`]). A skip masked instead is recorded
 /// ([`KeptOff::record_masked`]), and its warning says that the target will
 /// not be reached, unless NAILS reads only that a target may require it or
-/// that the units a target requires need it only as the mount for a path
-/// ([`KeptOff::unsure`]): then the warning says may, and nothing is
-/// recorded. `present` tells whether a device is there now.
+/// that the units a target requires need it only as the mount for a path,
+/// and no unit a target links in its `.requires` directory that names it
+/// ([`KeptOff::unsure`], [`noauto::weigh_unsure`]): then the warning says
+/// may, and nothing is recorded. `present` tells whether a device is there
+/// now.
 ///
 /// The mask of a `noauto` line that nothing NAILS reads in the fstab pulls
 /// in ([`Decision::is_noauto_mask`]) is weighed against the units outside
-/// the fstab ([`noauto::yield_masks`], [`noauto::weigh_masks`]).
+/// the fstab ([`noauto::yield_masks`], [`noauto::weigh_masks`]), and so is
+/// a mask a decision makes for a target that needs it only for a path or
+/// only may require it ([`noauto::weigh_unsure`]).
 pub fn kept_off(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
@@ -462,6 +466,9 @@ pub fn kept_off(
     let mut covered = covered_units(decisions);
     warnings.extend(noauto::weigh_masks(
         dirs, fstab, &native, decisions, &covered, &mut kept, present,
+    ));
+    warnings.extend(noauto::weigh_unsure(
+        dirs, fstab, &native, decisions, &covered, &mut kept,
     ));
     // A noauto line's mount skipped now is kept off as any skip is.
     covered.extend(
@@ -514,14 +521,17 @@ pub fn kept_off(
         let units = skip.units.join(" and ");
         if skip.units.iter().any(|unit| kept.unsure.contains(unit)) {
             // NAILS reads only that a target may require it, or that the
-            // units a target requires need it only as the mount for a path:
-            // the target may be reached all the same, and nothing is recorded.
+            // units a target requires need it only as the mount for a path,
+            // and no unit a target requires that names it
+            // ([`noauto::weigh_unsure`]): the target may be reached all the
+            // same, and nothing is recorded.
             kept.unsure.retain(|unit| !skip.units.contains(unit));
             warnings.push(format!(
                 "{units} is masked rather than skipped, as {why}: NAILS reads only that a boot \
                  target may require it, or that the units a target requires need it only as the \
-                 mount for a path, so the hidden session may not reach that target, and the \
-                 units only that target pulls in may not start there"
+                 mount for a path, and reads no unit a target requires that names it, so the \
+                 hidden session may not reach that target, and the units only that target pulls \
+                 in may not start there"
             ));
         } else {
             warnings.push(format!(

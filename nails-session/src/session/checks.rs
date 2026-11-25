@@ -441,7 +441,7 @@ fn judge_fstab_not_looked_up(
     notes.extend(
         decisions
             .iter()
-            .filter_map(Decision::warning)
+            .filter_map(|decision| kept.warning(decision))
             .chain(unskipped.iter().cloned())
             .map(|warning| format!("{warning}.")),
     );
