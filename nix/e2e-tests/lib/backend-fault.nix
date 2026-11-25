@@ -20,7 +20,7 @@
         import signal
         import time
 
-        from nails_e2e import session, stall
+        from nails_e2e import blockwrites, session, stall
 
         if console_index is None:
             console_index = len(machine.full_console_log)
@@ -31,8 +31,15 @@
                 check_output=False,
             )
         deadline = time.monotonic() + deadline_s
+        # The way back to the decoy ends the block-write oracle's window at
+        # the decoy's hold line, as session.follow_soft_reboot does.
+        cut_at = None
         while True:
             lines = machine.full_console_log[console_index:]
+            if cut_at is None and blockwrites.watching(machine):
+                hold, _ = blockwrites.hold_and_release(lines)
+                if hold is not None:
+                    cut_at = blockwrites.at_hold(machine, False)
             stuck = session.stuck_lines(lines)
             if stuck:
                 machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
@@ -72,6 +79,18 @@
             signal.signal(signal.SIGALRM, previous)
         machine.wait_for_unit("multi-user.target")
         session.assert_decoy_root(machine)
+        if blockwrites.watching(machine):
+            _, release = blockwrites.hold_and_release(
+                machine.full_console_log[console_index:]
+            )
+            blockwrites.after_switch(
+                machine,
+                label,
+                False,
+                cut_at,
+                None if release is None else console_index + release,
+                hidden=False,
+            )
         return "decoy"
   '';
 
