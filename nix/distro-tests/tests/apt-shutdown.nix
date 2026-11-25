@@ -453,11 +453,12 @@ distroVm.buildVmTest {
         vm.succeed(f"systemd-run --unit=uu-race --collect sh -c {shlex.quote(race)}")
 
 
-    def restart_helper():
+    def wait_for_helper_lock():
         # The helper reads apt's configuration and sets up its log when it
         # starts, and takes its delay lock from logind right after: once the
-        # restarted process holds it, it has read the files as they are.
-        vm.succeed("systemctl restart unattended-upgrades.service")
+        # running process holds it, it has read the files as they were, and a
+        # switch through logind waits for it.
+        vm.wait_until_succeeds("systemctl is-active unattended-upgrades.service", timeout=120)
         pid = vm.succeed("systemctl show -P MainPID unattended-upgrades.service").strip()
         assert pid not in ("", "0"), f"unattended-upgrades.service has no main process: {pid!r}"
         vm.wait_until_succeeds(
@@ -465,6 +466,11 @@ distroVm.buildVmTest {
             + f"| grep -F 'Unattended Upgrades Shutdown' | grep -qw {pid}",
             timeout=60,
         )
+
+
+    def restart_helper():
+        vm.succeed("systemctl restart unattended-upgrades.service")
+        wait_for_helper_lock()
 
 
     def end_daily_download():
@@ -640,7 +646,10 @@ distroVm.buildVmTest {
         assert count(helper_log, SHUTDOWN_MODE) == decoy_mode, tail(helper_log)
 
     with subtest("a deleted line counts for the helper that read it, so check cannot tell"):
-        # The decoy's helper started at the cold boot with the setting on.
+        # The decoy's helper started at the cold boot with the setting on:
+        # once it holds its delay lock it has read it, and the switch waits
+        # for it.
+        wait_for_helper_lock()
         vm.succeed(f"rm -f {setting_file}")
         assert not apt_reads_setting(), "apt reads the deleted setting on"
         refusal = row("decoy-persistence")
