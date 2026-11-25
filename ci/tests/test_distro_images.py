@@ -361,7 +361,16 @@ class LinkCheckTest(unittest.TestCase):
             if entry["source"]["kind"] in ("upstream", "nix-vm-test")
             or entry["source"].get("asset") is not None
         ]
-        self.assertEqual(len(probed), len(pinned))
+        # A mirror entry probes its builder's inputs whether or not it pins
+        # an asset yet.
+        build_inputs = [
+            name
+            for name, entry in table.items()
+            if entry["source"]["kind"] == "mirror"
+            and entry["source"].get("family") in di.BUILDER_INPUTS
+        ]
+        # Each of those also probes its builder's ISO and package snapshot.
+        self.assertEqual(len(probed), len(pinned) + 2 * len(build_inputs))
         staged = [name for name in pinned if not table[name]["enabled"]]
         self.assertTrue(staged, "no staged pin to probe")
 
@@ -599,12 +608,93 @@ class LinkCheckTest(unittest.TestCase):
             return True
 
         report = di.link_check(
-            self.mirror_table(), today=THE_DAY, url_ok=url_ok, mirror=MIRROR
+            self.mirror_table(),
+            today=THE_DAY,
+            url_ok=url_ok,
+            mirror=MIRROR,
+            builder_inputs={},
         )
         url = f"{MIRROR.base}/images-arch-install/{MIRROR_ASSET}"
         self.assertEqual(report.failures, [])
         self.assertIn(url, probed)
         self.assertIn(f"arch-install (staged): probed {url}", report.checked)
+
+    def test_a_mirror_entry_probes_its_build_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "inputs.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "iso": {"url": "https://iso.invalid/a.iso"},
+                        "packages": {
+                            "server": "https://pkg.invalid/2026/$repo/os/$arch"
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            down = "https://pkg.invalid/2026/core/os/x86_64/core.db"
+            probed: list[str] = []
+
+            def url_ok(url: str) -> bool:
+                probed.append(url)
+                return url != down
+
+            report = di.link_check(
+                self.mirror_table(),
+                today=THE_DAY,
+                url_ok=url_ok,
+                mirror=MIRROR,
+                builder_inputs={"arch-install": path},
+            )
+        self.assertIn("https://iso.invalid/a.iso", probed)
+        self.assertEqual(
+            report.failures,
+            [f"arch-install (staged): build input is unreachable: {down}"],
+        )
+
+    def test_an_unpinned_entry_is_checked_by_its_build_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "inputs.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "iso": {"url": "https://iso.invalid/a.iso"},
+                        "packages": {"server": "https://pkg.invalid/$repo/os/$arch"},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            report = di.link_check(
+                self.mirror_table(asset=None, sha256=None),
+                today=THE_DAY,
+                url_ok=lambda _url: True,
+                mirror=MIRROR,
+                builder_inputs={"arch-install": path},
+            )
+        self.assertEqual(report.failures, [])
+        self.assertEqual(report.unchecked, [])
+        self.assertIn(
+            "arch-install (staged): probed https://iso.invalid/a.iso, probed"
+            " https://pkg.invalid/core/os/x86_64/core.db, no asset pinned yet",
+            report.checked,
+        )
+
+    def test_unreadable_build_inputs_fail(self) -> None:
+        report = di.link_check(
+            self.mirror_table(),
+            today=THE_DAY,
+            url_ok=lambda _url: True,
+            mirror=MIRROR,
+            builder_inputs={"arch-install": pathlib.Path("/nonexistent/inputs.json")},
+        )
+        self.assertEqual(len(report.failures), 1, report.failures)
+        self.assertIn("cannot read inputs.json", report.failures[0])
+
+    def test_the_shipped_builder_pins_an_iso_and_a_snapshot(self) -> None:
+        iso, core = di.builder_urls(di.BUILDER_INPUTS["arch-install"])
+        self.assertTrue(iso.endswith("-x86_64.iso"), iso)
+        self.assertTrue(core.endswith("/core/os/x86_64/core.db"), core)
 
     def test_a_missing_mirror_asset_fails(self) -> None:
         url = f"{MIRROR.base}/images-arch-install/{MIRROR_ASSET}"
@@ -613,6 +703,7 @@ class LinkCheckTest(unittest.TestCase):
             today=THE_DAY,
             url_ok=lambda probed: probed != url,
             mirror=MIRROR,
+            builder_inputs={},
         )
         self.assertEqual(
             report.failures,
@@ -625,11 +716,12 @@ class LinkCheckTest(unittest.TestCase):
             today=THE_DAY,
             url_ok=lambda _url: True,
             mirror=MIRROR,
+            builder_inputs={},
         )
         self.assertEqual(report.failures, [])
         self.assertEqual(
             report.unchecked,
-            ["arch-install (staged): a mirror source that pins no asset yet"],
+            ["arch-install (staged): no asset pinned yet"],
         )
 
     def test_a_mirror_that_is_not_configured_is_listed_as_not_checked(self) -> None:
@@ -638,6 +730,7 @@ class LinkCheckTest(unittest.TestCase):
             today=THE_DAY,
             url_ok=lambda _url: True,
             mirror=di.Mirror(base="", tag_prefix="images-"),
+            builder_inputs={},
         )
         self.assertEqual(report.failures, [])
         self.assertEqual(
@@ -655,6 +748,7 @@ class LinkCheckTest(unittest.TestCase):
             offline=True,
             url_ok=url_ok,
             mirror=MIRROR,
+            builder_inputs={},
         )
         self.assertIn(
             "arch-install (staged): offline, and no upstreamUntil", report.unchecked
