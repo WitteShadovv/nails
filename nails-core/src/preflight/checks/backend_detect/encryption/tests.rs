@@ -1178,3 +1178,51 @@ fn the_check_is_named_needs_the_hidden_volume_and_defaults_to_its_root() {
         <BackendEncryptionCheck as PreFlightCheck<MockFilesystem>>::requires_hidden_volume(&check)
     );
 }
+
+#[test]
+fn a_crypttab_source_that_names_a_device_is_not_looked_up_as_a_file() {
+    // `UUID=77` names the decoy's backup drive sdc, no file: looked up as
+    // one, it would be a file in the working directory, which may not be
+    // readable.
+    let host = external("CRYPT-LUKS2-6677-data")
+        .disk("sdc", "8:32")
+        .file("/etc/crypttab", "backup UUID=77 none luks,noauto\n");
+    host.link("/dev/disk/by-uuid/77", "/dev/sdc");
+    assert_pass(&host.run(), "LUKS mapping dm-9");
+    host.fs
+        .mock_set_lookup_error("UUID=77", std::io::ErrorKind::PermissionDenied);
+    assert_pass(&host.run(), "LUKS mapping dm-9");
+}
+
+#[test]
+fn a_crypttab_image_that_is_not_there_keeps_the_pass() {
+    // The image lay on a backup drive that is unplugged: no loop device
+    // under the hidden root can read it.
+    let host = external("CRYPT-LUKS2-6677-data").file(
+        "/etc/crypttab",
+        "backup /media/backup/disk.img none luks,noauto\n",
+    );
+    host.fs
+        .mock_set_lookup_error("/media/backup/disk.img", std::io::ErrorKind::NotFound);
+    assert_pass(&host.run(), "LUKS mapping dm-9");
+}
+
+#[test]
+fn a_crypttab_image_link_that_cannot_be_resolved_is_named_once() {
+    // Two lines open the image behind the same link, with different keys.
+    let host = external("CRYPT-LUKS2-6677-data").file(
+        "/etc/crypttab",
+        "backup /var/backup-link.img none luks,noauto\n\
+         spare /var/backup-link.img /etc/spare.key luks,noauto\n",
+    );
+    host.fs
+        .mock_set_lookup_error("/var/backup-link.img", std::io::ErrorKind::PermissionDenied);
+    assert_eq!(
+        warning(&host.run()),
+        format!(
+            "Could not confirm that the hidden root at {ROOT} is encrypted: \
+             /var/backup-link.img could not be read, so whether the decoy opens that \
+             encryption itself cannot be told."
+        )
+    );
+}
