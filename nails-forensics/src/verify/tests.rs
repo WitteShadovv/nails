@@ -196,6 +196,10 @@ fn test_comprehensive_scan_with_all_check_types() {
 #[test]
 fn test_clean_system_returns_secure() {
     let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+    );
     let verifier = Verifier::new(fs);
 
     let result = verifier.run(false).unwrap();
@@ -539,6 +543,10 @@ fn test_ac9_clean_system_secure_message_exit_0() {
     // When no overlays mounted, no artifacts found
     // Then output "SECURE", exit code 0
     let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+    );
     let verifier = Verifier::new(fs);
 
     let result = verifier.run(false).unwrap();

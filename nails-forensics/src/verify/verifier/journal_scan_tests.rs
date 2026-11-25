@@ -107,7 +107,12 @@ fn a_run_started_with_sudo_can_be_clean_and_names_its_own_record() {
         sudo_user: Some("alice".to_string()),
         ..RuntimeEnv::default()
     };
-    let result = scan(MockFilesystem::new(), &[VERIFY_RECORD], Some(env));
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+    );
+    let result = scan(fs, &[VERIFY_RECORD], Some(env));
 
     let found = journal(&result);
     assert!(!found.is_empty());

@@ -102,10 +102,10 @@ fn required_tools(kind: PlatformKind, device_mapper: bool) -> Vec<RequiredTool> 
 /// behind the hidden root, and the way back runs `dmsetup` on each name in it; a
 /// plain block device records none. A source that names a mapping
 /// (`/dev/dm-N`, `/dev/mapper/...`) counts as one whatever its name reads.
-/// When the stack cannot be resolved (the mount table or a place on the way
-/// down is there but cannot be read, or nothing is mounted at the hidden root
-/// yet) the backend is unknown and counts as device-mapper, so `dmsetup` is
-/// required.
+/// When the stack cannot be resolved (the mount table cannot be read or is
+/// not there, a place on the way down is there but cannot be read, or nothing
+/// is mounted at the hidden root yet) the backend is unknown and counts as
+/// device-mapper, so `dmsetup` is required.
 fn backend_may_be_device_mapper<F: Filesystem>(fs: &F, hidden_root: &Path) -> bool {
     match resolve_backend_chain(fs, hidden_root) {
         Ok(Some(chain)) => chain.is_device_mapper(),

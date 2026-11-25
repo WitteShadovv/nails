@@ -236,8 +236,18 @@ mod tests {
     use crate::filesystem::MockFilesystem;
     use std::path::Path;
 
-    fn run_on(files: &[(&str, &str)]) -> CheckResult {
+    /// A decoy's filesystem with its mount table: the root alone.
+    fn decoy() -> MockFilesystem {
         let fs = MockFilesystem::new();
+        fs.mock_set_file_content(
+            SELF_MOUNTINFO,
+            "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+        );
+        fs
+    }
+
+    fn run_on(files: &[(&str, &str)]) -> CheckResult {
+        let fs = decoy();
         for (path, content) in files {
             fs.mock_set_file_content(path, content);
         }
@@ -315,7 +325,7 @@ mod tests {
             // The real filesystem reads it as the check does.
             let read = crate::RealFilesystem.read_file_bytes(&real);
             assert_eq!(read.unwrap(), bytes);
-            let fs = MockFilesystem::new();
+            let fs = decoy();
             fs.mock_set_file_bytes(file.to_str().unwrap(), bytes);
             fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
             SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
@@ -369,7 +379,7 @@ mod tests {
     fn a_place_of_etc_nixos_that_cannot_be_looked_up_refuses() {
         use crate::filesystem::{MockFailure, MockLookup, PathKind};
         let decoy = || {
-            let fs = MockFilesystem::new();
+            let fs = decoy();
             fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
             let file = Path::new("/etc/nixos/configuration.nix");
             fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
@@ -455,8 +465,18 @@ mod tests {
     /// the check refuses, where it read no device and passed.
     #[test]
     fn a_mount_table_the_scan_cannot_read_refuses() {
-        let fs = MockFilesystem::new();
         let file = Path::new("/etc/nixos/configuration.nix");
+        // A table that is not there, where /proc is not mounted, refuses too.
+        let fs = MockFilesystem::new();
+        fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
+        fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
+        let result = SuspiciousNailsReferenceCheck::new(PathBuf::from("/mnt/hidden"))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "{result:?}");
+        assert_eq!(result.remediation(), Some(UNREADABLE_FIX));
+
+        let fs = decoy();
         fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
         fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
         fs.mock_set_lookup_error("/proc/self/mountinfo", std::io::ErrorKind::Other);
@@ -474,7 +494,7 @@ mod tests {
         assert_eq!(result.remediation(), Some(UNREADABLE_FIX));
 
         // A .nix file it cannot read is named in the fix.
-        let fs = MockFilesystem::new();
+        let fs = decoy();
         fs.mock_set_file_content(file.to_str().unwrap(), "{ }");
         fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[file]);
         fs.mock_fail_only(
@@ -501,7 +521,7 @@ mod tests {
     /// reads nothing either. Once the point is mounted it reads the files.
     #[test]
     fn an_etc_nixos_behind_an_automount_point_is_not_read() {
-        let fs = MockFilesystem::new();
+        let fs = decoy();
         fs.create_symlink(Path::new("/home/alice/nixos"), Path::new("/etc/nixos"))
             .unwrap();
         let file = Path::new("/etc/nixos/configuration.nix");
@@ -564,7 +584,7 @@ mod tests {
     #[test]
     fn a_link_in_etc_nixos_behind_an_automount_point_is_not_followed() {
         use crate::filesystem::PathKind;
-        let fs = MockFilesystem::new();
+        let fs = decoy();
         fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
         let file = Path::new("/etc/nixos/configuration.nix");
         let hosts = Path::new("/etc/nixos/hosts");
@@ -608,7 +628,7 @@ mod tests {
     /// automount point that nothing is mounted on yet.
     fn a_host_linked_into_an_unmounted_home() -> MockFilesystem {
         use crate::filesystem::PathKind;
-        let fs = MockFilesystem::new();
+        let fs = decoy();
         fs.mock_set_path_type("/etc/nixos", PathKind::Dir);
         fs.mock_set_path_type("/etc/nixos/hosts", PathKind::Dir);
         let file = Path::new("/etc/nixos/configuration.nix");

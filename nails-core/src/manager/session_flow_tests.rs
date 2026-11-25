@@ -1838,6 +1838,10 @@ fn activation_records_the_mappings_behind_the_hidden_root() {
     let recorded = recorded_backend(&hidden_on_mapping(), Path::new("/mnt/data")).unwrap();
     assert_eq!(recorded, vec!["data".to_string()]);
     let unmounted = crate::filesystem::MockFilesystem::new();
+    unmounted.mock_add_file(
+        "/proc/self/mountinfo",
+        "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+    );
     assert!(
         recorded_backend(&unmounted, Path::new("/mnt/data"))
             .unwrap()
