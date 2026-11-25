@@ -107,7 +107,18 @@ impl<F: Filesystem> NailsManager<F> {
     /// Plan a `discard` for `target`. Refused in the hidden session (the
     /// upper is the live root there) and for a relative path or `/` itself.
     pub fn plan_reset_upper(&self, target: &Path) -> Result<ResetUpperPlan> {
-        if self.session_view()?.is_hidden() {
+        self.plan_reset_upper_in(self.session_view(), target)
+    }
+
+    /// [`plan_reset_upper`](Self::plan_reset_upper) where the live session
+    /// read as `view`. A mount table that cannot be read refuses the plan:
+    /// it leaves untold whether the upper is the live root.
+    fn plan_reset_upper_in(
+        &self,
+        view: Result<SessionView>,
+        target: &Path,
+    ) -> Result<ResetUpperPlan> {
+        if view?.is_hidden() {
             return Err(NailsError::InvalidState(
                 "discard cannot run in the hidden session: the upper is the live root; \
                  deactivate first"
@@ -237,6 +248,27 @@ mod tests {
             .plan_reset_upper_on(Path::new("/home"), &SessionView::Decoy)
             .unwrap();
         assert!(again.is_empty());
+    }
+
+    /// Without the mount table it cannot be told whether the upper is the
+    /// live root: the plan is refused, never made as on the decoy.
+    #[test]
+    fn discard_refuses_where_the_mount_table_cannot_be_read() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("root/upper/home/alice")).unwrap();
+        let m = manager(root.path());
+        let unread = Err(NailsError::io(
+            nails_teardown::mountinfo::SELF_MOUNTINFO,
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        ));
+        let error = m
+            .plan_reset_upper_in(unread, Path::new("/home"))
+            .unwrap_err();
+        assert!(error.to_string().contains("mountinfo"), "{error}");
+        assert!(
+            m.plan_reset_upper_in(Ok(SessionView::Decoy), Path::new("/home"))
+                .is_ok()
+        );
     }
 
     /// A link in the upper that leads to itself is planned and removed: it

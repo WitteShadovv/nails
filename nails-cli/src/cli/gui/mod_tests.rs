@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::path::Path;
 
-use super::gate::{ADMITTED_DESKTOPS, DecoyFacts, decide, decide_on_decoy};
+use super::gate::{ADMITTED_DESKTOPS, DecoyFacts, decide, decide_on_decoy, view_or_decoy};
 use super::*;
 use crate::cli::{Cli, Commands};
 
@@ -337,6 +337,25 @@ fn in_the_hidden_session_the_window_always_opens() {
         .expect_err("the decoy gate refuses");
         assert_eq!(refused.body.code, "decoy_persistent", "{view:?}");
     }
+}
+
+/// Where the mount table cannot be read, the gate is the decoy's, the
+/// stricter one: a decoy that keeps records refuses the window, as it would
+/// on the decoy, where an open gate would let it run there.
+#[test]
+fn a_mount_table_that_cannot_be_read_takes_the_decoy_gate() {
+    let unread = Err(nails_core::NailsError::io(
+        "/proc/self/mountinfo",
+        std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+    ));
+    let view = view_or_decoy(unread);
+    let refused = decide(
+        &view,
+        || decoy(&["persistent journal"], Some("GNOME")),
+        Path::new(ENGINE),
+    )
+    .expect_err("the decoy gate refuses");
+    assert_eq!(refused.body.code, "decoy_persistent");
 }
 
 /// The window's directory goes to the operator: made by the launcher, handed
