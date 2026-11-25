@@ -34,9 +34,6 @@ use std::path::{Path, PathBuf};
 
 const NEXTROOT: &str = "/run/nextroot";
 
-/// The lines read one by one against libmount, so a long input stays fast.
-const MODEL_LINES: usize = 64;
-
 fuzz_target!(|data: &[u8]| {
     let parts = nails_fuzz::byte_parts(data, 3);
     let utab = parts[0];
@@ -46,7 +43,7 @@ fuzz_target!(|data: &[u8]| {
     let at_back = parse_mountinfo(back_text);
     let nextroot = Path::new(NEXTROOT);
 
-    for line in utab.split(|&b| b == b'\n').take(MODEL_LINES) {
+    for line in utab.split(|&b| b == b'\n') {
         read_like_libmount(line, nextroot);
     }
 
