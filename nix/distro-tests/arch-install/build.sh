@@ -76,11 +76,13 @@ truncate -s 64M "$work/out.img"
 mkfs.vfat -n NAILSOUT "$work/out.img" >/dev/null
 install -m 0644 "$OVMF_VARS" "$work/vars.fd"
 
-# The machine the harness boots (nix-vm-test): the default i440fx machine, the
-# root disk on IDE, so that the initramfs archinstall builds for this machine
-# holds the drivers the test VMs need.
+# The machine the harness boots (nix-vm-test with the QEMU_OPTS that
+# lib/distro-vm.nix adds for a UEFI image): q35, whose default drive is a SATA
+# disk on its AHCI controller, so that the initramfs archinstall builds for
+# this machine holds the drivers the test VMs need. On the older i440fx
+# machine under OVMF, Linux sees no drive on the PIIX IDE controller at all.
 common=(
-  -machine "pc,accel=kvm"
+  -machine "q35,accel=kvm"
   -cpu max
   -m 4096
   -smp "$(nproc)"
@@ -94,7 +96,7 @@ common=(
 
 echo "Installing from $(basename "$ISO") (live system $iso_uuid)"
 # The ISO goes on a virtio-scsi CD drive, as archiso's own run_archiso attaches
-# it: the live initramfs finds no IDE CD drive.
+# it.
 qemu-system-x86_64 "${common[@]}" \
   -drive if=pflash,format=raw,readonly=on,file="$OVMF_CODE" \
   -drive if=pflash,format=raw,file="$work/vars.fd" \

@@ -144,13 +144,21 @@ let
       throw "distro image ${entry.osId} ${entry.release}: no prepare function for '${entry.prepare}'";
 
   # The QEMU options an entry's firmware needs, or null for QEMU's default
-  # SeaBIOS. nix-vm-test starts QEMU with no firmware option and appends
-  # $QEMU_OPTS to its command line, so an image whose only boot loader is a
-  # UEFI one (the archinstall image's systemd-boot) gets OVMF through it. The
-  # combined OVMF image keeps no boot entries from one boot to the next, so the
-  # firmware starts the ESP's fallback loader, EFI/BOOT/BOOTX64.EFI, every time.
+  # SeaBIOS. nix-vm-test starts QEMU with no firmware or machine option and
+  # appends $QEMU_OPTS to its command line, so an image whose only boot loader
+  # is a UEFI one (the archinstall image's systemd-boot) gets OVMF through it.
+  # The combined OVMF image keeps no boot entries from one boot to the next, so
+  # the firmware starts the ESP's fallback loader, EFI/BOOT/BOOTX64.EFI, every
+  # time. The machine is q35, where nix-vm-test's root drive is a SATA disk:
+  # under OVMF on the default i440fx machine, Linux finds no drive on its IDE
+  # controller. The archinstall image is built on the same machine
+  # (arch-install/build.sh), so its initramfs holds the AHCI driver.
   firmwareOpts =
-    entry: if (entry.firmware or "bios") == "uefi" then "-bios ${vmPkgs.OVMF.fd}/FV/OVMF.fd" else null;
+    entry:
+    if (entry.firmware or "bios") == "uefi" then
+      "-machine q35 -bios ${vmPkgs.OVMF.fd}/FV/OVMF.fd"
+    else
+      null;
 
   # Hand a built test its firmware: the sandboxed derivation gets QEMU_OPTS in
   # its build environment, and a host driver a wrapper that sets it (before

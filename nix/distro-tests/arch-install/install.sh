@@ -4,7 +4,7 @@
 # The ISO's own automated-script hook runs this on tty1: build.sh boots the
 # ISO's kernel with `script=<url of this file>`, and the live system fetches
 # and runs it once root is logged in there. It installs Arch with archinstall,
-# from the package snapshot the mirrorlist names, onto the first IDE disk, and
+# from the package snapshot the mirrorlist names, onto the first SATA disk, and
 # writes what it did to the output disk (label NAILSOUT): `status` ("ok" or the
 # failure), the logs, the package list and the layout. Then it powers off,
 # which ends QEMU and hands control back to build.sh.
