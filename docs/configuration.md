@@ -375,9 +375,12 @@ read, it does not load, which a generator of the hidden session could change, it
 names a unit or path by a specifier NAILS does not resolve, such as `%H`, or an
 fstab line puts a specifier in one of those options), or the chain runs more
 than 8 units deep or past 256 units, the skip is masked as well. A skipped unit
-that requires a unit the session masks, such as the mount of an unmounted parent
-directory with `nofail`, does not start, so its target is not reached either,
-and `nails check` and `nails activate` warn of that too. A skipped mount or swap
+that requires a unit the session masks by name (`Requires=`,
+`x-systemd.requires=`) does not start, so its target is not reached either, and
+`nails check` and `nails activate` warn of that too. Where it requires the
+masked unit only as the mount for a path, such as the mount of an unmounted
+parent directory with `nofail`, they warn that its target may not be reached:
+systemd 260.5 started such a unit without the mount. A skipped mount or swap
 still waits for its device, so an entry whose device is not there at activation
 (NAILS also asks systemd whether the device's unit is active, at `nails check`
 as at activation) is masked instead as well; attach the device, or give the
@@ -386,7 +389,10 @@ rather than `RequiredBy=`; for a unit a generator makes and requires, such as a
 `systemd.mount-extra=` of the kernel command line, give that line `nofail`, or
 run `systemctl daemon-reload` if the line is gone). For either mask
 `nails check` and `nails activate` warn that the hidden session will not reach
-the unit's target. A device that is gone by the switch has its units masked
+the unit's target, or that it may not where NAILS reads only that the target may
+require the unit or that what the target requires needs it only as the mount for
+a path (a `noauto` entry that a tmpfs below it needs, say), and `nails status`
+then does not list the mask. A device that is gone by the switch has its units masked
 then. An entry with `nofail` is masked: its target only wants it. In the session
 `nails status` lists each unit a target requires that is kept off, skipped or
 masked, with why (`required_units` in `status --json`): its device was not there
