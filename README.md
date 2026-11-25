@@ -28,9 +28,9 @@ Nothing that starts the hidden session is installed on the decoy.
 Website and documentation: [nails.run](https://nails.run)
 
 NixOS is the first-class platform (a declarative hidden configuration is built
-and entered in the same step); Debian 13, Ubuntu 24.04, Ubuntu 26.04 and the
-Cloud edition of Fedora 44 and 45 run the same session with whatever the hidden
-`/etc` holds.
+and entered in the same step); Debian 13, Ubuntu 24.04, Ubuntu 26.04 and,
+provisionally, the Cloud edition of Fedora 44 and 45 run the same session with
+whatever the hidden `/etc` holds.
 
 > [!WARNING]
 > NAILS is **alpha** security software. It is meant for technically experienced
@@ -134,7 +134,7 @@ model is written down; read it before relying on NAILS.
 | Requirement | Notes |
 |---|---|
 | A supported host | NixOS, Debian 13, Ubuntu 24.04 or 26.04, or, provisionally, the Cloud edition of Fedora 44 or 45, with **systemd 254 or newer**. A later Debian, Ubuntu or Fedora release, or another Fedora edition, runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
-| Linux 6.1 or newer | The default kernel of Debian 13 (6.12), Ubuntu 24.04 (6.8) and 26.04 and of current NixOS is new enough. NAILS keeps the programs it starts as root from changing the decoy's access times, and the service manager while it reads the decoy from changing those on the decoy's local disk mounts, through `mount_setattr` (Linux 5.12). The `kernel-version` check refuses an older kernel, and one whose release it cannot read or tell the version of, and names the running release. |
+| Linux 6.1 or newer | The default kernel of Debian 13 (6.12), Ubuntu 24.04 (6.8) and 26.04, Fedora 44 and 45 (6.19 and 7.2 on the images the tests pin) and of current NixOS is new enough. NAILS keeps the programs it starts as root from changing the decoy's access times, and the service manager while it reads the decoy from changing those on the decoy's local disk mounts, through `mount_setattr` (Linux 5.12). The `kernel-version` check refuses an older kernel, and one whose release it cannot read or tell the version of, and names the running release. |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no tuned logging to a file, no armed kdump, no unattended-upgrades set to install at shutdown, no disk swap. Activation fails closed otherwise; `--allow-persistent-decoy` overrides the journal, syslog, audit, tuned, kdump and install-at-shutdown refusals for one run, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |

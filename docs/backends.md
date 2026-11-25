@@ -512,12 +512,16 @@ that release or an older one:
 | Ubuntu 24.04 | 2.7.0 |
 | Debian 13 | 2.7.5 |
 | Ubuntu 26.04 | 2.8.4 |
+| Fedora 44 | 2.8.8 (updates, checked 2026-11-25) |
+| Fedora 45 | 2.8.8 (checked 2026-11-25) |
 | NixOS 26.05 | 2.8.6 |
 | NixOS unstable | 2.8.8 |
 
 A Debian or Ubuntu release does not normally get a newer cryptsetup version
 once it is out, so on Debian 13 and the Ubuntu LTS releases the limit is likely
-to last for years after a cryptsetup release adds the support.
+to last for years after a cryptsetup release adds the support. Fedora updates
+cryptsetup within a release, so there the limit lasts until its updates ship a
+release that opens Argon2id.
 `sudo nails check` names the version a decoy has, in its `cryptsetup-argon2id`
 row. It reads it from the package database (dpkg or pacman) or the NixOS store
 path, never by running cryptsetup: running `cryptsetup --version` on the decoy

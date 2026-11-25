@@ -33,8 +33,8 @@ Planned once the current line is stable.
 
 - **Fedora desktops and hardware.** Fedora 44 and 45 run in their Cloud edition, tested in virtual
   machines. The Workstation and KDE Plasma Desktop editions warn until a test of a graphical
-  session on them passes, and Fedora's support stays provisional until a run on real hardware has
-  passed.
+  session on them passes and so do its first-run counters, the steps a first run takes held to
+  their budgets, and Fedora's support stays provisional until a run on real hardware has passed.
 - **Arch backend.** A validated backend for Arch and close derivatives, with pacman-based drift
   scanning, admitted once its own admission gate passes. The platform
   layer is built so a new distribution is a backend plus a detection-table entry, not a rewrite.
