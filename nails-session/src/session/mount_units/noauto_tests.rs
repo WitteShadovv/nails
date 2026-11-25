@@ -730,3 +730,107 @@ fn a_path_skip_masked_after_all_still_says_may_where_a_unit_needs_it_for_a_path(
         "{warnings:?}"
     );
 }
+
+/// A mount unit of a disk of its own, linked in local-fs.target.requires,
+/// whose `Requires=` names the mount of [`NEEDED_LINE`], which fstab lines
+/// need only for a path. Its disk is there, so the session skips it, and a
+/// skipped unit gets its start job too, and with it what it requires: it
+/// names the mount as a unit the session leaves to the hidden systemd
+/// would. Where a drop-in of the decoy's masks the line's skip after all,
+/// the warning says will not, and the mask is recorded.
+#[test]
+fn a_skipped_unit_a_target_requires_names_a_path_skip_as_a_unit_it_starts() {
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-d.mount",
+        "[Unit]\nRequires=n-a.mount\nAfter=n-a.mount\n[Mount]\nWhat=/dev/vdm1\nWhere=/srv/d\n\
+         Type=ext4\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-d.mount",
+        "../srv-d.mount",
+    );
+    reset_conditions(&decoy, "n-a.mount");
+    let (_, kept, warnings) = kept(&decoy, &format!("{NEEDED_LINE}{}", PATH_NEEDERS[0]));
+    assert!(
+        kept.skips.iter().any(|skip| skip.units == ["srv-d.mount"]),
+        "{kept:?}"
+    );
+    assert!(
+        kept.masks.iter().any(|mask| mask == "n-a.mount"),
+        "{kept:?}"
+    );
+    assert!(kept.unsure.is_empty(), "{kept:?}");
+    assert!(
+        kept.required_masks.contains(&RequiredMask {
+            unit: "n-a.mount".into(),
+            cause: MaskCause::SkipUndone,
+            device: None,
+        }),
+        "{kept:?}"
+    );
+    let warning = warnings
+        .iter()
+        .find(|warning| warning.starts_with("n-a.mount is masked rather than skipped"))
+        .unwrap_or_else(|| panic!("{warnings:?}"));
+    assert!(
+        warning.contains(
+            "the hidden session will not reach the boot target that requires it, and the units \
+             only that target pulls in will not start there"
+        ),
+        "{warning}"
+    );
+    assert!(!warning.contains("may not"), "{warning}");
+}
+
+/// A noauto line with an option NAILS does not read, whose mount a tmpfs
+/// line below it needs only for a path: the policy masks it, as the option
+/// may have the boot mount it, with its warning that the target may not be
+/// reached, and records nothing. A tmpfs mount unit linked in
+/// local-fs.target.requires names its mount (`Requires=`), so the mask is
+/// recorded, and the unit pass's warning, which says will not and names that
+/// unit, stands in place of the policy's, whether the device is there or not.
+#[test]
+fn an_unread_mask_for_a_path_is_recorded_where_a_target_s_unit_names_it() {
+    let fstab = "/dev/vdn1 /n/a ext4 noauto,foo 0 0\ntmpfs /n/a/t tmpfs defaults 0 0\n";
+    for present in [true, false] {
+        let decoy = named_by_a_target("named");
+        let (decisions, kept, warnings) = kept_with(&decoy, fstab, present);
+        assert!(
+            kept.masks.iter().any(|mask| mask == "n-a.mount"),
+            "{present}: {kept:?}"
+        );
+        assert_eq!(
+            kept.required_masks,
+            [RequiredMask {
+                unit: "n-a.mount".into(),
+                cause: MaskCause::Undetermined,
+                device: None,
+            }],
+            "{present}: {warnings:?}"
+        );
+        assert_eq!(kept.sure_needed, ["n-a.mount"], "{present}: {kept:?}");
+        let expected = "/n/a is masked, as noauto, but NAILS does not read its option foo as the \
+                        line gives it, so the boot may mount it, and the line for /n/a/t needs \
+                        its mount, so the boot mounts it: srv-t9.mount, which local-fs.target \
+                        requires, requires n-a.mount (Requires=), so the hidden session will not \
+                        reach local-fs.target, and the units only that target pulls in will not \
+                        start there";
+        assert_eq!(warnings, [expected], "{present}");
+        // The policy's own warning, which says may, gives way.
+        let mask = decisions
+            .iter()
+            .find(|decision| {
+                decision
+                    .masked_units()
+                    .first()
+                    .is_some_and(|u| u == "n-a.mount")
+            })
+            .unwrap_or_else(|| panic!("{present}: {decisions:?}"));
+        assert!(
+            mask.warning().is_some_and(|w| w.contains("may not reach")),
+            "{present}: {mask:?}"
+        );
+        assert_eq!(kept.warning(mask), None, "{present}");
+    }
+}
