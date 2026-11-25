@@ -2750,6 +2750,17 @@ of this changelog for that version becomes the release notes word for word, and
   open again. Nothing on the screen says why. The only parts still best effort are the masks of
   units the hidden root does not need (the fstab policy binds the boot filesystems read-only) and
   the cleanup of `utab`, which lives in RAM.
+- After the reload, activation checks that PID 1 starts the last step as NAILS installed it: one
+  start command, the RAM copy with the step's argument, a failure that is not ignored, and the
+  power-off as the unit's `FailureAction=`. A drop-in of the decoy's that sorts after NAILS's (an
+  `override.conf` from `systemctl edit`) and changes one of them refuses the entry (`switch-step`).
+- In a hidden session every soft-reboot now powers off, whatever sits at `/run/nextroot`. PID 1
+  switches into any OS tree there, a link to the decoy root or a plain directory included, which
+  the step's look at the mount table did not see. A hidden root whose plan is gone is told by its
+  root overlay. On NixOS the step undoes its repoint of `/run/current-system` before it asks PID 1
+  to power off, and resolves its `systemctl` when it starts, so a part that fails after the repoint
+  no longer goes straight to the kernel's power-off with the decoy root mounted read-write. A
+  leftover tree whose runtime directory or `noexec` cannot be put back powers off too.
 - The emergency no longer reads a mount table it cannot read as the decoy's. It then takes the
   hidden session's end, the power-off, where it used to clean up as on the decoy, or do nothing,
   and leave a hidden session running. A plain `emergency` in a hidden root whose session plan is
