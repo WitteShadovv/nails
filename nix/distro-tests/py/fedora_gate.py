@@ -1483,6 +1483,9 @@ class Gate:
     hidden_root: str = HIDDEN_ROOT
     harness_warnings: Mapping[str, str] = HARNESS_WARNINGS
     security_state_name = "the decoy's SELinux booleans"
+    # What the warnings on the prepared decoy may come from, as the clean
+    # check's name says it.
+    warning_sources = "the harness, the VM and an untested release"
 
     def __init__(
         self,
@@ -2515,8 +2518,8 @@ class Gate:
             allowed["platform"] = "the family table does not validate the release yet"
         self.facts["clean-check-allowed"] = allowed
         self.check(
-            "check warns of nothing on the prepared decoy but what the harness, "
-            "the VM and an untested release bring",
+            "check warns of nothing on the prepared decoy but what "
+            f"{self.warning_sources} bring",
             bool(rows) and set(warned) <= set(allowed),
             {name: row.get("message", "") for name, row in warned.items()},
         )

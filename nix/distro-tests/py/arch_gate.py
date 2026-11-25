@@ -258,12 +258,18 @@ def installed_version(listing: str) -> str | None:
     return None
 
 
+# How fstab-policy's warning begins, and the one note of it the image's own
+# layout brings: its masked filesystems are not in the hidden session.
+FSTAB_SUMMARY = "decoy filesystems in the hidden root: "
+FSTAB_NOTE = "Masked and skipped filesystems are not available in the hidden session."
+
+
 def fstab_items(message: str) -> list[str]:
     """What fstab-policy's warning names, each as ``<path>: <verdict>``
     without its reason, sorted: the items between ``hidden root:`` and the
-    sentence after them."""
+    end of that sentence (:func:`fstab_notes` gives what follows it)."""
     _, _, rest = message.partition("hidden root: ")
-    rest = rest.split(". Masked and skipped", 1)[0]
+    rest = rest.split(". ", 1)[0]
     items = []
     for item in rest.split("; "):
         path, _, verdict = item.partition(": ")
@@ -271,6 +277,16 @@ def fstab_items(message: str) -> list[str]:
             continue
         items.append(f"{path.strip()}: {verdict.split(' (', 1)[0].strip()}")
     return sorted(items)
+
+
+def fstab_notes(message: str) -> str | None:
+    """What fstab-policy's warning says after the sentence that names its
+    items, or None where the warning does not begin as fstab-policy's does
+    (:data:`FSTAB_SUMMARY`)."""
+    if not message.startswith(FSTAB_SUMMARY):
+        return None
+    _, _, notes = message[len(FSTAB_SUMMARY) :].partition(". ")
+    return notes.strip()
 
 
 def zram_applies(cold: str, generator: bool) -> bool:
@@ -326,6 +342,10 @@ class ArchGate(fg.Gate):
                 "fstab-policy": "the image's own filesystems, which the hidden "
                 "session masks or binds read-only: " + "; ".join(self.fstab_policy),
             }
+            self.warning_sources = (
+                "the harness, the VM, an untested release and, from fstab-policy, "
+                "the image's own filesystems"
+            )
 
     # --- the kernel's security state -------------------------------------
 
@@ -441,9 +461,11 @@ class ArchGate(fg.Gate):
         for name in distro_checks.disk_swaps(self.vm.succeed("cat /proc/swaps")):
             self.vm.succeed(f"swapoff {shlex.quote(name)}")
         swaps = self.fact("swaps-prepared", "cat /proc/swaps; grep -w swap /etc/fstab")
+        lines = distro_checks.fstab_swaps(self.vm.succeed("cat /etc/fstab"))
         self.check(
-            "the decoy's disk swap is off, its fstab line noauto",
-            not distro_checks.disk_swaps(self.vm.succeed("cat /proc/swaps")),
+            "the decoy's disk swap is off, and every swap line of its fstab noauto",
+            not distro_checks.disk_swaps(self.vm.succeed("cat /proc/swaps"))
+            and all("noauto" in options for _, options in lines),
             swaps,
         )
 
@@ -524,12 +546,20 @@ class ArchGate(fg.Gate):
         row = self.facts.get("clean-check-warnings", {}).get("fstab-policy")
         if not self.fstab_policy:
             return
-        named = fstab_items(str((row or {}).get("message", "")))
+        message = str((row or {}).get("message", ""))
+        named = fstab_items(message)
+        notes = fstab_notes(message)
         self.check(
             "fstab-policy names on the prepared decoy what the image's layout "
             "brings, and nothing else",
-            named == self.fstab_policy,
-            {"expected": self.fstab_policy, "named": named, "row": row},
+            named == self.fstab_policy and notes == FSTAB_NOTE,
+            {
+                "expected": self.fstab_policy,
+                "named": named,
+                "notes": notes,
+                "expectedNotes": FSTAB_NOTE,
+                "row": row,
+            },
         )
 
     def auditd_off(self) -> None:

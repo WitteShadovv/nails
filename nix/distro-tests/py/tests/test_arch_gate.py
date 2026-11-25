@@ -169,6 +169,55 @@ class FstabPolicyTest(unittest.TestCase):
         )
         self.assertEqual(ag.fstab_items(""), [])
 
+    def test_reads_what_the_warning_says_after_its_items(self) -> None:
+        self.assertEqual(ag.fstab_notes(self.MESSAGE), ag.FSTAB_NOTE)
+        self.assertEqual(ag.fstab_notes("something else. x"), None)
+        added = f"{self.MESSAGE} a unit pulls /var/lib/machines by path."
+        self.assertEqual(ag.fstab_items(added), ag.fstab_items(self.MESSAGE))
+        self.assertNotEqual(ag.fstab_notes(added), ag.FSTAB_NOTE)
+
+    def judged(self, message: str) -> dict[str, bool]:
+        g = gate(
+            fstabPolicy=[
+                "/swap/swapfile: masked",
+                "/efi: read-only",
+                "/efi: masked",
+                "/var/lib/machines: masked",
+            ]
+        )
+        rows = {
+            "fstab-policy": {"status": "warn", "message": message},
+            "dma-protection": {"status": "warn", "message": "no IOMMU"},
+            "swap": {"status": "pass", "message": ""},
+        }
+        g.check_rows = lambda *args: (9, rows)  # type: ignore[method-assign]
+        quiet(g.clean_check)
+        return {c["name"]: c["passed"] for c in g.checks}
+
+    def test_the_clean_check_holds_the_warning_to_its_items_and_note(self) -> None:
+        name = (
+            "fstab-policy names on the prepared decoy what the image's layout "
+            "brings, and nothing else"
+        )
+        found = self.judged(self.MESSAGE)
+        self.assertTrue(all(found.values()), found)
+        self.assertIn(
+            "check warns of nothing on the prepared decoy but what the harness, "
+            "the VM, an untested release and, from fstab-policy, the image's own "
+            "filesystems bring",
+            found,
+        )
+        for extra in (
+            " /efi is masked, as its device /dev/sda1 is not there.",
+            " a unit pulls /var/lib/machines by path and may not start.",
+        ):
+            self.assertFalse(self.judged(self.MESSAGE + extra)[name], extra)
+        self.assertFalse(
+            self.judged(self.MESSAGE.replace("/efi: read-only", "/efi: read-write"))[
+                name
+            ]
+        )
+
     def test_the_image_s_layout_is_allowed_only_where_the_settings_name_it(
         self,
     ) -> None:
@@ -195,6 +244,40 @@ class FakeVm:
 
     def wait_for_unit(self, unit: str) -> None:
         self.ran.append(f"wait {unit}")
+
+
+class SwapTest(unittest.TestCase):
+    NAME = "the decoy's disk swap is off, and every swap line of its fstab noauto"
+    OFF = "Filename Type Size Used Priority\n"
+
+    def judged(self, fstab: str, swaps: str) -> bool:
+        g = gate()
+        g.vm = FakeVm({"cat /etc/fstab": fstab, "cat /proc/swaps": swaps})
+        g.fact = lambda label, cmd, timeout=300, again=False: ""  # type: ignore[method-assign]
+        quiet(g.swap_off)
+        return {c["name"]: c["passed"] for c in g.checks}[self.NAME]
+
+    def test_holds_the_fstab_too(self) -> None:
+        noauto = "/swap/swapfile none swap defaults,noauto 0 0\n"
+        self.assertTrue(self.judged(noauto, self.OFF))
+        # A line the gate could not make noauto fails, though no swap runs.
+        g = gate()
+        g.vm = FakeVm(
+            {
+                "printf": "",
+                "cat /etc/fstab": "/swap/swapfile none swap defaults 0 0\n",
+                "cat /proc/swaps": self.OFF,
+            }
+        )
+        g.fact = lambda label, cmd, timeout=300, again=False: ""  # type: ignore[method-assign]
+        quiet(g.swap_off)
+        self.assertFalse(g.checks[0]["passed"])
+        self.assertFalse(
+            self.judged(
+                "/swap/swapfile none swap defaults,noauto 0 0\n",
+                self.OFF + "/swap/swapfile file 4G 0 -2\n",
+            )
+        )
 
 
 class UpdateStateTest(unittest.TestCase):
