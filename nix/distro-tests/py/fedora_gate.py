@@ -1271,7 +1271,19 @@ def exec_records(
 
 
 class Gate:
-    """One gate run on the machine ``vm``."""
+    """One gate run on the machine ``vm``.
+
+    The class attributes are what another family's gate sets otherwise
+    (``arch_gate.ArchGate``): the shares the driver mounts, the script that
+    mounts the hidden volume, the warnings of the harness that check gives on
+    the prepared decoy, and the name of the kernel's security state the way
+    back must leave as it was. Such a gate also overrides the methods that
+    read SELinux, and sets ``zram`` where its image sets up no zram."""
+
+    shares: Sequence[tuple[str, str]] = SHARES
+    hidden_root: str = HIDDEN_ROOT
+    harness_warnings: Mapping[str, str] = HARNESS_WARNINGS
+    security_state_name = "the decoy's SELinux booleans"
 
     def __init__(
         self,
@@ -1289,6 +1301,11 @@ class Gate:
         self.settings = settings
         self.out_dir = out_dir
         self.image = str(settings["image"])
+        # The guest's Python, which reads the kernel log and drives a failed
+        # login: the image's own unless the driver names one.
+        self.python = str(settings.get("python") or "python3")
+        # Whether the zram checks apply: every Fedora image sets up zram.
+        self.zram = True
         variant = str(settings.get("variant", ""))
         self.name = f"{self.image}-gate" + (f"-{variant}" if variant else "")
         self.nonce = uuid.uuid4().hex[:10]
@@ -1368,7 +1385,7 @@ class Gate:
         try:
             for attempt in range(tries):
                 status, out = self.vm.execute(
-                    f"( set +euo pipefail; {cmd} ) 2>&1 | python3 -c "
+                    f"( set +euo pipefail; {cmd} ) 2>&1 | {self.python} -c "
                     + shlex.quote(sg.WHOLE_TEE),
                     timeout=timeout,
                 )
@@ -1428,7 +1445,7 @@ class Gate:
     def failed_login(self, label: str, user: str) -> str:
         """A console login of ``user`` that fails (:data:`FAILED_LOGIN`)."""
         script = f"<<'GATEEOF'\n{FAILED_LOGIN}\nGATEEOF\n"
-        _, out = self.sh(label, f"python3 - {shlex.quote(user)} {script}")
+        _, out = self.sh(label, f"{self.python} - {shlex.quote(user)} {script}")
         return out
 
     def nails(
@@ -1493,7 +1510,9 @@ class Gate:
         while True:
             first = max(current["records"], default=0)
             for _ in range(KMSG_TRIES):
-                _, out = self.vm.execute(sg.kmsg_command(first), timeout=300)
+                _, out = self.vm.execute(
+                    sg.kmsg_command(first, python=self.python), timeout=300
+                )
                 checked = sg.whole(out)
                 if checked is not None:
                     break
@@ -1571,7 +1590,7 @@ class Gate:
         the configuration in /run, and the kernel log's limits lifted."""
         vm = self.vm
         vm.wait_for_unit("multi-user.target")
-        for tag, target in SHARES:
+        for tag, target in self.shares:
             vm.succeed(
                 f"mkdir -p {target} && {{ mountpoint -q {target} || mount -t 9p "
                 "-o defaults,trans=virtio,version=9p2000.L,cache=loose,msize=268435456 "
@@ -1755,7 +1774,9 @@ class Gate:
         )
 
     def booleans(self, label: str) -> str:
-        """The SELinux booleans the kernel's policy holds now."""
+        """The kernel's security state a session could change and a way back
+        would keep (:attr:`security_state_name`): here the SELinux booleans
+        the kernel's policy holds now."""
         return self.fact(f"booleans-{label}", "getsebool -a")
 
     def getty_numbers(self, label: str, units: Iterable[str] = ()) -> dict[str, int]:
@@ -1920,7 +1941,7 @@ class Gate:
         mounted, which check needs to judge the decoy."""
         vm = self.vm
         self.mark("prep-decoy")
-        self.sh("hidden-root", HIDDEN_ROOT)
+        self.sh("hidden-root", self.hidden_root)
         self.enforcing("on the decoy before the first entry")
         config = self.fact(
             "selinux-config", "grep -E '^SELINUX(TYPE)?=' /etc/selinux/config"
@@ -2223,7 +2244,7 @@ class Gate:
             bool(rows) and not failed and status in (0, 9),
             {"exit": status, "rows": len(rows), "failed": failed},
         )
-        allowed = dict(HARNESS_WARNINGS)
+        allowed = dict(self.harness_warnings)
         if not self.settings.get("validated"):
             allowed["platform"] = "the family table does not validate the release yet"
         self.facts["clean-check-allowed"] = allowed
@@ -2317,7 +2338,6 @@ class Gate:
 
     def hidden(self, n: int, user: str, state: dict[str, Any]) -> None:
         """The assertions inside a hidden session."""
-        vm = self.vm
         self.enforcing(f"in hidden session {n}")
         root = self.fact(f"root-{n}", "findmnt -no FSTYPE,OPTIONS /")
         self.check(
@@ -2325,6 +2345,43 @@ class Gate:
             root.startswith("overlay") and f"upperdir={UPPER}" in root,
             root,
         )
+        # The session's own files, as the operator writes them: a line added
+        # to a file of the decoy, which copies it up, and new files.
+        work = self.operator(
+            "echo '# gate' >> /etc/protocols; echo n > /etc/gate-new; "
+            "echo n > /root/gate-new; echo n > /var/tmp/gate-new; "
+            "mkdir -p /home/gate-dir && echo n > /home/gate-dir/f"
+        )
+        self.sh(f"session-writes-{n}", work)
+        self.session_security(n, user)
+        if state.get("sleep_guard"):
+            guard = self.fact(
+                f"sleep-guard-{n}",
+                f"systemctl is-active {SLEEP_GUARD}; "
+                f"systemctl show -P ExecStart {SLEEP_GUARD}",
+            )
+            self.check(
+                f"session {n}: the sleep guard runs, so its process is read with "
+                "the watcher's",
+                guard.splitlines()[:1] == ["active"],
+                guard,
+            )
+        self.nails_processes(n)
+        self.hidden_mounts(n)
+        failed = self.judge_failed(
+            f"session {n}", f"failed-hidden-{n}", state.get("zram_runs", "")
+        )
+        self.facts[f"failed-hidden-{n}"] = failed
+        if self.zram:
+            self.zram_in_session(n)
+        self.hidden_logins(n, state)
+        self.volume_label(n)
+        self.late_writer(n, state)
+
+    def session_security(self, n: int, user: str) -> None:
+        """What the policy gives the session's files: the labels of the hidden
+        ``/``, ``/home`` and ``/var``, a copied-up file's type kept and a new
+        one's the policy's, and the fresh home's."""
         labels = self.fact(f"labels-{n}", "stat -c '%C %n' / /home /var")
         types = {
             line.split()[-1]: sg.context_type(line.split()[0])
@@ -2336,14 +2393,9 @@ class Gate:
             types == {"/": "root_t", "/home": "home_root_t", "/var": "var_t"},
             labels,
         )
-        work = self.operator(
-            "echo '# gate' >> /etc/protocols; echo n > /etc/gate-new; "
-            "echo n > /root/gate-new; echo n > /var/tmp/gate-new; "
-            "mkdir -p /home/gate-dir && echo n > /home/gate-dir/f"
-        )
         made = self.fact(
             f"new-files-{n}",
-            f"{work}; stat -c '%C %n' /etc/protocols /etc/gate-new /root/gate-new "
+            f"stat -c '%C %n' /etc/protocols /etc/gate-new /root/gate-new "
             f"/var/tmp/gate-new /home/gate-dir/f {UPPER}/etc/protocols "
             f"{UPPER}/etc/gate-new",
         )
@@ -2376,18 +2428,10 @@ class Gate:
                 bool(first) and sg.context_type(first[0]) == "user_home_dir_t",
                 home,
             )
-        if state.get("sleep_guard"):
-            guard = self.fact(
-                f"sleep-guard-{n}",
-                f"systemctl is-active {SLEEP_GUARD}; "
-                f"systemctl show -P ExecStart {SLEEP_GUARD}",
-            )
-            self.check(
-                f"session {n}: the sleep guard runs, so its domain is read with "
-                "the watcher's",
-                guard.splitlines()[:1] == ["active"],
-                guard,
-            )
+
+    def nails_processes(self, n: int) -> None:
+        """NAILS's processes in the session run unconfined, and its RAM copy
+        is labelled as a program."""
         processes = self.fact(
             f"processes-{n}",
             "ps -e -o label=,pid=,comm=,args= | grep -E 'overlay-runtime|control' | "
@@ -2408,6 +2452,11 @@ class Gate:
             sg.context_type(copy) == "bin_t",
             copy,
         )
+
+    def hidden_mounts(self, n: int) -> None:
+        """Every NAILS overlay pins its feature options, and each canary
+        lands in its upper."""
+        vm = self.vm
         pairs = distro_checks.parse_findmnt_pairs(
             vm.succeed("findmnt -rn -t overlay -o TARGET,OPTIONS")
         )
@@ -2430,10 +2479,11 @@ class Gate:
             ):
                 missing.append(upper)
         self.check(f"session {n}: each canary lands in its upper", not missing, missing)
-        failed = self.judge_failed(
-            f"session {n}", f"failed-hidden-{n}", state.get("zram_runs", "")
-        )
-        self.facts[f"failed-hidden-{n}"] = failed
+
+    def zram_in_session(self, n: int) -> None:
+        """No swap on a zram device and zram-generator masked, the marker of a
+        unit whose memory is reclaimed on no zram device, and in the second
+        session zram0 left set up for the way back to reset."""
         zram = self.fact(f"zram-hidden-{n}", ZRAM_STATE)
         mask = self.fact(f"zram-mask-{n}", f"readlink {ZRAM_MASK}; true")
         swaps = [line for line in zram.splitlines() if line.startswith("/dev/zram")]
@@ -2451,6 +2501,10 @@ class Gate:
         )
         if n == 2:
             self.zram_leftover(n)
+
+    def hidden_logins(self, n: int, state: dict[str, Any]) -> None:
+        """A login and a failed login in the hidden session, each recorded in
+        the session's own files."""
         # A login and a failed login in the hidden session: their records land
         # in the session's own files, and none may reach the decoy.
         start = self.fact(
@@ -2491,6 +2545,9 @@ class Gate:
             failures or self.facts[f"hidden-failed-login-{n}"][-500:],
         )
         state["hidden-btmp"] = failures
+
+    def volume_label(self, n: int) -> None:
+        """The hidden volume keeps the label the session sets on a file."""
         _, label = self.sh(
             f"rt-{n}",
             f"touch {HIDDEN}/.gate-rt && chcon -t etc_t {HIDDEN}/.gate-rt && "
@@ -2501,6 +2558,13 @@ class Gate:
             ":etc_t:" in label,
             label,
         )
+
+    def late_writer(self, n: int, state: dict[str, Any]) -> None:
+        """A file in /run and a kernel log marker of the session, the late
+        writer that logs through each of journald's sockets after the hidden
+        journald stopped, and the gate's own run of a program from runtime
+        data."""
+        vm = self.vm
         vm.succeed(f"echo {self.nonce}-{n} > {RUN_PROBE}-{n}")
         self.vm.execute(f"echo GATEIN-{self.nonce}-{n} > /dev/kmsg", check_return=False)
         self.read_kmsg()
@@ -2610,10 +2674,10 @@ class Gate:
         """The rehearsal's scan on the decoy, in the planting boot, after its
         first way back: nothing found, and the compressing root named as not
         checked."""
-        self.sh("rehearse-hidden-root", HIDDEN_ROOT)
+        self.sh("rehearse-hidden-root", self.hidden_root)
         _, token = self.sh(
             "rehearse-token",
-            f"python3 -c 'import json; print(json.load(open(\"{HIDDEN}/rehearse/"
+            f"{self.python} -c 'import json; print(json.load(open(\"{HIDDEN}/rehearse/"
             "state.json\"))[\"token\"])'",
         )
         token = token.strip()
@@ -3070,7 +3134,7 @@ class Gate:
         now = self.booleans(f"after-{n}")
         was = state.get("booleans", "")
         self.check(
-            f"way back {n}: the decoy's SELinux booleans are as they were before "
+            f"way back {n}: {self.security_state_name} are as they were before "
             "the entry",
             bool(now) and now == was,
             sorted(set(now.splitlines()) ^ set(was.splitlines()))[:40],
@@ -3178,22 +3242,8 @@ class Gate:
         units = self.getty_numbers(f"after-{n}", self.cold_units)
         lines = getty_logins(after.wtmp)
         self.fact(f"pids-after-{n}", PID_LISTING)
-        zram = self.fact(f"zram-after-{n}", ZRAM_STATE)
-        cold = self.cold_zram
-        self.check(
-            f"way back {n}: the zram devices, their swap and zram-generator's "
-            "units are as at the cold boot",
-            bool(cold) and zram_shape(zram) == zram_shape(cold),
-            {"cold": zram_shape(cold), "after": zram_shape(zram)},
-        )
-        counts = zram_marker_counts(
-            self.fact(f"zram-marker-after-{n}", self.zram_marker(n)[1])
-        )
-        self.check(
-            f"way back {n}: the session's marker is on no zram device",
-            all(count == 0 for count in counts.values()),
-            counts,
-        )
+        if self.zram:
+            self.zram_after(n)
         problems = [
             *getty_problems(self.cold_units, units, reached),
             *getty_problems(self.cold_lines, lines, reached),
@@ -3228,6 +3278,26 @@ class Gate:
                 bool(last),
                 {"console": since, "entered": entered, "rows": after.lastlog2},
             )
+
+    def zram_after(self, n: int) -> None:
+        """The zram devices, their swap and zram-generator's units after way
+        back ``n`` as at the cold boot, and the session's marker on none."""
+        zram = self.fact(f"zram-after-{n}", ZRAM_STATE)
+        cold = self.cold_zram
+        self.check(
+            f"way back {n}: the zram devices, their swap and zram-generator's "
+            "units are as at the cold boot",
+            bool(cold) and zram_shape(zram) == zram_shape(cold),
+            {"cold": zram_shape(cold), "after": zram_shape(zram)},
+        )
+        counts = zram_marker_counts(
+            self.fact(f"zram-marker-after-{n}", self.zram_marker(n)[1])
+        )
+        self.check(
+            f"way back {n}: the session's marker is on no zram device",
+            all(count == 0 for count in counts.values()),
+            counts,
+        )
 
     # --- the controls ----------------------------------------------------
 
@@ -3733,7 +3803,7 @@ class Gate:
         self.cold_zram = self.fact("zram-cold", ZRAM_STATE)
         self.where = "decoy before the first entry"
         # The first session: shared home, ended with deactivate.
-        self.sh("hidden-root-1", HIDDEN_ROOT)
+        self.sh("hidden-root-1", self.hidden_root)
         state = self.before_entry(1)
         self.mark("prep-session-1")
         if self.enter(1, "root", CONFIG, state):
@@ -3760,7 +3830,7 @@ class Gate:
             f"rpm -e --nodeps --noscripts {shlex.quote(removed)}; "
             f"rpm -q {shlex.quote(removed)}",
         )
-        self.sh("hidden-root-2", HIDDEN_ROOT)
+        self.sh("hidden-root-2", self.hidden_root)
         _, rows = self.check_rows("check-drift")
         row = rows.get("package-drift", {})
         # The row's message names each drifted package and what to run in a

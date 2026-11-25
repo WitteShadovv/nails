@@ -152,11 +152,13 @@ _SERIAL = re.compile(r"audit\(\d+\.\d+:(\d+)\)")
 _SYSCALL = "type=1300 "
 
 
-def kmsg_command(first: int, limit: int = KMSG_PART) -> str:
+def kmsg_command(
+    first: int, limit: int = KMSG_PART, python: str = "python3"
+) -> str:
     """The guest command that prints the records from ``first`` on, at most
-    ``limit`` of them."""
+    ``limit`` of them, run by the guest's ``python``."""
     return (
-        f"python3 - {int(first)} {int(limit)} <<'GATEEOF'\n{KMSG_READER}\nGATEEOF\n"
+        f"{python} - {int(first)} {int(limit)} <<'GATEEOF'\n{KMSG_READER}\nGATEEOF\n"
     )
 
 
