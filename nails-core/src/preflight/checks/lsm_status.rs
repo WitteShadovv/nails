@@ -78,8 +78,8 @@
 //!   image recorded it for the harness's backdoor unit, from which the VM tests
 //!   run `nails`.
 //! - the processes systemd starts from NAILS's copy in `/run`: the transition
-//!   step at each switch, the watcher and the sleep guard of the hidden
-//!   session, and the boot-record steps after the way back. They run in
+//!   step at each switch, and the watcher and the sleep guard of the hidden
+//!   session. They run in
 //!   whatever domain the decoy's policy gives that program when systemd
 //!   executes it.
 //! - the disk guard of the hidden session, which udev runs from the rule NAILS
@@ -189,9 +189,8 @@ pub enum UnitDomain {
 /// not reach what udev starts, so the check judges each by itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnitDomains {
-    /// The processes systemd starts: the transition step at each switch, the
-    /// watcher and the sleep guard of the hidden session, and the boot-record
-    /// steps after the way back.
+    /// The processes systemd starts: the transition step at each switch, and
+    /// the watcher and the sleep guard of the hidden session.
     pub systemd: UnitDomain,
     /// The disk guard of the hidden session, which udev runs from the rule
     /// NAILS installs in `/run`: systemd-udevd executes it itself.
@@ -280,7 +279,7 @@ fn systemd_unfit(why: &str) -> String {
         "NAILS gives its copy in /run the label of the system's programs ({PROGRAM_LABEL}), but \
          PID 1's start of a file so labelled {why}, so nothing shows the processes systemd \
          starts from that copy (the transition step at each switch, the watcher and the sleep \
-         guard of the hidden session, and the boot-record steps after the way back) run \
+         guard of the hidden session) run \
          unconfined."
     )
 }
@@ -695,8 +694,8 @@ fn running(
         &units.systemd,
         "NAILS does not choose the SELinux domain of the processes systemd starts from its \
          copy in /run (the transition step at each switch, the watcher and the sleep guard of \
-         the hidden session, and the boot-record steps after the way back), so nothing shows \
-         they run unconfined.",
+         the hidden session), so nothing shows they run \
+         unconfined.",
         "systemd starts NAILS's processes in",
         &mut fails,
     );

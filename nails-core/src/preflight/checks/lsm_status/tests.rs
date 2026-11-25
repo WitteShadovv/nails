@@ -237,8 +237,8 @@ fn both_unconfined_domains_pass_for_this_process() {
 /// The finding for processes systemd starts in a domain nothing shows.
 const SYSTEMD_UNKNOWN: &str = "NAILS does not choose the SELinux domain of the processes \
      systemd starts from its copy in /run (the transition step at each switch, the watcher \
-     and the sleep guard of the hidden session, and the boot-record steps after the way \
-     back), so nothing shows they run unconfined.";
+     and the sleep guard of the hidden session), so nothing shows they run \
+     unconfined.";
 
 /// The finding for a disk guard udev starts in a domain nothing shows.
 const UDEV_UNKNOWN: &str = "NAILS does not choose the SELinux domain of the hidden \
@@ -1132,8 +1132,8 @@ fn systemd_unfit_text(why: &str) -> String {
         "NAILS gives its copy in /run the label of the system's programs \
          (system_u:object_r:bin_t:s0), but PID 1's start of a file so labelled {why}, so nothing \
          shows the processes systemd starts from that copy (the transition step at each switch, \
-         the watcher and the sleep guard of the hidden session, and the boot-record steps after \
-         the way back) run unconfined."
+         the watcher and the sleep guard of the hidden session) run \
+         unconfined."
     )
 }
 

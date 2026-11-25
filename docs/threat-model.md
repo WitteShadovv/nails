@@ -384,10 +384,14 @@ them in. So every ending powers the machine off:
 - A switch that hangs past systemd's 30-minute job timeout powers off. The
   guard for this stays for the whole session.
 - The last step before the switch into the hidden session powers off on any
-  failure. It lets the switch go on only where NAILS staged nothing in this
-  boot (no session plan), where nothing was armed and nothing waits at
-  `/run/nextroot`, or where a tree nobody armed sits there and can be detached
-  with nothing left mounted.
+  failure. In a hidden session every soft-reboot powers off, whatever sits at
+  `/run/nextroot`. On the decoy it lets the switch go on only where NAILS
+  staged nothing in this boot (no session plan), where nothing was armed and
+  nothing waits at `/run/nextroot`, or where a tree nobody armed sits there and
+  can be detached with nothing left mounted. Two parts of the entry are best
+  effort: the masks of the units the hidden root does not need, which fail or
+  do nothing there (the boot filesystems they would write to are bound
+  read-only), and the cleanup of `utab`, which lives in RAM.
 
 After a session the decoy boots from power-on, as after any power cycle. The
 traces a soft-reboot back into the decoy would leave (the soft-reboot count,

@@ -63,6 +63,9 @@ impl GuardHost for BuildHost {
     fn unit_dropins(&self, unit: &str) -> Result<String> {
         self.host.unit_dropins(unit)
     }
+    fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
+        self.host.unit_property(unit, property)
+    }
 }
 
 impl EntryHost for BuildHost {

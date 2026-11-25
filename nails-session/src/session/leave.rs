@@ -144,6 +144,10 @@ impl GuardHost for RealTargetHost {
     fn selinux_context(&self, unit: &str) -> Result<String> {
         guards::show_property(self.systemctl.as_deref(), Some(unit), "SELinuxContext")
     }
+
+    fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
+        guards::show_property(self.systemctl.as_deref(), Some(unit), property)
+    }
 }
 
 impl TargetHost for RealTargetHost {

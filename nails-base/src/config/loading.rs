@@ -296,8 +296,8 @@ fn render_template(root: &Path, title: &str) -> String {
 #     for this even when [backend_watch] is disabled).
 #   read_only: opt-in: every disk the session does not use, and every disk
 #     attached during it, is read-only for the session (mounts come up read-only,
-#     writes fail); the way back makes them writable again. A root user can still
-#     set a disk writable on purpose.
+#     writes fail) until the power-off that ends the session. A root user can
+#     still set a disk writable on purpose.
 # [session_mounts]
 # alert = true
 # read_only = false

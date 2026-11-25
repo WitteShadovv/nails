@@ -649,8 +649,10 @@ power-off. Leave the machine off for a few minutes before you hand it over.
 
 **What a session leaves.** On the decoy disk, none of the hidden session's
 files. The decoy's shutdown before the entry writes what an ordinary shutdown
-writes: the random seed, a wtmp record, the journal if it is persistent. Its
-next start is an ordinary boot. With the ESP read-only in the hidden session,
+writes: the random seed, a wtmp record, the journal if it is persistent. The
+power-off that ends the session unmounts the decoy root, and that writes the
+ext4 superblock of the decoy root and a block of its journal, as any shutdown
+does. The next start is an ordinary boot. With the ESP read-only in the hidden session,
 `loader/random-seed` changes only when the decoy itself starts. The kernel that
 ran the session ends with the power-off. So the decoy never takes over the
 session's kernel ring buffer, its journald sockets, its network state, its
@@ -670,9 +672,10 @@ start from a cold boot. RAM keeps data for a while after the power-off (see
 - The drop-in, the guards and the masks live in `/run`. A root user in the
   hidden session can remove them, and a soft-reboot then runs without the
   last step.
-- A NAILS tree at `/run/nextroot` whose runtime directory someone deleted by
-  hand is entered like any other tree there. NAILS itself never removes that
-  directory without detaching the tree first.
+- On the decoy, a NAILS tree at `/run/nextroot` whose runtime directory
+  someone deleted by hand is entered like any other tree there. NAILS itself
+  never removes that directory without detaching the tree first. In a hidden
+  session every soft-reboot powers off, with the plan or without.
 - RAM keeps data for a while after the power-off. Leave the machine off for a
   few minutes.
 

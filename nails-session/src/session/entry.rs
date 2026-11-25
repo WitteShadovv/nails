@@ -108,7 +108,7 @@ use std::path::{Path, PathBuf};
 
 use quiet::{give_modes_back, quiet_mounts, restore_recorded, settle};
 
-use super::guards::{GuardHost, check_stop_guards, check_switch_timeout};
+use super::guards::{GuardHost, check_stop_guards, check_switch_step, check_switch_timeout};
 
 /// The configuration copy's name in the runtime directory.
 pub const CONFIG_COPY_NAME: &str = "settings.toml";
@@ -199,6 +199,10 @@ impl GuardHost for RealEntryHost {
 
     fn selinux_context(&self, unit: &str) -> Result<String> {
         show(Some(unit), "SELinuxContext")
+    }
+
+    fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
+        show(Some(unit), property)
     }
 }
 
@@ -748,13 +752,11 @@ fn build(
     }
 
     activation_step(ActivationPhase::WayBack, building);
-    warnings.extend(super::way_back::keep(
-        paths,
-        &layout,
-        &mut plan,
-        &decoy_fstab,
-        &decoy_mounts,
-    )?);
+    // What the way back could not mount again no longer reaches the decoy:
+    // every session ends in a power-off, and the decoy boots afresh. The
+    // carry still runs (a removal of its own needs a VM proof).
+    let _not_made_again =
+        super::way_back::keep(paths, &layout, &mut plan, &decoy_fstab, &decoy_mounts)?;
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
     nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
@@ -763,8 +765,9 @@ fn build(
     let missing = super::systemd::missing_soft_reboot_units(&nextroot);
     if !missing.is_empty() {
         return Err(NailsError::InvalidState(format!(
-            "the hidden root cannot leave again: it lacks {}. The hidden configuration needs \
-             the soft-reboot units; on NixOS add:\n{}",
+            "the hidden root lacks {}: NAILS requires the soft-reboot units in every hidden \
+             root, so that a soft-reboot there runs its last step, which powers off. On NixOS \
+             add:\n{}",
             missing.join(" and "),
             super::systemd::NIXOS_UNITS_SNIPPET
         )));
@@ -966,6 +969,7 @@ fn install_transition(
     host.daemon_reload()?;
     check_stop_guards(host)?;
     check_switch_timeout(host)?;
+    check_switch_step(host, &binary)?;
     super::program_label::check_switch_unit(inputs.program_label, host)
 }
 

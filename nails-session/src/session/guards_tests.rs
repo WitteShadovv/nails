@@ -554,3 +554,76 @@ fn a_refused_way_back_names_the_power_off_and_the_emergency() {
         )
     );
 }
+
+/// A PID 1 that answers only for the switch step's unit: its `ExecStart` and
+/// `FailureAction` with every drop-in loaded.
+struct Step {
+    exec_start: String,
+    failure_action: String,
+}
+
+impl GuardHost for Step {
+    fn unit_stop_commands(&self, _: &str) -> Result<String> {
+        unreachable!()
+    }
+    fn job_timeout_action(&self, _: &str) -> Result<String> {
+        unreachable!()
+    }
+    fn job_timeout(&self, _: &str) -> Result<String> {
+        unreachable!()
+    }
+    fn service_watchdogs(&self) -> Result<String> {
+        unreachable!()
+    }
+    fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
+        assert_eq!(unit, SWITCH_STEP_UNIT);
+        Ok(match property {
+            "ExecStart" => self.exec_start.clone(),
+            "FailureAction" => self.failure_action.clone(),
+            other => panic!("asked for {other}"),
+        })
+    }
+}
+
+/// The step as NAILS installs it passes. A decoy drop-in that sorts after
+/// NAILS's (`override.conf` from `systemctl edit`) and adds a start command,
+/// marks it `-`, replaces it or sets another failure action refuses the
+/// entry: the step would no longer fail closed.
+#[test]
+fn the_switch_step_must_start_and_fail_as_nails_installed_it() {
+    let binary = Path::new("/run/overlay-runtime/control");
+    let (exec_start, failure_action) = loaded_switch_step(binary);
+    let ours = Step {
+        exec_start: exec_start.clone(),
+        failure_action: failure_action.clone(),
+    };
+    assert!(check_switch_step(&ours, binary).is_ok());
+
+    let ignored = exec_start.replace("ignore_errors=no", "ignore_errors=yes");
+    let another =
+        format!("{exec_start}\n{{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }}");
+    let replaced = "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }".to_string();
+    for (exec_start, failure_action, what) in [
+        (ignored, failure_action.clone(), "a failure ignored"),
+        (another, failure_action.clone(), "a second start command"),
+        (replaced, failure_action.clone(), "another start command"),
+        (String::new(), failure_action.clone(), "no start command"),
+        (exec_start.clone(), "none".to_string(), "no failure action"),
+        (
+            exec_start.clone(),
+            "soft-reboot-force".to_string(),
+            "a switch on failure",
+        ),
+    ] {
+        let step = Step {
+            exec_start,
+            failure_action,
+        };
+        let (check, _, fix) = refusal(&check_switch_step(&step, binary).unwrap_err());
+        assert_eq!(check, "switch-step", "{what}");
+        assert!(
+            fix.contains("systemctl cat systemd-soft-reboot.service"),
+            "{what}: {fix}"
+        );
+    }
+}

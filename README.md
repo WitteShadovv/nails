@@ -488,7 +488,8 @@ step can read the session plan keeps no reason.
 `place` says where the machine is (`decoy`, `hidden` or `activating`, or
 `unknown`, next to an error, when reading the state file was refused, so no
 report could be built), and `attention` names the one thing that needs you,
-such as `interrupted`, `no_way_back` or `record_unreadable`, or is `null`. The
+such as `interrupted`, `no_way_back` (a hidden root without its session plan,
+the name kept from older releases) or `record_unreadable`, or is `null`. The
 object is the `data` of a one-line versioned envelope (`schema_version` 2);
 [Commands](#commands) describes the envelope and the exit codes, and
 [docs/schemas/](docs/schemas/) has a schema per command.

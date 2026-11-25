@@ -47,6 +47,16 @@ pub trait GuardHost {
     fn unit_dropins(&self, _unit: &str) -> Result<String> {
         Ok(String::new())
     }
+    /// `property` of `unit` with every drop-in loaded, as `systemctl show
+    /// --property=<property> --value <unit>` prints it, for the properties
+    /// the other methods do not name (the switch step's `ExecStart` and
+    /// `FailureAction`, [`check_switch_step`]). A host that does not ask PID
+    /// 1 fails, by default, so that such a switch is refused.
+    fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
+        Err(NailsError::InvalidState(format!(
+            "PID 1 was not asked for {property} of {unit}"
+        )))
+    }
     /// The SELinux context PID 1 starts `unit`'s processes in, with every
     /// drop-in loaded (`SELinuxContext`): empty where the policy picks it.
     /// Asked only where the RAM copies of the binary take a label
@@ -384,6 +394,92 @@ pub fn check_stop_guards(host: &(impl GuardHost + ?Sized)) -> Result<()> {
 /// another action, service watchdogs off, or no timeout.
 pub fn check_switch_timeout(host: &(impl GuardHost + ?Sized)) -> Result<()> {
     refuse_entry(switch_timeout(host, Direction::Enter)?)
+}
+
+/// The service whose start is the switch's last step.
+pub const SWITCH_STEP_UNIT: &str = "systemd-soft-reboot.service";
+
+/// What `systemctl show --value` prints of [`SWITCH_STEP_UNIT`] once PID 1 has
+/// loaded the step's drop-in as NAILS writes it for `binary`
+/// ([`transition::dropin_text`]): its one start command and its failure
+/// action. A test's PID 1 answers with these.
+pub fn loaded_switch_step(binary: &Path) -> (String, String) {
+    let binary = binary.display();
+    (
+        format!(
+            "{{ path={binary} ; argv[]={binary} {} ; ignore_errors=no ; start_time=[n/a] ; \
+             stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}",
+            transition::TRANSITION_ARG
+        ),
+        nails_teardown::whole_root::session_end::session_end()
+            .emergency_action()
+            .to_string(),
+    )
+}
+
+/// The start commands of `exec_start` as `systemctl show --value` prints them:
+/// for each, its `argv[]` and whether it ignores a failure.
+fn start_commands(exec_start: &str) -> Vec<(String, bool)> {
+    exec_start
+        .split('}')
+        .filter_map(|command| {
+            let fields: Vec<&str> = command.split(" ; ").map(str::trim).collect();
+            let argv = fields.iter().find_map(|f| f.strip_prefix("argv[]="))?;
+            let ignores = fields
+                .iter()
+                .any(|f| f.strip_prefix("ignore_errors=") == Some("yes"));
+            Some((argv.to_string(), ignores))
+        })
+        .collect()
+}
+
+/// Refuse the entry unless PID 1, with every drop-in loaded, starts the
+/// switch's last step as NAILS installed it: one start command, the RAM copy
+/// `binary` with the step's argument, a failure that is not ignored, and the
+/// power-off as the unit's failure action ([`transition::dropin_text`]). A
+/// drop-in of the decoy's that sorts after NAILS's (`override.conf` from
+/// `systemctl edit`) can add a start command, mark one `-`, or set another
+/// `FailureAction=`, and the step would then no longer fail closed. A PID 1
+/// that cannot be asked refuses it too.
+pub fn check_switch_step(host: &(impl GuardHost + ?Sized), binary: &Path) -> Result<()> {
+    let refuse = |reason: String| {
+        Err(NailsError::PreFlightCheckFailed(vec![(
+            "switch-step".to_string(),
+            reason,
+            Some(format!(
+                "Remove what changes {SWITCH_STEP_UNIT}'s ExecStart= or FailureAction= (`systemctl \
+                 cat {SWITCH_STEP_UNIT}` shows every drop-in) and activate again"
+            )),
+        )]))
+    };
+    let exec_start = host.unit_property(SWITCH_STEP_UNIT, "ExecStart")?;
+    let wanted = format!("{} {}", binary.display(), transition::TRANSITION_ARG);
+    match start_commands(&exec_start).as_slice() {
+        [(argv, false)] if *argv == wanted => {}
+        _ => {
+            return refuse(format!(
+                "{SWITCH_STEP_UNIT} does not start the switch's last step as NAILS installed it \
+                 (ExecStart={}): the step would not run, or not fail closed",
+                exec_start.trim()
+            ));
+        }
+    }
+    let action = host.unit_property(SWITCH_STEP_UNIT, "FailureAction")?;
+    let wanted = nails_teardown::whole_root::session_end::session_end().emergency_action();
+    if action.trim() != wanted {
+        return refuse(format!(
+            "{SWITCH_STEP_UNIT} does {} when the switch's last step fails \
+             (FailureAction={}), where NAILS sets {wanted}: a failed step would let the switch go \
+             on or leave the machine stopped",
+            if action.trim().is_empty() {
+                "nothing"
+            } else {
+                action.trim()
+            },
+            action.trim()
+        ));
+    }
+    Ok(())
 }
 
 /// Refuse the way back unless the guards the entry checked in the decoy's

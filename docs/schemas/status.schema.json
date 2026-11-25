@@ -21,7 +21,7 @@
           "enum": ["decoy", "hidden", "activating", "unknown"]
         },
         "attention": {
-          "description": "The one thing that needs the operator, or null when nothing does. A hidden root without a way back (`no_way_back`) and an interrupted activation (`interrupted`) come first, each with its own remediation; then `record_unreadable` (the state file could not be read or trusted), in every place, ahead of the rest.",
+          "description": "The one thing that needs the operator, or null when nothing does. A hidden root without its session plan (`no_way_back`, the name kept from older releases) and an interrupted activation (`interrupted`) come first, each with its own remediation; then `record_unreadable` (the state file could not be read or trusted), in every place, ahead of the rest.",
           "type": ["string", "null"],
           "enum": [
             "interrupted",
@@ -116,7 +116,7 @@
         },
         "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },
         "switch_refusal": {
-          "description": "Why and when the last session switch was refused: the soft-reboot stayed on the root it was on. Kept on the hidden volume (a refused entry, shown once the volume is open again) or in /run (a refused way back, shown in the hidden session) until the next activate or deactivate arms its own switch.",
+          "description": "Why and when the last switch was refused, which powered the machine off. Kept on the hidden volume, and shown once the volume is open again, until the next activate.",
           "type": "object",
           "additionalProperties": false,
           "required": ["reason", "at"],

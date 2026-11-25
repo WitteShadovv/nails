@@ -21,7 +21,8 @@ of this changelog for that version becomes the release notes word for word, and
   `deactivate --poweroff` still works and changes nothing. The JSON of `emergency` names the
   request without a flag `default` (it was `return_to_decoy`), and `deactivate` reports
   `poweroff_requested` only. A `nails.toml` that sets `window.emergency = "return"` still loads, and
-  that setting now powers off.
+  that setting now powers off; `config set window.emergency return` is refused, as `return` is no
+  longer a choice.
 - Entries below that describe what the way back does (the `/run` scrub, the kernel log cursor,
   journald's sockets, the process numbers, the network state put back, the login and boot records
   made to read as a power cycle, the zram reset, the decoy mounts made again) describe code that no
@@ -3131,6 +3132,12 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
+- Some checks still judge what the decoy does when it "starts again after the way back", which no
+  session takes any more: the auditd and core-pattern findings of `decoy-persistence`, its
+  tuned and firewalld texts, its unattended-upgrades polling warning (python3-gi), and the readings
+  in `journald-storage`, `locate-database`, the systemd configuration and the kernel command line
+  that name it. They can warn or refuse where the decoy's next boot after the power-off is an
+  ordinary one. A later release rewrites them.
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in

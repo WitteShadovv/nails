@@ -78,6 +78,19 @@ impl GuardHost for FakeHost {
     fn service_watchdogs(&self) -> nails_core::Result<String> {
         Ok(self.watchdogs.unwrap_or("yes").to_string())
     }
+    fn unit_property(&self, unit: &str, property: &str) -> nails_core::Result<String> {
+        // The step's unit as NAILS installs it: the drop-in names the RAM copy
+        // where the real system runs it.
+        let binary = std::path::Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
+            .join(nails_teardown::whole_root::plan::BINARY_NAME);
+        let (exec_start, failure_action) = nails_core::session::guards::loaded_switch_step(&binary);
+        assert_eq!(unit, nails_core::session::guards::SWITCH_STEP_UNIT);
+        Ok(match property {
+            "ExecStart" => exec_start,
+            "FailureAction" => failure_action,
+            other => panic!("asked for {other}"),
+        })
+    }
 }
 
 impl EntryHost for FakeHost {
@@ -455,12 +468,12 @@ fn the_entry_records_every_decoy_mount_the_way_back_makes_again() {
 }
 
 #[test]
-fn a_decoy_mount_lost_under_a_carried_filesystem_is_reported() {
+fn a_decoy_mount_lost_under_a_carried_filesystem_is_no_warning() {
     // A tmpfs mounted by hand over the decoy's /home covers it: the session
     // carries what the decoy shows at /home, and nothing it holds reaches the
     // filesystem below.
     let _ = Rerun::new(test_path!(
-        a_decoy_mount_lost_under_a_carried_filesystem_is_reported
+        a_decoy_mount_lost_under_a_carried_filesystem_is_no_warning
     ))
     .in_user_mount_ns()
     .run(|| {
@@ -472,8 +485,9 @@ fn a_decoy_mount_lost_under_a_carried_filesystem_is_reported() {
         let entry =
             entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
 
-        assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
-        assert!(entry.warnings[0].contains("/home"), "{}", entry.warnings[0]);
+        // What the way back could not make again is no warning any more: the
+        // session ends in a power-off.
+        assert!(entry.warnings.is_empty(), "{:?}", entry.warnings);
         let homes = entry
             .plan
             .decoy_mounts
@@ -486,13 +500,13 @@ fn a_decoy_mount_lost_under_a_carried_filesystem_is_reported() {
 }
 
 #[test]
-fn a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported() {
+fn a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_no_warning() {
     // An initrd's tmpfs that the decoy's fstab does not list, marked
     // x-initrd.mount in utab: a plain soft-reboot keeps it, the way back has
     // nothing to make it from. A tmpfs mounted by hand is gone after a plain
     // soft-reboot as well, and goes to the debug log alone.
     let _ = Rerun::new(test_path!(
-        a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported
+        a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_no_warning
     ))
     .in_user_mount_ns()
     .run(|| {
@@ -515,13 +529,9 @@ fn a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported() {
         let entry =
             entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
 
-        assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
-        let warning = &entry.warnings[0];
-        assert!(warning.contains("mount /srv/keys (tmpfs"), "{warning}");
-        assert!(
-            warning.contains("a plain soft-reboot keeps it"),
-            "{warning}"
-        );
+        // What the way back could not make again is no warning any more: the
+        // session ends in a power-off.
+        assert!(entry.warnings.is_empty(), "{:?}", entry.warnings);
         entry::rollback(&paths);
     });
 }
