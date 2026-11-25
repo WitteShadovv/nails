@@ -1157,9 +1157,11 @@ def after_switch(start: float, switch: float | None) -> bool:
     :meth:`Gate.carried`, in seconds), and so is a run of the decoy's PID 1,
     not of the hidden root's. PID 1 gives a start to the second, cut down, and
     the switch's time comes from a marker's clock: a run counts only from
-    :data:`TIMER_SLACK` after the switch. On these images the decoy's start
-    runs its first units two seconds or more after the switch. Without the
-    switch's time, no run counts."""
+    :data:`TIMER_SLACK` after the switch. On these images the decoy's PID 1
+    starts its first units about one to one and a half seconds after the
+    switch, and the runs a way back counts start 1.7 seconds or more after
+    it. A run that starts sooner counts as the session's, which fails closed.
+    Without the switch's time, no run counts."""
     return switch is not None and start >= switch + TIMER_SLACK
 
 
