@@ -34,7 +34,8 @@ mounted filesystems lands in an upper on the hidden volume. The few writes that
 go around the mount layer (a disk the session mounts itself, EFI variables) are
 listed under the [residual channels](threat-model.md#residual-channels). The
 kernel, its modules, the device-mapper mappings and `/run` survive the switch.
-The way back is a second soft-reboot, again without firmware or bootloader.
+There is no way back into the decoy's kernel: every session ends in a
+power-off, and the decoy boots afresh at the next power-on.
 
 Each decoy filesystem below the overlay is also mounted read-only, a second layer
 under the overlay's copy-up. The overlay already writes nothing to a lower — every
@@ -48,17 +49,13 @@ hidden volume is writable.
 
 The price:
 
-- Both transitions log the user out, because the desktop itself runs inside the
-  overlay. For the same reason an emergency ends at the decoy's login screen (or
-  a freshly started desktop, where the display manager logs in automatically),
-  or with the machine off; it cannot leave a desktop running.
-- Kernel and service-manager state is not reset: the boot ID, the uptime, the
-  kernel ring buffer and, on systemd 256 and newer, its soft-reboot counter
-  carry over until the machine powers off. So would the network state the
-  hidden session set up; the way back puts most of it back (its links, rules,
-  firewall tables and network settings, a MAC address or hostname it changed)
-  and leaves the rest, such as the addresses and routes it gave the decoy's
-  own devices (see the [residual channels](threat-model.md#residual-channels)).
+- Activation logs the user out, because the desktop itself runs inside the
+  overlay, and every ending of the session is a power-off.
+- Kernel and service-manager state is not reset at the entry: the boot ID, the
+  uptime, the kernel ring buffer, the network state and, on systemd 256 and
+  newer, the soft-reboot counter carry over from the decoy into the hidden
+  session. The power-off that ends the session ends all of it, so none of it
+  reaches the decoy's next boot.
 - The hidden systemd would mount every other filesystem in the decoy's fstab
   directly and read-write, so the
   [fstab policy](configuration.md#what-the-session-covers) decides for each one
@@ -129,7 +126,8 @@ and the transition step before anything else is initialised.
   read-only raw-device and tree readers, the residue catalog and its check, and
   `rehearse`.
 - **`nails-session`** is the configuration-aware half of the whole-root
-  session: the entry, the fstab policy, the hidden NixOS build, the way back,
+  session: the entry, the fstab policy, the hidden NixOS build, the end of a
+  session,
   the session's checks and the probes `status` uses, the persona, and the
   session's runtime units (the RAM copy reader, the backend watcher and the
   sleep guard).
@@ -148,10 +146,11 @@ and the transition step before anything else is initialised.
 - **`nails-teardown`** holds everything the panic path and the soft-reboot
   transition need, with no configuration and no logging
   (`nails_teardown::whole_root`): the session plan on `/run`, the mount
-  primitives and the pre-switch init check, the transition step, the `/run`
-  snapshot and scrub, the kmsg cursor and the hidden session's last records
-  around it, the way back, the runtime units and
-  masks, the kill of all userspace and the emergency hot path. It also holds the
+  primitives and the pre-switch init check, the transition step, the one
+  ending of every session (`whole_root::session_end`), the runtime units and
+  masks, the kill of all userspace and the emergency hot path. It still holds
+  code of the old way back (the `/run` scrub, the kmsg cursor), which nothing
+  calls now. It also holds the
   mountinfo parser, the rule for opening a file without updating its access
   time, and the cgroup, pidfd and shell kills. It depends on
   `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
@@ -195,7 +194,7 @@ the code never branches on "is this NixOS?" directly.
      the releases NAILS targets. Its automated VM tests cover Debian 13,
      Ubuntu 24.04 and Ubuntu 26.04. Ubuntu 26.04 carries a warning for a known
      upstream issue. The tests expect its chrony half, a failed chrony in the
-     hidden session and after the way back; its printing (CUPS) half is checked
+     hidden session; its printing (CUPS) half is checked
      by hand, as their image has no CUPS. Any other release it admits carries a
      warning in its `HostProfile`, which `init` and the `platform` pre-flight
      check report.
@@ -260,19 +259,18 @@ An activation moves through these layers; each names its modules and crates:
   [above](#why-one-overlay-over-the-whole-root).
 - **Transition** (`nails-teardown`, `whole_root::transition`) is the
   `ExecStart=` of `systemd-soft-reboot.service`, run by systemd from the RAM
-  copy as the last userspace step before each switch. It acts only on an armed
-  plan: entering, it repoints `/run/current-system` (NixOS), installs the
-  session's runtime units and masks, narrows the `/run` snapshot to what the
-  decoy's own shutdown left, drops the `utab` lines of the mounts the switch
-  leaves behind and copies the decoy's name-server records; leaving, it repoints
-  back, scrubs `/run`, puts those records back and, once the hidden units have
-  stopped, gives the decoy's `utab` lines back to the mounts the way back
-  restored, waits, bounded, until PID 1 has taken down the units of the
-  mounts the scrub detached, ends every process of the session that PID 1
-  would kill at the switch but udevd's, which it leaves to PID 1, quiets an
-  ext4 hidden volume's unmount line, last
-  empties journald's sockets in place and writes the kmsg cursor
-  (`whole_root::tail`). libmount joins a
+  copy as the last userspace step before each switch. It lets PID 1 switch in
+  one direction only, into the hidden root, on a plan armed for the entry: it
+  repoints `/run/current-system` (NixOS), checks the init the way PID 1 will,
+  installs the masks, skips and generator masks, the session's runtime units
+  and, opted in, the read-only rule for unused disks, masks the units the
+  hidden root does not need (best effort), drops the `utab` lines of the mounts
+  the switch leaves behind and records the entry. It fails closed: every other
+  outcome powers the machine off. The exceptions are no plan at all, a plan
+  armed for nothing, and a `/run/nextroot` nobody armed, which it detaches
+  while nothing stays mounted there. The drop-in's
+  `FailureAction=poweroff-force` powers off a step that fails, dies or cannot
+  start. libmount joins a
   `utab` line to the
   mount with the line's kernel mount ID, or, for a line without one, to the
   mount at the line's path with its source and root, and the kernel hands the
@@ -280,42 +278,26 @@ An activation moves through these layers; each names its modules and crates:
   line would lend its options to an unrelated mount. An initrd's
   `x-initrd.mount` takes a mount out of systemd's shutdown order; when that
   happens while systemd mounts or unmounts it, PID 1 never runs the job that
-  waited for that mount, and the switch or the power-off hangs. The decoy's
-  mounts come back as new mounts, and the way back records the ID of the
-  mount it made in place of each, so each of the decoy's lines that names an
-  ID takes the ID of the mount made where its mount was at entry, also where
-  mounts are stacked at one place; a line that names no mount the way back
-  restores is not given back. The transition writes `utab` as libmount does,
+  waited for that mount, and the switch or the power-off hangs. The transition
+  writes `utab` as libmount does,
   through a new file renamed over the old one, under libmount's lock where its
-  lock file exists. An unarmed populated `/run/nextroot` is detached instead.
-  A switch it refuses (the init check fails, or the masks cannot be written)
-  keeps its reason for `status` (`whole_root::switch_refusal`). It runs after
+  lock file exists. A switch it refuses keeps its reason for `status`
+  (`whole_root::switch_refusal`) before it powers off. It runs after
   `umount.target`, when the volume's own mount is gone: a refused entry's
   reason goes onto the hidden volume through the volume's bind in the next
   root, only while that bind is on the volume's recorded device and never onto
-  a hidden root accepted on the decoy's storage; a refused way back's goes into
-  the runtime directory in RAM, which every way back removes.
-- **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
-  `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
-  `/run/nextroot`, make the decoy's other mounts again below it
-  (`whole_root::decoy_mounts`), mark the backend for deferred removal and
-  enqueue the soft-reboot; the emergency kills every hidden cgroup first. The
-  entry recorded every mount of the decoy's tree (all but the API filesystems,
-  what is below `/run` and the hidden volume) that the way back can take from
-  the decoy root or a filesystem the session carried: the fstab's filesystems,
-  the RAM filesystems an initrd mounted, binds such as NixOS's read-only store
-  and mounts stacked at one place. It reported the others, among them a bind
-  of a deleted file and a filesystem on an automount point, which the decoy's
-  start sets up again. The way back first looks up the directory of each
-  recorded mount inside that one mount, while nothing is mounted on it yet,
-  then makes each again in the decoy's order, a bind of that directory with
-  its per-mount options, before the decoy's userspace starts; a recorded mount
-  it cannot make that way (a carried filesystem the hidden session let go)
-  fails the way back rather than being left out or replaced. Propagation needs
-  no record: PID 1 makes every mount private before it switches root, and the
-  decoy's PID 1 marks the tree shared again. Emergency runs the hot path from
-  `main` before clap, the configuration and tracing, so a failed hidden volume
-  or an unreadable configuration cannot stop it.
+  a hidden root accepted on the decoy's storage. In the hidden session the
+  reason goes into the runtime directory in RAM.
+- **Session end and emergency** (`nails-session`'s `session::leave`,
+  `nails-teardown`'s `whole_root::session_end` and `whole_root::emergency`).
+  Every ending of a hidden session goes through `session_end`, which powers
+  off. `deactivate` refuses while a program blocks shutdown, records the
+  session as ended and enqueues `poweroff.target`. The emergency kills every
+  interactive shell, enqueues the power-off with every other job replaced,
+  then kills every hidden cgroup; where it cannot enqueue the power-off it
+  asks the kernel. Emergency runs the hot path from `main` before clap, the
+  configuration and tracing, so a failed hidden volume or an unreadable
+  configuration cannot stop it.
 - **Verification** (`verify`, `nails-forensics`) scans for known residue, live or offline against
   a decoy image.
 

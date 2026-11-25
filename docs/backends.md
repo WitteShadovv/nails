@@ -601,27 +601,21 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   warns, unless it has the boot write over that drive (see
   [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
-`nails deactivate` and `nails emergency` close the hidden backend themselves:
-before the soft-reboot back they mark its device-mapper stack for deferred
-removal with `dmsetup`, which the `host-tools` pre-flight check requires for
-such a backend (a hidden root mounted from `/dev/dm-N` or `/dev/mapper`
-counts as one whatever NAILS can read of its stack, and so does one whose
-stack it cannot read), and the switch releases the last reference (the overlay that
-held the hidden volume), so the kernel removes the mapping, and a loop device
-set up with autoclear, at that moment. You do not run the lock sequence after a
-session; you run it only when you unlocked the volume on the decoy without
-activating, or for a backend that is not device-mapper based. A device they
-cannot mark (the hidden session removed `dmsetup`, say) they name once the
-soft-reboot is enqueued: it stays open after the switch until you power off. Activation
-refuses where it cannot read the stack it records for them (a `dm/name`, a
-`slaves/` listing or the `/dev/mapper` link of the source), since the way
-back would leave a mapping it does not know open.
+`nails deactivate` and `nails emergency` end the session in a power-off. Its
+shutdown unmounts the hidden volume and removes the device-mapper devices, the
+hidden backend's among them, and the power-off ends the kernel that held the
+key. You do not run the lock sequence after a session. You run it only when
+you unlocked the volume on the decoy without activating. The `host-tools`
+pre-flight check still asks for `dmsetup` for a device-mapper backend (a
+hidden root mounted from `/dev/dm-N` or `/dev/mapper` counts as one whatever
+NAILS can read of its stack): the decoy side closes with it what an
+interrupted entry left open.
 Closing the mapping does not clear the key from RAM: dm-crypt wipes the master
 key when a mapping is removed, but other copies (page cache, freed pages,
-process memory) survive a soft-reboot and a warm reboot, unless the firmware
-honours the TCG memory-overwrite request, and setting that request writes EFI
-NVRAM. Use `nails deactivate --poweroff` or `nails emergency --poweroff` to
-power off instead and let RAM decay.
+process memory) stay in RAM for a while after the power-off and survive a warm
+reboot (`nails emergency --reboot`), unless the firmware honours the TCG
+memory-overwrite request, and setting that request writes EFI NVRAM. Leave the
+machine off for a few minutes before you hand it over.
 
 ## Deniability hazards
 
