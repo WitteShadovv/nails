@@ -34,24 +34,28 @@
 //! volume ([`switch_refusal`]) so `status` can say it next time. The outcomes
 //! that let the switch go on, each with its reason:
 //!
+//! In a hidden session (the plan recorded the entry, or `/` is an overlay, as
+//! the hidden root's is) every soft-reboot powers off, whatever
+//! `/run/nextroot` is: PID 1 switches into any OS tree there, a link or a
+//! plain directory included, and a restart of the hidden userspace is no
+//! ending either. On the decoy side:
+//!
 //! - **No session plan** ([`Outcome::NothingToDo`]): NAILS staged nothing in
 //!   this boot, so a `/run/nextroot` there is another tool's, and the
 //!   soft-reboot is a plain one. A plan that exists but cannot be read is no
 //!   such case: it powers off.
 //! - **A plan armed for nothing and no `/run/nextroot`**
-//!   ([`Outcome::NothingToDo`]): PID 1 starts userspace again on the root it
-//!   runs on and switches nothing. In the hidden root that is the hidden
-//!   userspace again, with its masks still in `/run`.
+//!   ([`Outcome::NothingToDo`]): PID 1 starts the decoy's userspace again on
+//!   the decoy root and switches nothing.
 //! - **A `/run/nextroot` the plan did not arm** ([`Outcome::Disarmed`], the
 //!   leftover guard): a populated `/run/nextroot` turns a later plain `reboot`
-//!   into a soft-reboot into it (systemd >= 255). On the decoy side that is
-//!   the tree of an activation that died before it armed the switch, and
-//!   nothing of a hidden session ran in this boot: the step detaches the tree
-//!   and removes the runtime pieces, so PID 1 starts the decoy's userspace
-//!   again in place ([`disarm`]). In the hidden session it is a tree someone
-//!   mounted there, the decoy's root perhaps: the step detaches it and the
-//!   hidden session goes on. Either only while nothing stays mounted at
-//!   `/run/nextroot` afterwards; else it powers off.
+//!   into a soft-reboot into it (systemd >= 255). That is the tree of an
+//!   activation that died before it armed the switch, and nothing of a hidden
+//!   session ran in this boot: the step detaches the tree and removes the
+//!   runtime pieces, so PID 1 starts the decoy's userspace again in place
+//!   ([`disarm`]). Only while nothing stays mounted at `/run/nextroot` and
+//!   the runtime directory and `/run`'s `noexec` are put back; else it powers
+//!   off.
 //!
 //! **The program's domain.** Where the plan records an SELinux label for the
 //! RAM copy of the binary ([`Plan::program_label`]), an armed entry first
@@ -409,7 +413,10 @@ impl Env {
             run: PathBuf::from("/run"),
             nextroot: PathBuf::from(NEXTROOT),
             runtime_dir: PathBuf::from(RUNTIME_DIR),
-            systemctl: crate::whole_root::tools::find(None, "systemctl"),
+            // Resolved now: on NixOS it is reached through
+            // /run/current-system, which the entry repoints.
+            systemctl: crate::whole_root::tools::find(None, "systemctl")
+                .map(|path| std::fs::canonicalize(&path).unwrap_or(path)),
             now: unix_now(),
             mounts: read_mountinfo().ok(),
             power_off: PowerOff::system(),
@@ -468,17 +475,41 @@ pub fn repoint_current_system(run: &Path, target: &Path) -> io::Result<Option<Pa
     Ok(previous)
 }
 
+/// Whether the step runs in a hidden session: the plan recorded the entry,
+/// or `/` is an overlay, as the hidden root's is (no supported decoy has an
+/// overlay root: the entry refuses one), which also tells a hidden root whose
+/// plan is gone.
+fn in_hidden_session(plan: Option<&Plan>, mounts: &[MountEntry]) -> bool {
+    plan.is_some_and(|plan| plan.entered_at.is_some())
+        || crate::mountinfo::top_mount_at(mounts, Path::new("/"))
+            .is_some_and(|root| root.fstype == "overlay")
+}
+
 /// Run the transition step. See the module docs.
 pub fn run(env: &Env) -> Outcome {
-    let mut plan = match Plan::load(&env.runtime_dir.join(PLAN_NAME)) {
-        Ok(plan) => plan,
-        // Not ours to judge: without a plan, /run/nextroot may be another
-        // tool's staged root.
-        Err(PlanError::Missing) => return Outcome::NothingToDo,
+    let plan = match Plan::load(&env.runtime_dir.join(PLAN_NAME)) {
+        Ok(plan) => Some(plan),
+        Err(PlanError::Missing) => None,
         Err(e) => return end(env, None, &format!("the session plan cannot be read: {e}")),
     };
     let Some(mounts) = &env.mounts else {
-        return end(env, Some(&plan), "the mount table cannot be read");
+        return end(env, plan.as_ref(), "the mount table cannot be read");
+    };
+    // A hidden session never goes back, nor starts its userspace again: PID 1
+    // switches into whatever /run/nextroot is (a mount, a link, a plain
+    // directory) once it holds an OS tree, so any soft-reboot there ends the
+    // session, whatever /run/nextroot is.
+    if in_hidden_session(plan.as_ref(), mounts) {
+        return end(
+            env,
+            plan.as_ref(),
+            "a soft-reboot in the hidden session, which never goes back and ends in a power-off",
+        );
+    }
+    // Not ours to judge: without a plan, /run/nextroot may be another tool's
+    // staged root.
+    let Some(mut plan) = plan else {
+        return Outcome::NothingToDo;
     };
     let mounted = nextroot::is_mount_point(mounts, &env.nextroot);
     let direction = [Direction::Enter, Direction::Leave]
@@ -533,17 +564,21 @@ fn end(env: &Env, plan: Option<&Plan>, why: &str) -> Outcome {
     if let Some(plan) = plan {
         keep_refusal(env, plan, env.mounts.as_deref(), why);
     }
-    let _ = session_end().now(
-        env.systemctl.as_deref(),
-        env.power_off.grace,
-        env.power_off.kernel,
-    );
+    // The repoint goes first: on NixOS the `systemctl` PID 1 is asked with is
+    // reached through /run/current-system, which after the repoint names the
+    // hidden toplevel in the next root's store, where that path leads
+    // nowhere, and the step would go straight to the kernel's power-off.
     if let Some(plan) = plan
         && plan.entered_at.is_none()
         && let Some(system) = &plan.decoy.system
     {
         let _ = repoint_current_system(&env.run, system);
     }
+    let _ = session_end().now(
+        env.systemctl.as_deref(),
+        env.power_off.grace,
+        env.power_off.kernel,
+    );
     let _ = (env.detach)(&env.nextroot);
     Outcome::Ended(why.to_string())
 }
@@ -563,12 +598,13 @@ fn keep_refusal(env: &Env, plan: &Plan, mounts: Option<&[MountEntry]>, why: &str
     }
 }
 
-/// Detach a `/run/nextroot` the plan did not arm. On the decoy side (never
-/// entered) the runtime pieces go too and the hidden backend is marked for
-/// deferred removal, so nothing of the failed activation is left, its key
-/// included; in the hidden session the plan stays. Where something stays
-/// mounted at `/run/nextroot`, PID 1 would switch into it: it powers off
-/// instead ([`end`]).
+/// Detach a `/run/nextroot` the plan did not arm, on the decoy side (a hidden
+/// session never gets here: [`run`]), and remove the runtime pieces; the
+/// hidden backend is marked for deferred removal, so nothing of the failed
+/// activation is left, its key included. Where something stays mounted at
+/// `/run/nextroot`, PID 1 would switch into it, and where the runtime
+/// directory or `/run`'s `noexec` cannot be put back, the next boot step
+/// would meet what is left: either way it powers off instead ([`end`]).
 fn disarm(env: &Env, plan: &Plan, mounts: &[MountEntry], why: &str) -> Outcome {
     keep_refusal(env, plan, Some(mounts), why);
     let remaining = (env.detach)(&env.nextroot);
@@ -583,25 +619,36 @@ fn disarm(env: &Env, plan: &Plan, mounts: &[MountEntry], why: &str) -> Outcome {
             ),
         );
     }
-    if plan.entered_at.is_none() {
-        // A reboot that met the leftover tree: the volume was unmounted by
-        // the shutdown, and a real reboot would have closed it too.
-        let _ = crate::whole_root::ret::close_backend_deferred(plan);
-        let kept = env.saved_snapshot().unwrap_or_default();
-        remove_dropin(&env.run, &kept);
-        runtime_units::remove_masks(
-            &env.run,
-            &plan.masks,
-            &plan.boot_masks,
-            &plan.generator_masks,
-            &kept,
+    // A reboot that met the leftover tree: the volume was unmounted by the
+    // shutdown, and a real reboot would have closed it too.
+    let _ = crate::whole_root::ret::close_backend_deferred(plan);
+    let kept = env.saved_snapshot().unwrap_or_default();
+    remove_dropin(&env.run, &kept);
+    runtime_units::remove_masks(
+        &env.run,
+        &plan.masks,
+        &plan.boot_masks,
+        &plan.generator_masks,
+        &kept,
+    );
+    skips::remove_skips(&env.run, &plan.skips, &kept);
+    kernel_helpers::restore(&plan.kernel_settings);
+    nextroot::remove_runtime_dir(&env.runtime_dir);
+    if std::fs::symlink_metadata(&env.runtime_dir).is_ok() {
+        return end(
+            env,
+            None,
+            &format!("{why}, and the runtime directory could not be removed"),
         );
-        skips::remove_skips(&env.run, &plan.skips, &kept);
-        kernel_helpers::restore(&plan.kernel_settings);
-        nextroot::remove_runtime_dir(&env.runtime_dir);
-        if plan.run_noexec {
-            let _ = nextroot::set_noexec(&env.run, true);
-        }
+    }
+    if plan.run_noexec
+        && let Err(e) = nextroot::set_noexec(&env.run, true)
+    {
+        return end(
+            env,
+            None,
+            &format!("{why}, and /run could not be made noexec again: {e}"),
+        );
     }
     Outcome::Disarmed(why.to_string())
 }

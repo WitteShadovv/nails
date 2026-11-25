@@ -11,6 +11,7 @@
 //! refuses and counts the calls ([`refused_power_off`]), so a step that ends
 //! the session returns [`Outcome::Ended`].
 
+use super::run as run_step;
 use super::*;
 use crate::mountinfo::parse_mountinfo;
 use crate::test_support::write_executable;
@@ -215,8 +216,11 @@ fn ready_entry(world: &World) -> Plan {
     plan
 }
 
+/// On the decoy side without a plan NAILS staged nothing to judge. Where the
+/// mount table cannot be read the step cannot tell the decoy from a hidden
+/// root whose plan is gone, and ends the session.
 #[test]
-fn without_a_plan_nothing_happens_whatever_is_mounted() {
+fn without_a_plan_nothing_happens_on_the_decoy_side() {
     for mounted in [true, false] {
         let world = World::new();
         assert_eq!(
@@ -226,16 +230,73 @@ fn without_a_plan_nothing_happens_whatever_is_mounted() {
         let world = World::new();
         let mut env = world.env(mounted, 1_000);
         env.mounts = None;
-        assert_eq!(goes_on(&world, &env), Outcome::NothingToDo);
+        assert_eq!(ends(&world, &env), "the mount table cannot be read");
     }
 }
 
-/// A plan armed for nothing and no next root: a plain soft-reboot, which in
-/// the hidden session starts the hidden userspace again.
+/// The mount table of a hidden root: `/` is the root overlay.
+fn with_a_root_overlay(env: &mut Env) {
+    env.mounts.as_mut().unwrap().insert(
+        0,
+        parse_mountinfo(
+            "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/a,upperdir=/mnt/data/root/upper,workdir=/w\n",
+        )
+        .remove(0),
+    );
+}
+
+/// In a hidden session every soft-reboot ends in a power-off, whatever
+/// /run/nextroot is: PID 1 switches into any OS tree there (a mount, a link
+/// to the decoy root, a plain directory), and a restart of the hidden
+/// userspace is no ending either. A hidden root whose plan is gone is told by
+/// its root overlay.
+#[test]
+fn every_soft_reboot_in_a_hidden_session_ends_it() {
+    for mounted in [true, false] {
+        let world = World::new();
+        world.write_plan(&in_session());
+        let why = ends(&world, &world.env(mounted, 1_000));
+        assert!(
+            why.starts_with("a soft-reboot in the hidden session"),
+            "{why}"
+        );
+        assert!(
+            world.runtime().join(PLAN_NAME).exists(),
+            "nothing is cleaned up"
+        );
+
+        let world = World::new();
+        let mut env = world.env(mounted, 1_000);
+        with_a_root_overlay(&mut env);
+        let why = ends(&world, &env);
+        assert!(
+            why.starts_with("a soft-reboot in the hidden session"),
+            "{why}"
+        );
+    }
+    // A link to the decoy root at /run/nextroot, which no mount table names.
+    let world = World::new();
+    world.write_plan(&in_session());
+    let decoy = world.dir.path().join("decoy-root");
+    fs::create_dir_all(decoy.join("etc")).unwrap();
+    fs::write(decoy.join("etc/os-release"), "ID=debian\n").unwrap();
+    fs::remove_dir_all(world.nextroot()).unwrap();
+    symlink(&decoy, world.nextroot()).unwrap();
+    let why = ends(&world, &world.env(false, 1_000));
+    assert!(
+        why.starts_with("a soft-reboot in the hidden session"),
+        "{why}"
+    );
+}
+
+/// A plan armed for nothing and no next root on the decoy side: a plain
+/// soft-reboot of the decoy.
 #[test]
 fn a_plan_armed_for_nothing_without_a_next_root_lets_a_plain_soft_reboot_go_on() {
     let world = World::new();
-    world.write_plan(&in_session());
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    world.write_plan(&plan);
     assert_eq!(
         goes_on(&world, &world.env(false, 1_000)),
         Outcome::NothingToDo
@@ -366,7 +427,7 @@ fn a_plan_armed_for_the_way_back_ends_the_session() {
 
         let why = ends(&world, &world.env(mounted, 1_000));
 
-        assert!(why.contains("a hidden session never goes back"), "{why}");
+        assert!(why.contains("never goes back"), "{why}");
         let kept = switch_refusal::read(&world.runtime()).expect("the reason is kept in /run");
         assert_eq!(kept.reason, why);
         assert_eq!(
@@ -419,6 +480,43 @@ fn an_entry_whose_init_does_not_resolve_ends_the_session_instead_of_freezing_pid
         Path::new("/nix/store/aaa-nixos-system")
     );
     assert!(!world.run().join("systemd/system/dev-vda3.swap").exists());
+}
+
+/// On a NixOS decoy the step's `systemctl` is reached through
+/// /run/current-system, which the entry repoints to the hidden toplevel, a
+/// path in the next root's store that leads nowhere on this side. A part that
+/// fails after the repoint undoes it first, so PID 1 is asked for the
+/// orderly power-off before the kernel.
+#[test]
+fn a_part_that_fails_after_the_repoint_asks_pid_1_first() {
+    let world = World::new();
+    let decoy_system = world.dir.path().join("decoy-system");
+    let bin = decoy_system.join("sw/bin");
+    fs::create_dir_all(&bin).unwrap();
+    write_executable(
+        &bin.join("systemctl"),
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexit 0\n",
+            world.dir.path().join("calls").display()
+        ),
+        0o755,
+    );
+    fs::remove_file(world.run().join("current-system")).unwrap();
+    symlink(&decoy_system, world.run().join("current-system")).unwrap();
+    fs::create_dir_all(world.run().join("systemd")).unwrap();
+    fs::write(world.run().join("systemd/system"), "not a directory").unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.decoy.system = Some(decoy_system.clone());
+    plan.hidden.system = Some(world.dir.path().join("hidden-system-not-on-this-side"));
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let mut env = world.env(true, 1_010);
+    env.systemctl = Some(world.run().join("current-system/sw/bin/systemctl"));
+
+    let why = ends(&world, &env);
+
+    assert!(why.starts_with("could not mask decoy units"), "{why}");
+    assert_eq!(world.current_system(), decoy_system);
 }
 
 /// A `current-system` that cannot be repointed ends the session.
@@ -792,35 +890,51 @@ fn a_populated_nextroot_that_is_not_armed_is_never_entered() {
     );
 }
 
-/// In the hidden session a next root someone mounted is detached and the
-/// session goes on, with its plan.
-#[test]
-fn an_unarmed_nextroot_in_the_hidden_session_keeps_the_plan() {
-    let world = World::new();
-    world.write_plan(&in_session());
-    let outcome = goes_on(&world, &world.env(true, 1_000));
-    assert!(matches!(outcome, Outcome::Disarmed(_)), "{outcome:?}");
-    assert!(world.runtime().join(PLAN_NAME).exists());
-    assert_eq!(switch_refusal::read(&world.runtime()), None);
-}
-
-/// A next root that stays mounted after the detach would be entered: on
-/// either side, the step ends the session instead.
+/// A next root that stays mounted after the detach would be entered: the
+/// step ends the session instead.
 #[test]
 fn a_next_root_that_stays_mounted_after_the_detach_ends_the_session() {
     let mut leftover = armed(Direction::Enter);
     leftover.armed = None;
-    for plan in [leftover, in_session()] {
-        let world = World::new();
-        world.write_plan(&plan);
-        let mut env = world.env(true, 1_000);
-        env.detach = stuck;
-        let why = ends(&world, &env);
-        assert_eq!(
-            why,
-            "not armed for this transition, and /run/nextroot stays mounted after the detach"
-        );
+    let world = World::new();
+    world.write_plan(&leftover);
+    let mut env = world.env(true, 1_000);
+    env.detach = stuck;
+    let why = ends(&world, &env);
+    assert_eq!(
+        why,
+        "not armed for this transition, and /run/nextroot stays mounted after the detach"
+    );
+}
+
+/// A runtime directory the cleanup of a leftover tree cannot remove leaves
+/// the plan for the next boot step: the step ends the session instead.
+#[test]
+fn a_leftover_whose_runtime_directory_stays_ends_the_session() {
+    if rustix::process::geteuid().is_root() {
+        // Root removes entries of a directory without write permission.
+        return;
     }
+    let mut leftover = armed(Direction::Enter);
+    leftover.armed = None;
+    let world = World::new();
+    world.write_plan(&leftover);
+    let env = world.env(true, 1_000);
+    let run = world.run();
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let before = kernel_asked();
+    let outcome = run_step(&env);
+
+    fs::set_permissions(&run, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(kernel_asked(), before + 1);
+    assert_eq!(
+        outcome,
+        Outcome::Ended(
+            "not armed for this transition, and the runtime directory could not be removed"
+                .to_string()
+        )
+    );
 }
 
 #[test]
@@ -1019,8 +1133,8 @@ fn the_timeout_guard_powers_off_a_switch_that_hangs_and_goes_with_the_dropin() {
 }
 
 /// The timeout guard stays for the whole session: the switch into it keeps
-/// it for the hidden PID 1, and a soft-reboot the hidden session refuses
-/// keeps it for the session that goes on.
+/// it for the hidden PID 1, and a soft-reboot in the session ends it with
+/// the guard still in place.
 #[test]
 fn the_timeout_guard_stays_for_the_whole_session() {
     let world = World::new();
@@ -1033,15 +1147,7 @@ fn the_timeout_guard_stays_for_the_whole_session() {
     assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
     assert!(guard.exists(), "the hidden PID 1 loads it");
 
-    assert!(matches!(
-        goes_on(&world, &world.env(true, 1_015)),
-        Outcome::Disarmed(_)
-    ));
-    assert!(guard.exists());
-    assert_eq!(
-        goes_on(&world, &world.env(false, 1_020)),
-        Outcome::NothingToDo
-    );
+    ends(&world, &world.env(true, 1_015));
     assert!(guard.exists());
 }
 

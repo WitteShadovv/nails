@@ -165,6 +165,9 @@ fn the_side_fails_closed_where_it_cannot_be_told() {
     let plain = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
     assert_eq!(side_of(Some(&plan), Some(&hidden)), Side::Hidden);
     assert_eq!(side_of(Some(&plan), Some(&plain)), Side::Decoy);
+    let mut entered = sample();
+    entered.entered_at = Some(900);
+    assert_eq!(side_of(Some(&entered), Some(&plain)), Side::Hidden);
     assert_eq!(side_of(Some(&plan), None), Side::Hidden);
     assert_eq!(side_of(None, Some(&hidden)), Side::Hidden);
     assert_eq!(side_of(None, Some(&other_overlay)), Side::Hidden);

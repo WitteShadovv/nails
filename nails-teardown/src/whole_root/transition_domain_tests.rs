@@ -142,7 +142,7 @@ fn a_way_back_ends_the_session_without_asking_the_domain() {
 
     let why = ends(&world, &env);
 
-    assert!(why.contains("a hidden session never goes back"), "{why}");
+    assert!(why.contains("never goes back"), "{why}");
     assert!(selinux.questions().is_empty());
     assert!(started_again_from().is_empty());
 }
@@ -177,10 +177,13 @@ fn a_step_in_the_domain_unlabelled_by_hand_or_unarmed_asks_no_more() {
     let mut plan = world.plan();
     plan.armed = None;
     world.write_plan(&plan);
-    assert!(matches!(
-        run(&env),
-        Outcome::Disarmed(why) if why == "not armed for this transition"
-    ));
+    // In the hidden session an unarmed soft-reboot ends the session before
+    // the domain is asked.
+    let why = ends(&world, &env);
+    assert!(
+        why.starts_with("a soft-reboot in the hidden session"),
+        "{why}"
+    );
     assert!(selinux.questions().is_empty(), "not armed");
     assert!(selinux.labels_written().is_empty());
     assert!(started_again_from().is_empty());

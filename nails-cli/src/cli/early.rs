@@ -475,18 +475,22 @@ fn guard_device(node: &std::path::Path) {
     );
 }
 
+/// Run the transition step in `env` and return the exit code the process
+/// ends with. Fail closed: an outcome that ends the session exits non-zero,
+/// which fails the service, so PID 1 powers off through its `FailureAction=`
+/// instead of switching (`transition::dropin_text`).
+fn transition_exit(env: &nails_teardown::whole_root::transition::Env) -> u8 {
+    nails_teardown::whole_root::transition::run(env).exit_code()
+}
+
 /// Run the early paths. See the module docs. Returns whether the emergency hot
 /// path ran; the transition and the device guard never return.
 pub fn dispatch() -> bool {
     let argv: Vec<OsString> = std::env::args_os().collect();
     if is_transition(&argv) && nix::unistd::geteuid().is_root() {
-        // Fail closed: an outcome that ends the session exits non-zero, which
-        // fails the service, so PID 1 powers off through its FailureAction=
-        // instead of switching (transition::dropin_text).
-        let outcome = nails_teardown::whole_root::transition::run(
+        crate::cli::chokepoint::exit_process(transition_exit(
             &nails_teardown::whole_root::transition::Env::system(started()),
-        );
-        crate::cli::chokepoint::exit_process(outcome.exit_code());
+        ));
     }
     if let Some(node) = guarded_device(&argv)
         && may_run()

@@ -631,3 +631,60 @@ mod kernel_tests {
             });
     }
 }
+
+/// The process ends with the step's exit code: 1 where the step ended the
+/// session (here a plan that cannot be read), so the service fails and PID 1
+/// powers off instead of switching; 0 where the soft-reboot may go on (no
+/// plan). The step's power-off goes to a logging stand-in for `systemctl`
+/// and a kernel that refuses.
+#[test]
+fn the_process_ends_with_the_transition_step_s_exit_code() {
+    use nails_teardown::whole_root::transition::{Env, PowerOff};
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path().join("run");
+    let runtime = run.join("overlay-runtime");
+    std::fs::create_dir_all(&runtime).unwrap();
+    let systemctl = dir.path().join("systemctl");
+    nails_core::test_support::write_executable(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexit 0\n",
+            dir.path().join("calls").display()
+        ),
+        0o755,
+    );
+    let env = Env {
+        run: run.clone(),
+        nextroot: dir.path().join("nextroot"),
+        runtime_dir: runtime.clone(),
+        systemctl: Some(systemctl),
+        now: 1_000,
+        mounts: Some(Vec::new()),
+        power_off: PowerOff {
+            grace: std::time::Duration::ZERO,
+            kernel: || false,
+        },
+        detach: |_| Vec::new(),
+        selinux: &nails_teardown::whole_root::selinux::KERNEL,
+        start: nails_teardown::whole_root::program_label::Started::by_hand(),
+    };
+    assert_eq!(
+        super::transition_exit(&env),
+        0,
+        "no plan: a plain soft-reboot"
+    );
+    std::fs::write(
+        runtime.join(nails_teardown::whole_root::plan::PLAN_NAME),
+        "{not json",
+    )
+    .unwrap();
+    assert_eq!(
+        super::transition_exit(&env),
+        1,
+        "an unreadable plan ends the session"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("calls")).unwrap(),
+        "--force poweroff\n"
+    );
+}

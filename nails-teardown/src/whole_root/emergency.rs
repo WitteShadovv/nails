@@ -215,7 +215,8 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
 
 /// Where the emergency runs, from the session `plan` and the mount table
 /// (`entries`, `None` where it cannot be read). The hidden root is told by its
-/// root overlay, whose upper the plan names. Fail closed where that cannot be
+/// root overlay, whose upper the plan names, or by the plan's record of the
+/// entry. Fail closed where that cannot be
 /// told: with a plan and no mount table it is the hidden session; without a
 /// plan, a root that is an overlay is a hidden root whose plan is gone (no
 /// supported decoy has an overlay root: the entry refuses one), and so is a
@@ -226,7 +227,11 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
 fn side_of(plan: Option<&Plan>, entries: Option<&[MountEntry]>) -> Side {
     match (plan, entries) {
         (Some(_), None) | (None, None) => Side::Hidden,
-        (Some(plan), Some(entries)) if ret::in_hidden_root(entries, plan) => Side::Hidden,
+        (Some(plan), Some(entries))
+            if plan.entered_at.is_some() || ret::in_hidden_root(entries, plan) =>
+        {
+            Side::Hidden
+        }
         (Some(_), Some(_)) => Side::Decoy,
         (None, Some(entries)) if root_is_overlay(entries) => Side::Hidden,
         (None, Some(_)) => Side::None,
