@@ -9,8 +9,10 @@
 //! and alerting the operator the moment it fails, alerting on every disk
 //! mounted read-write that is not the session's own storage, one below the
 //! hidden root included (`[session_mounts] alert`), and on every mount
-//! stacked on the hidden root, and sweeping unused disks
-//! read-only when that is opted into. It is marked
+//! stacked on the hidden root, sweeping unused disks
+//! read-only when that is opted into, and powering the machine off at the
+//! first write the decoy disks' counters show when the write tripwire is
+//! (`[session_mounts] write_tripwire`). It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
 //!
@@ -296,6 +298,15 @@ pub fn execute(
         .filter(|plan| mounts_config.read_only && plan.read_only_disks)
         .cloned();
     let sysfs = disk_guard::Sysfs::system();
+    // The write tripwire: the decoy disks' write counters against the
+    // baseline the entry's last step took.
+    let write_watch = write_watch(
+        mounts_config.write_tripwire,
+        plan.as_deref(),
+        &sysfs,
+        Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
+    );
+    let mut tripped = false;
     // The mount table names the root with its symlinks resolved.
     let hidden_root = watcher::resolved_root(&filesystem, &manifest);
     // Without the plan no device tells the session's own storage apart.
@@ -322,6 +333,10 @@ pub fn execute(
             auto_emergency(finish, super::emergency::run_hot_path_with)
         },
         || {
+            if let Some(watch) = &write_watch {
+                tripped =
+                    trip_on_writes(watch, &sysfs, tripped, super::emergency::run_hot_path_with);
+            }
             if let Some(notice) = &notice {
                 let env = env.clone();
                 notice.try_deliver(move |alert| send_immediate(alert, &env));
@@ -380,6 +395,47 @@ fn auto_emergency(finish: Finish, mut run: impl FnMut(Finish) -> HotReport) -> b
         "The automatic emergency ended; the watcher watches on where it did not act"
     );
     acted
+}
+
+/// The write tripwire's watch, where `enabled` (`[session_mounts]
+/// write_tripwire`) and the session `plan` records the disks to watch: held
+/// to the entry's baseline in `runtime_dir`, or to the counters at the
+/// watcher's start where the entry left none. Says so in the log where the
+/// setting asks for the tripwire and nothing can be watched.
+fn write_watch(
+    enabled: bool,
+    plan: Option<&Plan>,
+    sysfs: &disk_guard::Sysfs,
+    runtime_dir: &Path,
+) -> Option<watcher::WriteWatch> {
+    if !enabled {
+        return None;
+    }
+    let Some(layout) = plan.and_then(|plan| plan.write_tripwire.clone()) else {
+        tracing::warn!("The write tripwire is set, but the session plan names no disk to watch");
+        return None;
+    };
+    let watch = watcher::WriteWatch::start(layout, sysfs, runtime_dir);
+    if watch.since() == watcher::Since::WatcherStart {
+        tracing::warn!("No write counters from the switch; counting from the watcher's start");
+    }
+    Some(watch)
+}
+
+/// One round of the write tripwire: the first write the decoy disks' counters
+/// show powers the machine off through `run`, the hot path, whatever the
+/// backend watch's own `auto_emergency` says. Returns whether the tripwire has
+/// acted; one that could not act tries again at the next round.
+fn trip_on_writes(
+    watch: &watcher::WriteWatch,
+    sysfs: &disk_guard::Sysfs,
+    tripped: bool,
+    run: impl FnMut(Finish) -> HotReport,
+) -> bool {
+    watcher::trip(watch, sysfs, tripped, |writes| {
+        tracing::error!(writes = ?writes, "A watched disk was written; powering off");
+        auto_emergency(Finish::Poweroff, run)
+    })
 }
 
 /// What the watcher watches with ([`watching`]).

@@ -134,6 +134,10 @@ pub const SETTINGS: &[Setting] = &[
         kind: Kind::Bool,
     },
     Setting {
+        key: "session_mounts.write_tripwire",
+        kind: Kind::Bool,
+    },
+    Setting {
         key: "sleep_policy.mode",
         kind: Kind::Choice(SLEEP_MODES),
     },

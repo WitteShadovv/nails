@@ -93,7 +93,6 @@ use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
 use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
-use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
     Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
     SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
@@ -101,7 +100,7 @@ use nails_teardown::whole_root::plan::{
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
 use nails_teardown::whole_root::{
-    fresh_pids, kernel_helpers, logind, network, ret, skips, transition, utab,
+    fresh_pids, kernel_helpers, logind, network, nextroot, ret, skips, transition, utab,
 };
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -299,6 +298,9 @@ pub struct EntryInputs<'a> {
     /// Keep the disks the session does not use read-only for the session
     /// (`[session_mounts] read_only`).
     pub read_only_disks: bool,
+    /// Power off at the first write to a decoy disk the kernel's counters
+    /// show (`[session_mounts] write_tripwire`).
+    pub write_tripwire: bool,
     /// Why the hidden root is not a volume of its own, when the operator
     /// overrode that (recorded in the plan as `accepted_decoy_storage`).
     pub accepted_decoy_storage: Option<String>,
@@ -578,6 +580,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        write_tripwire: None,
     }
 }
 
@@ -612,6 +615,9 @@ fn build(
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
     plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
+    // A layout the write counters cannot watch refuses here, and the
+    // rollback removes what is in /run so far.
+    plan.write_tripwire = tripwire::for_entry(inputs, &mounts)?;
     plan.failed_at_entry = host.failed_units();
     // Recorded at every entry, before anything runs: a NixOS activation points
     // the kernel's module loader and firmware path at its own store, the
@@ -1184,6 +1190,7 @@ fn apply_mounts(
 mod hidden_build;
 mod hidden_fstab;
 mod quiet;
+mod tripwire;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

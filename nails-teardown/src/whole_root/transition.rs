@@ -102,7 +102,7 @@ use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::{
     boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, tail, utab, zram,
+    switch_refusal, tail, utab, write_counters, zram,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -408,6 +408,9 @@ pub struct Env {
     /// How this step was started: by PID 1 from the drop-in, as itself again,
     /// or by hand ([`Started::by_hand`]), which checks no domain.
     pub start: Started,
+    /// Where the entry reads the decoy disks' write counters for the write
+    /// tripwire's baseline ([`write_counters`]); `None` takes none.
+    pub write_counters: Option<disk_guard::Sysfs>,
 }
 
 /// How the way back powers off instead of returning ([`PowerOff::system`]).
@@ -451,6 +454,7 @@ impl Env {
             tail: Some(tail::Places::system()),
             selinux: &selinux::KERNEL,
             start,
+            write_counters: Some(disk_guard::Sysfs::system()),
         }
     }
 
@@ -670,7 +674,23 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     plan.armed = None;
     plan.entered_at = Some(env.now);
     let _ = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME));
+    take_write_baseline(env, plan);
     Outcome::Entered
+}
+
+/// The write tripwire's baseline, taken last: every decoy unit has stopped,
+/// and a `sync` has written what the decoy left in the page cache, so what the
+/// counters show from here on was written after the switch began
+/// ([`write_counters`]). Best effort: without it, the session watcher takes
+/// its own when it starts.
+fn take_write_baseline(env: &Env, plan: &Plan) {
+    let (Some(layout), Some(sys)) = (&plan.write_tripwire, &env.write_counters) else {
+        return;
+    };
+    rustix::fs::sync();
+    if let Ok(baseline) = write_counters::Baseline::take(layout, sys) {
+        let _ = baseline.save(&env.runtime_dir.join(write_counters::BASELINE_NAME));
+    }
 }
 
 /// Narrow the `/run` snapshot the entry took to the entries still there now

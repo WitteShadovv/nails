@@ -87,7 +87,7 @@ impl DevNum {
         }
     }
 
-    fn text(self) -> String {
+    pub(crate) fn text(self) -> String {
         format!("{}:{}", self.major, self.minor)
     }
 }
@@ -123,7 +123,7 @@ pub fn remove_rule(run: &Path) {
 }
 
 /// The block device a path names, if it is one.
-fn block_device(path: &Path) -> Option<DevNum> {
+pub(crate) fn block_device(path: &Path) -> Option<DevNum> {
     let meta = std::fs::metadata(path).ok()?;
     meta.file_type()
         .is_block_device()
@@ -157,16 +157,16 @@ impl Sysfs {
         }
     }
 
-    fn dir(&self, dev: DevNum) -> Option<PathBuf> {
+    pub(crate) fn dir(&self, dev: DevNum) -> Option<PathBuf> {
         std::fs::canonicalize(self.root.join("dev/block").join(dev.text())).ok()
     }
 
-    fn dev_in(dir: &Path) -> Option<DevNum> {
+    pub(crate) fn dev_in(dir: &Path) -> Option<DevNum> {
         DevNum::parse(&std::fs::read_to_string(dir.join("dev")).ok()?)
     }
 
     /// The disk a partition is on, or `None` for a whole disk.
-    fn parent(&self, dev: DevNum) -> Option<DevNum> {
+    pub(crate) fn parent(&self, dev: DevNum) -> Option<DevNum> {
         let dir = self.dir(dev)?;
         if !dir.join("partition").exists() {
             return None;
@@ -175,7 +175,7 @@ impl Sysfs {
     }
 
     /// The devices this one is stacked on (device-mapper, md).
-    fn slaves(&self, dev: DevNum) -> Vec<DevNum> {
+    pub(crate) fn slaves(&self, dev: DevNum) -> Vec<DevNum> {
         let Some(dir) = self.dir(dev) else {
             return Vec::new();
         };
@@ -202,7 +202,7 @@ impl Sysfs {
     }
 
     /// Every block device: its number and kernel name.
-    fn all(&self) -> Vec<(DevNum, String)> {
+    pub(crate) fn all(&self) -> Vec<(DevNum, String)> {
         std::fs::read_dir(self.root.join("class/block"))
             .into_iter()
             .flatten()

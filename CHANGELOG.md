@@ -58,6 +58,27 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
+- `[session_mounts] write_tripwire` (opt-in): the session watcher compares the kernel's write
+  counters of every disk that holds a decoy filesystem with the ones the last step before the
+  switch took after a `sync`, and powers the machine off at the first sector written or discarded
+  outside the hidden volume's own partition or disk, a partition table and the gaps between
+  partitions included. It counts what reached the disk, whatever program wrote it. Activation
+  refuses a hidden volume the counters cannot tell apart from the decoy: one that shares a
+  partition with it (a logical volume beside the decoy's, a folder or subvolume accepted with
+  `--allow-decoy-storage`), a container file on a disk, and a hidden root without a block device.
+  It is a tripwire, not a fence: the write is on the disk when the watcher sees it, up to one poll
+  later, and the power-off is a clean shutdown. It does not see SCSI or NVMe passthrough, what a
+  device writes on its own, EFI variables or a TPM, nor a disk that holds no decoy filesystem at
+  activation (see [Disks mounted during the session](docs/configuration.md#disks-mounted-during-the-session)).
+- The NixOS VM tests and the distribution smoke, records, apt-shutdown and Nix tests count every
+  write to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
+  the trigger of the switch into the hidden root until the session ends at the way back (cut by
+  a marker unit at the decoy's start) or at a power-off (which QEMU holds until the bitmaps are
+  read). A test fails for each byte written to a decoy drive, with its sector ranges and, on
+  ext4, what each range holds. A session entered without `follow_soft_reboot`, the access-time
+  scenarios, the Fedora gate and the oracle images do not run it (see
+  [The block-write oracle](nix/e2e-tests/README.md#the-block-write-oracle)).
+
 - `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them, the
   unit file and every drop-in read as the service manager loads them, those of the unit's aliases
   included, `ExecStart=` split as systemd splits it with the variables the unit sets itself

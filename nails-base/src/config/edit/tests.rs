@@ -258,6 +258,7 @@ fn every_kind_is_written_as_the_loader_reads_it() {
         set("backend_watch.poll_interval_secs", Value::Integer(2)),
         set("session_mounts.alert", Value::Bool(false)),
         set("session_mounts.read_only", Value::Bool(true)),
+        set("session_mounts.write_tripwire", Value::Bool(true)),
         set("sleep_policy.mode", string("teardown")),
         set("window.emergency", string("poweroff")),
     ];
@@ -280,6 +281,7 @@ fn every_kind_is_written_as_the_loader_reads_it() {
     assert_eq!(config.backend_watch.debounce_secs, 30);
     assert_eq!(config.backend_watch.poll_interval_secs, 2);
     assert!(!config.session_mounts.alert && config.session_mounts.read_only);
+    assert!(config.session_mounts.write_tripwire);
     assert_eq!(
         config.sleep_policy.mode,
         crate::config::SleepPolicyMode::Teardown
