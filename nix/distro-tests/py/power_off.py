@@ -12,8 +12,9 @@ oracle images do: the guest powers off as a real machine does, with the
 kernel's ``reboot: Power down`` on the console, its disk stays as the
 power-off left it, :func:`image_paused_disk` can copy that disk whole, and
 :func:`boot_again` boots it cold (``system_reset`` and ``cont``: a fresh
-kernel, an empty ``/run``, every mount and the 9p share gone). From the first
-power-off on, QEMU pauses at every guest power-off for the rest of the run.
+kernel, an empty ``/run``, every mount and the 9p share gone). QEMU pauses at
+a guest power-off from :func:`follow_power_off` until the cold boot is up, and
+ends at one again afterwards, as the driver expects.
 
 :func:`follow_power_off` fails at once when a new userspace's backdoor
 announces itself instead (the machine switched or rebooted), when a userspace
@@ -249,7 +250,7 @@ RESETS = 3
 def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
     """Boot the powered-off machine cold from the disk the power-off left, as
     its owner switching it on again does, and reconnect to the new backdoor.
-    A later power-off of the guest pauses QEMU again (see :func:`_reset`)."""
+    Once the boot is up, a guest power-off ends QEMU again."""
     console_index = len(vm.full_console_log)
     _reset(vm, label)
     resets = 1
@@ -291,6 +292,11 @@ def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
     vm.wait_for_unit("multi-user.target")
+    # The new boot is up, past any shutdown request QEMU still held from the
+    # power-off: a guest power-off ends QEMU again, as the driver expects (a
+    # disk image taken at a power-off waits for that), until the next
+    # follow_power_off pauses it once more.
+    qmp(vm, "set-action", {"shutdown": "poweroff"})
 
 
 def root_drive(vm: Machine) -> tuple[str, int]:

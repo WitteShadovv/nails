@@ -179,9 +179,13 @@ class BootAgainTest(unittest.TestCase):
         restored = ("set-action", {"reboot": "shutdown", "shutdown": "pause"})
         self.assertIn(restored, sent)
         self.assertLess(sent.index(restored), commands.index("cont"))
+        # Until the boot is up a power-off keeps pausing QEMU; then the
+        # driver's own action is back, so a later power-off ends QEMU.
         self.assertNotIn(
-            "poweroff", [args.get("shutdown") for command, args in sent]
+            "poweroff",
+            [args.get("shutdown") for command, args in sent[: commands.index("cont")]],
         )
+        self.assertEqual(sent[-1], ("set-action", {"shutdown": "poweroff"}))
         self.assertEqual(vm.connects, 1)
         self.assertEqual(vm.units, ["multi-user.target"])
 
