@@ -107,12 +107,14 @@ fuzz_target!(|data: &[u8]| {
                 );
             }
             // The mask of a noauto line nothing pulls in yields to a skip
-            // of its unit that waits for its device. The mask of any noauto
-            // line, one kept off for another reason too (a network
-            // filesystem, a line at or below the hidden root), yields its
-            // mount, its first unit, to a skip where a line the boot starts
-            // needs that mount: the boot mounts it whatever `noauto` says.
+            // of its unit that waits for its device. The mask of a noauto
+            // line with only options NAILS reads, one kept off for another
+            // reason too (a network filesystem), yields its mount, its first
+            // unit, to a skip where a line the boot starts needs that
+            // mount: the boot mounts it whatever `noauto` says. A line with
+            // an option NAILS does not read stays masked.
             let needed = entry.is_noauto()
+                && unread_fstab_options(entry).is_empty()
                 && matches!(
                     decision,
                     Decision::Mask {
