@@ -173,6 +173,21 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import journal_tail, session  # noqa: E402
 
+    # The block-write oracle: QEMU counts every write to the decoy disk from
+    # the trigger of a switch into the hidden root until the session ends
+    # (nails_e2e.blockwrites); the end of the script fails for each one.
+    from nails_e2e import blockwrites  # noqa: E402
+
+    blockwrites.install(
+        vm,
+        {
+            "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
+            "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
+            "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
+            "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+        },
+    )
+
     # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
     # the `distro-checks` flake check: where a hidden write lands, which boot
     # filesystems to check, the overlay feature-option read-back, and the
@@ -1957,5 +1972,7 @@ distroVm.buildVmTest {
 
     with subtest("every failure the image is known to show still happens"):
         assert not gone_failures, "\n\n".join(gone_failures)
+
+    blockwrites.finish([vm])
   '';
 }

@@ -163,6 +163,21 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
 
+    # The block-write oracle: QEMU counts every write to the decoy disk from
+    # the trigger of a switch into the hidden root until the session ends
+    # (nails_e2e.blockwrites); the end of the script fails for each one.
+    from nails_e2e import blockwrites  # noqa: E402
+
+    blockwrites.install(
+        vm,
+        {
+            "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
+            "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
+            "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
+            "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+        },
+    )
+
     ${diskForensics.pythonSetup}
 
     nails = "${binShare.target}/nails"
@@ -644,5 +659,7 @@ distroVm.buildVmTest {
         store_hits = disk_forensics.run_store_scan(positive, [decoy_nonce], offset=offset)
         assert store_hits == {decoy_nonce}, f"the store scan missed the decoy's path: {store_hits}"
         print("the scans find the Nix installed on the decoy")
+
+    blockwrites.finish([vm])
   '';
 }

@@ -31,6 +31,45 @@
   setupHiddenRoot = ''
     set -eu
 
+    # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py),
+    # as nix/e2e-tests/lib/vm-config.nix has it on NixOS: at every start of the
+    # service manager after the first 30 s of uptime, a hold line on the serial
+    # console and a wait while the host cuts its dirty bitmaps of the decoy
+    # disk, before the units that write to the disk early in a start. Written
+    # once, before any session, so the image carries it as its own.
+    if [ ! -e /etc/systemd/system/blkstat-mark.service ]; then
+      mkdir -p /usr/local/sbin
+      cat > /usr/local/sbin/blkstat-mark <<'MARK'
+    #!/bin/sh
+    read -r up _ < /proc/uptime
+    if [ "''${up%%.*}" -ge 30 ]; then
+      echo 'blkstat-mark hold' > /dev/ttyS0
+      sleep 3
+      echo 'blkstat-mark release' > /dev/ttyS0
+    fi
+    MARK
+      chmod 0755 /usr/local/sbin/blkstat-mark
+      cat > /etc/systemd/system/blkstat-mark.service <<'UNIT'
+    [Unit]
+    Description=Boot marker
+    DefaultDependencies=no
+    Before=sysinit.target local-fs-pre.target systemd-fsck-root.service systemd-remount-fs.service systemd-random-seed.service systemd-tmpfiles-setup.service systemd-journal-flush.service systemd-update-utmp.service
+
+    [Service]
+    Type=oneshot
+    StandardOutput=null
+    StandardError=null
+    ExecStart=/usr/local/sbin/blkstat-mark
+
+    [Install]
+    WantedBy=sysinit.target
+    UNIT
+      mkdir -p /etc/systemd/system/sysinit.target.wants
+      ln -sf ../blkstat-mark.service /etc/systemd/system/sysinit.target.wants/blkstat-mark.service
+      systemctl daemon-reload
+      sync
+    fi
+
     mountpoint=/mnt/data
     store=/run/blk
     backing="$store/data.img"

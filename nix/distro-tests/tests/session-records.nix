@@ -113,6 +113,21 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
 
+    # The block-write oracle: QEMU counts every write to the decoy disk from
+    # the trigger of a switch into the hidden root until the session ends
+    # (nails_e2e.blockwrites); the end of the script fails for each one.
+    from nails_e2e import blockwrites  # noqa: E402
+
+    blockwrites.install(
+        vm,
+        {
+            "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
+            "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
+            "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
+            "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+        },
+    )
+
     # Put the record readers on the path and import them (same module the
     # fast-lane unit tests lock).
     sys.path.insert(0, "${recordsModule}")
@@ -547,5 +562,7 @@ distroVm.buildVmTest {
                 "time into the boot record (the cause of the backdated boot a session "
                 f"leaves); boot times: {records.boot_record_times(control.wtmp)}"
             )
+
+    blockwrites.finish([vm])
   '';
 }

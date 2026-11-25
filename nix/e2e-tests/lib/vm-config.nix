@@ -66,6 +66,42 @@
     serviceConfig.ExecStartPost = "${pkgs.coreutils}/bin/touch /run/register-nix-paths.done";
   };
 
+  # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py):
+  # at every start of the service manager after the first boot (a soft-reboot
+  # into the hidden root, or back to the decoy), print a hold line on the
+  # serial console the driver reads, and wait while the host cuts the dirty
+  # bitmaps it keeps of the decoy disk. Ordered before the units that write to
+  # the disk early in a start, so what the decoy's own start writes after the
+  # way back lands after the cut. It writes nothing but the two lines.
+  systemd.services.blkstat-mark = {
+    description = "Boot marker";
+    unitConfig.DefaultDependencies = false;
+    wantedBy = [ "sysinit.target" ];
+    before = [
+      "sysinit.target"
+      "local-fs-pre.target"
+      "systemd-fsck-root.service"
+      "systemd-remount-fs.service"
+      "systemd-random-seed.service"
+      "systemd-tmpfiles-setup.service"
+      "systemd-journal-flush.service"
+      "systemd-update-utmp.service"
+    ];
+    serviceConfig = {
+      Type = "oneshot";
+      StandardOutput = "null";
+      StandardError = "null";
+    };
+    script = ''
+      read -r up _ < /proc/uptime
+      if [ "''${up%%.*}" -ge 30 ]; then
+        echo 'blkstat-mark hold' > /dev/ttyS0
+        sleep 3
+        echo 'blkstat-mark release' > /dev/ttyS0
+      fi
+    '';
+  };
+
   # Model an amnesic decoy: journald keeps no persistent journal on the decoy
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite
   # exercises the supported posture. A test that wants to exercise the refusal

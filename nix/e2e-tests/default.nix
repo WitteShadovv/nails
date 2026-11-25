@@ -160,8 +160,21 @@ let
   # restarts (nails_e2e.store_image): a useNixStoreImage VM otherwise packs its
   # whole closure again on every start, which cost the forensic tests about 80 s
   # per power cycle. Machines without a store image are left unchanged.
+  #
+  # It also installs the block-write oracle on every machine
+  # (nails_e2e.blockwrites): QEMU counts every write to the decoy disk from the
+  # trigger of a switch into the hidden root until the session ends, and the
+  # closing step fails the test for each one.
   vmStartedPrelude = ''
+    from nails_e2e import blockwrites as _nails_blockwrites
     from nails_e2e.store_image import cache_store_image as _nails_cache_store_image
+
+    _NAILS_ORACLE_TOOLS = {
+        "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
+        "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
+        "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
+        "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+    }
 
     _nails_vm_started = False
 
@@ -180,10 +193,12 @@ let
     for _nails_machine in machines:
         _nails_track_start(_nails_machine)
         _nails_cache_store_image(_nails_machine)
+        _nails_blockwrites.install(_nails_machine, _NAILS_ORACLE_TOOLS)
   '';
 
   vmStartedAssert = ''
     assert _nails_vm_started, "testScript never started a VM"
+    _nails_blockwrites.finish(machines)
   '';
 
   # The wrapper keeps the original's formal arguments: the test framework

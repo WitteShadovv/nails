@@ -104,6 +104,21 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
 
+    # The block-write oracle: QEMU counts every write to the decoy disk from
+    # the trigger of a switch into the hidden root until the session ends
+    # (nails_e2e.blockwrites); the end of the script fails for each one.
+    from nails_e2e import blockwrites  # noqa: E402
+
+    blockwrites.install(
+        vm,
+        {
+            "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
+            "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
+            "dumpe2fs": "${pkgs.e2fsprogs}/bin/dumpe2fs",
+            "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+        },
+    )
+
     nails = "${binShare.target}/nails"
     # On the /run tmpfs: never on the decoy disk; carried across soft-reboots.
     config = "/run/nails-apt-shutdown.toml"
@@ -721,5 +736,7 @@ distroVm.buildVmTest {
         assert not any("Apt returned an error" in line for line in written), written
         assert not any(POLLING in line or POLLING_HINT in line for line in written), written
         vm.succeed(f"rm -f {refused_file} {setting_file}")
+
+    blockwrites.finish([vm])
   '';
 }

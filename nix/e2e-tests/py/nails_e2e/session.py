@@ -25,7 +25,7 @@ import time
 from collections.abc import Callable
 from typing import Any, Protocol, TypedDict
 
-from . import stall
+from . import blockwrites, stall
 
 #: Console lines that mean the new userspace will never start the backdoor.
 STUCK_MARKERS = (
@@ -217,6 +217,10 @@ def follow_soft_reboot(
     failure the same way.
     """
     trigger_uptime = guest_uptime(machine)
+    # The block-write oracle's window opens before the trigger, and the mark
+    # unit's hold line in the new userspace cuts it (nails_e2e.blockwrites).
+    opened_here = blockwrites.before_switch(machine, label)
+    cut_at: int | None = None
     console_index = len(machine.full_console_log)
     if start is None:
         _start_trigger(machine, trigger)
@@ -227,6 +231,12 @@ def follow_soft_reboot(
     deadline = time.monotonic() + deadline_s
     while True:
         lines = machine.full_console_log[console_index:]
+        if cut_at is None and blockwrites.watching(machine):
+            hold, _ = blockwrites.hold_and_release(lines)
+            if hold is not None:
+                cut_at = blockwrites.at_hold(machine, opened_here)
+        if blockwrites.paused_at_shutdown(machine):
+            blockwrites.finish_power_off(machine)
         stuck = stuck_lines(lines)
         if stuck:
             causes = [
@@ -272,7 +282,7 @@ def follow_soft_reboot(
                 f"{label}: no backdoor {deadline_s:.0f} s after the soft-reboot ({why})"
             )
         time.sleep(
-            0.5
+            0.1 if blockwrites.watching(machine) else 0.5
         )  # sync-lint: allow sleep -- polls the console log under the deadline above
     previous = signal.signal(signal.SIGALRM, _alarm)
     signal.alarm(120)
@@ -307,6 +317,18 @@ def follow_soft_reboot(
         "trigger_to_settled": settled - trigger_uptime,
     }
     machine.log(f"TIMING: {timings}")
+    if blockwrites.watching(machine):
+        _, release = blockwrites.hold_and_release(
+            machine.full_console_log[console_index:]
+        )
+        blockwrites.after_switch(
+            machine,
+            label,
+            opened_here,
+            cut_at,
+            None if release is None else console_index + release,
+            hidden=root_fstype(machine) == "overlay",
+        )
     return timings
 
 
@@ -447,7 +469,13 @@ def wait_for_power_off(machine: Machine, timeout: float = 300.0) -> None:
     machine.connected = False
     if machine.process is not None:
         try:
-            machine.process.wait(timeout=timeout)
+            # While the block-write oracle watches, QEMU pauses at the
+            # power-off until the oracle has read its window.
+            if blockwrites.watching(machine):
+                if not blockwrites.wait_for_exit(machine, timeout):
+                    raise subprocess.TimeoutExpired("qemu", timeout)
+            else:
+                machine.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             tail = "\n".join(machine.get_console_log().splitlines()[-100:])
             why = stall.report(machine, "power-off")
@@ -491,6 +519,8 @@ def follow_power_off(
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
             what = f"the new userspace is stuck: {stuck[0]}" if stuck else "it switched"
             raise AssertionError(f"{label}: the machine did not power off: {what}")
+        if blockwrites.paused_at_shutdown(machine):
+            blockwrites.finish_power_off(machine)
         exited = machine.process.poll() if machine.process is not None else None
         if exited is not None:
             break
