@@ -846,6 +846,88 @@ fn a_skip_that_requires_a_masked_mount_is_warned_of() {
     assert!(!warnings[0].contains("srv-x.mount"), "{}", warnings[0]);
 }
 
+/// The warnings for a skipped disk mount `srv-d.mount` linked into
+/// local-fs.target.requires whose `[Unit]` section is `pulls`, with a
+/// service `pull.service` that requires `n.mount`, the mount of a nofail
+/// line not mounted now, which the session masks, and a service
+/// `hop.service` that requires `pull.service`.
+fn walk_warnings(pulls: &str) -> Vec<String> {
+    let fstab = "/dev/vdc1 /n ext4 nofail 0 2\n";
+    let decoy = Decoy::new();
+    decoy.write(
+        "/etc/systemd/system/srv-d.mount",
+        &format!("[Unit]\n{pulls}[Mount]\nWhat=/dev/vdd1\nWhere=/srv/d\nType=ext4\n"),
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-d.mount",
+        "../srv-d.mount",
+    );
+    for (service, required) in [("pull", "n.mount"), ("hop", "pull.service")] {
+        decoy.write(
+            &format!("/etc/systemd/system/{service}.service"),
+            &format!(
+                "[Unit]\nRequires={required}\nAfter={required}\n[Service]\nType=oneshot\n\
+                 ExecStart=/bin/true\n"
+            ),
+        );
+    }
+    let mut decisions = policy::decide_all(
+        &crate::session::fstab::parse_fstab(fstab),
+        &parse_mountinfo(ROOT_ONLY),
+        Path::new(HIDDEN),
+        &|_| true,
+    );
+    decisions.extend(decoy.decide_with(fstab, ROOT_ONLY, true));
+    let (kept, warnings) = decoy.kept_off(fstab, &decisions);
+    assert_eq!(kept.masks, ["n.mount"], "{pulls}: {kept:?}");
+    assert!(
+        kept.skips.iter().any(|skip| skip.units == ["srv-d.mount"]),
+        "{pulls}: {kept:?}"
+    );
+    warnings
+}
+
+/// The walk reaches the masked n.mount for a path and by name through
+/// pull.service, and by name through hop.service and pull.service after it
+/// has noted the path: the chain that names it wins, so the warning says
+/// that srv-d.mount cannot start. Kept with the chain for the path, it said
+/// that srv-d.mount may not start. And it reaches it first by a want, which
+/// pulls in nothing PID 1 needs, then by name through the service: that
+/// second reach is read too, and warned of.
+#[test]
+fn a_masked_mount_reached_again_by_name_is_warned_of_by_name() {
+    let direct = "pull.service (Requires=), which pulls in n.mount (Requires=)";
+    let hops = "hop.service (Requires=), which pulls in pull.service (Requires=), which pulls in \
+                n.mount (Requires=)";
+    for (pulls, chain) in [
+        (
+            "RequiresMountsFor=/n/x\nRequires=pull.service\nAfter=pull.service\n",
+            direct,
+        ),
+        (
+            "RequiresMountsFor=/n/x\nRequires=hop.service\nAfter=hop.service\n",
+            hops,
+        ),
+        (
+            "Wants=n.mount\nRequires=pull.service\nAfter=pull.service\n",
+            direct,
+        ),
+    ] {
+        let warnings = walk_warnings(pulls);
+        assert_eq!(
+            warnings,
+            [format!(
+                "srv-d.mount is skipped, but it requires {chain}, which the session masks: the \
+                 hidden systemd cannot start srv-d.mount, so the boot target that requires it \
+                 is not reached"
+            )],
+            "{pulls}"
+        );
+    }
+    // With only the want, nothing holds srv-d.mount up.
+    assert!(walk_warnings("Wants=n.mount\n").is_empty());
+}
+
 #[test]
 fn an_option_named_bind_or_rbind_with_a_value_makes_a_bind() {
     // systemd's `fstab_test_option()` matches an option by its name before
