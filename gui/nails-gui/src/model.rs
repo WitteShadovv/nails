@@ -411,9 +411,10 @@ impl Model {
         self.switch_overdue = overdue;
     }
 
-    /// The window runs in a hidden session (`/` is its overlay), which the
-    /// window read itself: the Emergency control shows on every page, also
-    /// before the helper answered and after it is gone.
+    /// The window runs in a hidden session (`/` is its overlay), or could not
+    /// read the mount table to tell, by its own reading: the Emergency control
+    /// shows on every page, also before the helper answered and after it is
+    /// gone, and the session page offers at most a hidden session's tools.
     #[must_use]
     pub fn in_hidden_session(mut self, hidden: bool) -> Self {
         self.in_hidden_session = hidden;
