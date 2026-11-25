@@ -73,7 +73,7 @@ impl<F: Filesystem> Verifier<F> {
     /// nothing there. So is the fstab where it cannot be looked at.
     pub(super) fn unmounted_areas(&self) -> Vec<String> {
         let mut areas = Vec::new();
-        let table = self.filesystem.mount_table().unwrap_or_default();
+        let table = self.filesystem.mount_table();
         let mut entries = match self.read_in_image(Path::new(FSTAB_FILE)) {
             Ok(text) => parse_fstab(&text)
                 .into_iter()
@@ -239,8 +239,15 @@ impl<F: Filesystem> Verifier<F> {
     /// its filesystem's journal replay. A device that is mounted already has
     /// its journal behind it: a second mount shares that filesystem,
     /// read-only as it is or made read-only once mounted. Any other device is
-    /// made read-only first and mounted without a journal replay.
-    fn how_to_mount(&self, entry: &FstabEntry, place: &Path, table: &[MountEntry]) -> String {
+    /// made read-only first and mounted without a journal replay. Where the
+    /// mount table here cannot be read, whether the device is mounted is not
+    /// known: the line says so and gives the mount for either case.
+    fn how_to_mount(
+        &self,
+        entry: &FstabEntry,
+        place: &Path,
+        table: &Result<Vec<MountEntry>>,
+    ) -> String {
         let at = shell_word(place.as_os_str());
         // A btrfs subvolume is named at each mount of it.
         let subvol = entry
@@ -283,6 +290,20 @@ impl<F: Filesystem> Verifier<F> {
         if let Some(name) = self.closed_mapping(entry) {
             return self.how_to_open(name, &format!("{replay_free}{device} {at}"));
         }
+        let table = match table {
+            Ok(table) => table,
+            Err(error) => {
+                return format!(
+                    "The mount table here could not be read ({error}), so whether its device is \
+                     mounted here is not known. Where it is, mount it there again and make that \
+                     mount read-only before the scan, with `sudo mount {}{device} {at} && sudo \
+                     mount -o remount,bind,ro {at}`. Where it is not, make it read-only and mount \
+                     it there without a journal replay before the scan, with `sudo blockdev \
+                     --setro {device} && sudo mount {replay_free}{device} {at}`",
+                    with(None)
+                );
+            }
+        };
         match self.mounted_now(entry, table) {
             Mounted::ReadWrite => format!(
                 "Its device is mounted here already, read-write: mount it there again and make \

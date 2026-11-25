@@ -1141,39 +1141,41 @@ of this changelog for that version becomes the release notes word for word, and
   and most of its readers then took the table for empty: the last step before a switch saw no
   `/run/nextroot` and did nothing on either direction, so a way back neither scrubbed `/run`, nor
   put the decoy's records back, nor wrote the kmsg cursor, and an entry skipped the leftover guard.
-  A path in the table now keeps every byte the kernel gives once its octal escapes are undone,
-  and option text keeps such a byte as an octal escape (`\377`). A device whose path in the table
-  is not valid UTF-8 (a source, an XFS log or realtime device, a bcachefs member) is one NAILS
-  cannot look up, never one looked up with that byte replaced: where the decoy-storage checks need
-  that path to tell the device, they refuse the hidden root as one whose storage cannot be judged,
-  and a decoy unit whose filesystem is mounted from such a source is masked in the hidden root.
-  libmount's `utab` lines, the copy of the mount table the entry keeps for the way back and the
-  list of swaps in use are read byte for byte too. Where the mount table cannot be read at all,
-  each safety path takes its fail-closed end: the last step refuses the switch, and on the way back
-  powers off first; the emergency, which cannot tell then which side it runs on, powers off at
-  once past PID 1's queue (or reboots, as asked), and its JSON names the side `unknown`;
-  `activate`, `deactivate`, `discard` and `recover` refuse, and so do the `rehearse` steps but an
-  `--offline` scan, which reads only the images it is given; the way back's preparation stops
-  before it unmounts or mounts anything; the detach of the next root and of the runtime directory
-  detaches what it can but never takes the tree for gone, so nothing below it is removed; and the
-  read-only guard and the watcher's sweep keep writable only what the
-  session plan records: the decoy root's device, the hidden backend and, where the hidden root is
-  a volume of its own, the hidden volume's device, with the devices they sit on. `status` reports
-  the place as unknown and names the mount table, the watcher sends one alert that it cannot see
-  the disks, verify warns that it cannot tell whether `/run/nextroot` is populated, `check` says
-  it cannot tell how each decoy filesystem would be handled, and the window refuses a menu entry's
-  start, saying the table could not be read, and otherwise shows its Emergency control from the
-  start. A list of swaps that cannot be read fails `rehearse scan`, and the way back then resets no
-  zram device. A btrfs decoy root whose subvolume name is not valid UTF-8 is refused, and so is an
-  overlay layer at such a path: the option text `mount(2)` takes cannot hold that name unchanged.
-  A btrfs mount whose `subvol=` holds an octal escape (a space in the subvolume's name) now counts
-  as that subvolume in the decoy-storage checks, as it already did for the way back. The window
-  reads a hidden root at a path with a `,`, `:` or `\` as the engine does, where before it took
-  that hidden session for the decoy. The decoy's fstab is read with a byte that is not valid UTF-8
-  kept as its octal escape, and a mount point holds the bytes its escapes stand for, and the
-  session policy names mount, automount, swap and device units as PID 1 names them, a name of 256
-  characters or more shortened with a hash: so what the policy masks or skips for such a line is
-  the unit PID 1 has. A decoy unit whose name may be one PID 1 shortened that way is masked.
+  A path in the table now keeps every byte the kernel gives once its octal escapes are undone, and
+  option text keeps such a byte as an octal escape (`\377`). A device whose path in the table is not
+  valid UTF-8 (a source, an XFS log or realtime device, a bcachefs member) is one NAILS cannot look
+  up, never one looked up with that byte replaced: where the decoy-storage checks need that path to
+  tell the device, they refuse the hidden root as one whose storage cannot be judged, and a decoy
+  unit whose filesystem is mounted from such a source is masked in the hidden root. libmount's
+  `utab` lines, the copy of the mount table the entry keeps for the way back and the list of swaps
+  in use are read byte for byte too. Where the mount table cannot be read at all, each safety path
+  takes its fail-closed end: the last step refuses the switch, and on the way back powers off first;
+  the emergency, which cannot tell then which side it runs on, powers off at once past PID 1's queue
+  (or reboots, as asked), and its JSON names the side `unknown`; `activate`, `deactivate`, `discard`
+  and `recover` refuse, and so do the `rehearse` steps but an `--offline` scan, which reads only the
+  images it is given; the way back's preparation stops before it unmounts or mounts anything; the
+  detach of the next root and of the runtime directory detaches what it can but never takes the tree
+  for gone, so nothing below it is removed; and the read-only guard and the watcher's sweep keep
+  writable only what the session plan records: the decoy root's device, the hidden backend and,
+  where the hidden root is a volume of its own, the hidden volume's device, with the devices they
+  sit on. `status` reports the place as unknown and names the mount table, the watcher sends one
+  alert that it cannot see the disks, verify warns that it cannot tell whether `/run/nextroot` is
+  populated, `check` says it cannot tell how each decoy filesystem would be handled, and the window
+  refuses a menu entry's start, saying the table could not be read, and otherwise shows its
+  Emergency control from the start. An offline verify, which says how to mount each place of the
+  decoy that holds nothing under the root, took the device of such a place for one not mounted here:
+  it now says the table could not be read and gives the mount for either case. A list of swaps that
+  cannot be read fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy
+  root whose subvolume name is not valid UTF-8 is refused, and so is an overlay layer at such a
+  path: the option text `mount(2)` takes cannot hold that name unchanged. A btrfs mount whose
+  `subvol=` holds an octal escape (a space in the subvolume's name) now counts as that subvolume in
+  the decoy-storage checks, as it already did for the way back. The window reads a hidden root at a
+  path with a `,`, `:` or `\` as the engine does, where before it took that hidden session for the
+  decoy. The decoy's fstab is read with a byte that is not valid UTF-8 kept as its octal escape, and
+  a mount point holds the bytes its escapes stand for, and the session policy names mount,
+  automount, swap and device units as PID 1 names them, a name of 256 characters or more shortened
+  with a hash: so what the policy masks or skips for such a line is the unit PID 1 has. A decoy unit
+  whose name may be one PID 1 shortened that way is masked.
 - The way back keeps more of the hidden session out of the decoy journal. PID 1 named every process
   of the session still running at the switch in `Sending SIGKILL to PID N (<name>)` lines after
   the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`
