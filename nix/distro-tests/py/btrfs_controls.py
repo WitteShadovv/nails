@@ -1,8 +1,11 @@
-"""The btrfs scan controls on a Fedora decoy's disk, for Fedora's admission.
+"""The btrfs scan controls on a decoy's btrfs disk, for its family's admission.
 
-``nix/distro-tests/fedora-gate.nix`` builds one host driver per pinned Fedora
-image (``<image>-btrfs``) and calls :func:`run` with the driver's machine. Fedora
-keeps its root on btrfs mounted ``compress=zstd:1``, and a raw scan of a disk
+``nix/distro-tests/fedora-gate.nix`` and ``nix/distro-tests/arch-gate.nix``
+build one host driver per pinned Fedora image and per Arch image of the gate
+(``<image>-btrfs``) and call :func:`run` with the driver's machine. Fedora and
+arch-boxes keep their root on btrfs mounted ``compress=zstd:1`` (Fedora's /var
+a subvolume of its own, arch-boxes's on the top level of the root's
+filesystem, mounted at /), and a raw scan of a disk
 image reads the bytes as they lie on the disk: it cannot see what a compressed
 extent holds, and it never tells a deleted file from free space. Three planted
 controls show what each read of such a decoy sees, on the image itself:
@@ -30,10 +33,11 @@ the run records what the restore wrote of it and what it said, and where the
 extents of each deleted control lay, with the first bytes the image holds
 there.
 
-Fedora mounts its btrfs with ``discard=async`` where the disk takes discards,
+Both mount their btrfs with ``discard=async`` where the disk takes discards,
 as the VM's disk does: once a deleted file's blocks are free, the kernel
 discards them. So the file (c) is deleted with discard turned off (a remount
-with ``nodiscard``), as on a disk that takes no discard, the case where the
+with ``nodiscard`` of the mount that holds the controls), as on a disk that
+takes no discard, the case where the
 history keeps the most. A fourth file, deleted before that remount with the
 image's own ``discard=async``, shows what such a deletion leaves: the run
 records which older roots keep its path and whether any keeps its contents,
@@ -69,10 +73,9 @@ from typing import Any
 
 import btrfs_scan
 
-# The controls' folder on the decoy: /var/tmp, on the var subvolume, and the
-# mount it is on.
+# The controls' folder on the decoy: /var/tmp, on Fedora's var subvolume or
+# on arch-boxes's root. The mount that holds it is read with ``findmnt -T``.
 CONTROLS = "/var/tmp/scan-controls"
-CONTROLS_MOUNT = "/var"
 # How many older roots the history reads, newest first.
 ROOTS = 64
 # The size of each compressed control: two extents of 128 KiB.
@@ -258,7 +261,7 @@ class Controls:
         )
         self.facts["discard"] = vm.succeed(
             f"findmnt -no OPTIONS -T {CONTROLS}; "
-            f"mount -o remount,nodiscard {CONTROLS_MOUNT} && "
+            f'mount -o remount,nodiscard "$(findmnt -no TARGET -T {CONTROLS})" && '
             f"findmnt -no OPTIONS -T {CONTROLS}"
         )
         # (c): deleted with discard off.
@@ -510,7 +513,7 @@ class Controls:
                 "findmnt -no SOURCE,FSTYPE,OPTIONS /"
             ).strip()
             self.facts["var"] = vm.succeed(
-                "findmnt -no SOURCE,FSTYPE,OPTIONS /var"
+                "findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS -T /var"
             ).strip()
             self.plant()
             device, in_fs = self.where_on_root()

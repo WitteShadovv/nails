@@ -1,8 +1,10 @@
 """Tests for the pure parts of btrfs_controls, the btrfs scan controls of the
-Fedora gate."""
+Fedora and Arch gates."""
 
 from __future__ import annotations
 
+import contextlib
+import io
 import subprocess
 import unittest
 
@@ -130,3 +132,30 @@ class HistoryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlantTest(unittest.TestCase):
+    class Guest:
+        """A guest that records what it is asked to run."""
+
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def succeed(self, command: str) -> str:
+            self.commands.append(command)
+            return ""
+
+    def test_discard_goes_off_on_the_mount_that_holds_the_controls(self) -> None:
+        # Fedora keeps /var/tmp on its var subvolume, arch-boxes on the
+        # root: the remount names the mount findmnt finds for the folder.
+        guest = self.Guest()
+        controls = bc.Controls(guest, {"image": "arch-boxes"}, {}, "/nonexistent")
+        with contextlib.redirect_stdout(io.StringIO()):
+            controls.plant()
+        remounts = [c for c in guest.commands if "remount,nodiscard" in c]
+        self.assertEqual(len(remounts), 1)
+        self.assertIn(
+            f'mount -o remount,nodiscard "$(findmnt -no TARGET -T {bc.CONTROLS})"',
+            remounts[0],
+        )
+        self.assertNotIn("nodiscard /var ", remounts[0])
