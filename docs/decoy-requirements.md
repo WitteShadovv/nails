@@ -1,16 +1,16 @@
 # Decoy requirements: making the base system amnesic
 
 NAILS hides a session behind a decoy system by running it inside one overlay of
-the whole decoy root, entered and left with `systemctl soft-reboot`, so the
-hidden session's writes land on the hidden volume instead of the decoy disk.
+the whole decoy root, entered with `systemctl soft-reboot`, so the hidden
+session's writes land on the hidden volume instead of the decoy disk. Every
+session ends in a power-off. It never goes back to the decoy's kernel.
 That guarantee only holds if the decoy itself keeps **no durable record** of the
-hidden session. The decoy runs before the soft-reboot into the hidden session
-and again after the way back: a decoy that writes logs, audit records, crash
-dumps or swap to its own disk records the activation command, its own shutdown
-and start under one boot ID, and anything it imports from the kernel ring
-buffer.
+hidden session. The decoy runs before the soft-reboot into the hidden session,
+and it boots again from power-on after the session. A decoy that writes logs,
+audit records, crash dumps or swap to its own disk records the activation
+command and its own shutdown for the switch.
 
-The decoy also has to be one the session can enter and leave:
+The decoy also has to be one the session can enter:
 
 - **systemd 254 or newer** with `soft-reboot.target` and
   `systemd-soft-reboot.service` installed (`systemd-version`,
@@ -25,8 +25,8 @@ The decoy also has to be one the session can enter and leave:
   Any other host is shown the platforms NAILS supports.
   A later Debian or Ubuntu release runs with a warning that NAILS has not been
   tested on it (`platform`). A NixOS decoy on a nixpkgs that does not install
-  the two units needs the module `nails check` prints (and so does a hidden
-  NixOS configuration, or the session could not leave).
+  the two units needs the module `nails check` prints. NAILS asks the same of
+  a hidden NixOS configuration.
 - **Linux 6.1 or newer** (`kernel-version`). NAILS starts the programs it runs
   as root with every mount `noatime`, and makes the decoy's local disk mounts
   `noatime` while the service manager reads them, through `mount_setattr`
@@ -36,18 +36,17 @@ The decoy also has to be one the session can enter and leave:
   kernel is refused, and so is a kernel whose release `check` cannot read or
   tell the version of. The check names the running release and the floor.
 - **A decoy root on a block device** (`decoy-root`): ext4, xfs, btrfs (including
-  a subvolume) or f2fs. The way back mounts it again by device, so a tmpfs root
-  (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
-  refused.
+  a subvolume) or f2fs. A tmpfs root (impermanence), an overlay root
+  (overlayroot, bilibop-lockfs) and ZFS are refused. The way back mounted the
+  root again by device. It is gone, but the check still refuses these roots.
 - **The tools NAILS runs** (`host-tools`): `systemctl` and `loginctl`
   (systemd), `dmsetup` when the hidden volume is on device-mapper (dm-crypt,
   LUKS or a VeraCrypt mapping) or its backend cannot be read, and on NixOS
-  `nix`. The way back closes the hidden volume's mapping with `dmsetup`.
-  Without it, it would leave the mapping behind, so activation is refused while
-  one is missing; `nails check` names it and the package that provides it. The
-  network state the way back puts back (the links, MAC addresses,
-  policy-routing rules and nftables tables a session added) it asks of the
-  kernel itself, so it needs no `ip`, `nft` or `iw` on the decoy.
+  `nix`. Activation is refused while one is missing. `nails check` names it
+  and the package that provides it. The check still asks for `dmsetup`, which
+  the way back used to close the hidden volume's mapping. The power-off ends
+  the mapping along with the kernel that held it. NAILS needs no `ip`, `nft`
+  or `iw` on the decoy.
 - **SELinux labels on the hidden volume**, where the host may run SELinux:
   where the mount table (`/proc/self/mounts`) lists a selinuxfs, where it
   cannot be read while `/sys/fs/selinux` exists or `/etc/selinux/config` sets
@@ -108,16 +107,12 @@ The decoy also has to be one the session can enter and leave:
   selinuxfs is mounted, and where the host facts report SELinux while that
   list cannot be read. PID 1 starts NAILS's own steps from a copy of its
   binary in `/run`: the last step before each switch
-  (`systemd-soft-reboot.service`), the hidden session's watcher and sleep
-  guard, and after the way back the one-shot unit and the wtmpdb writer's
-  drop-in that make the decoy's login and boot records read as a power cycle.
-  Under SELinux a program PID 1 starts runs in the domain the loaded policy
+  (`systemd-soft-reboot.service`) and the hidden session's watcher and sleep
+  guard. Under SELinux a program PID 1 starts runs in the domain the loaded policy
   gives the label of its file, and a file NAILS writes in `/run` carries the
   label of the files there, which a targeted policy gives no domain of its
   own: those steps would run in PID 1's domain, `init_t`, which such a policy
-  confines, and the way back's last step could not take the kernel log's
-  cursor, so the decoy's journal would take in the hidden session's kernel
-  log. So NAILS gives every such copy the label of the system's programs,
+  confines. So NAILS gives every such copy the label of the system's programs,
   `system_u:object_r:bin_t:s0`, right after it writes it, reads it back, and
   gives the session's copy that label again right before each switch. A
   targeted policy starts a program of that label from PID 1 in
@@ -143,43 +138,24 @@ The decoy also has to be one the session can enter and leave:
     not answer, nor the labels a relabel of `/run` gives the guard's files,
     so it does not fail for a denial that comes only from those;
   - `systemd-soft-reboot.service` must not set `SELinuxContext=`, or PID 1
-    starts the step in that context: the activation is refused, and so is
-    `deactivate`, whose refusal names `deactivate --poweroff` and
-    `emergency --poweroff`. A plain emergency does not ask; its step checks
-    its own domain (last item);
+    starts the step in that context: the activation is refused;
   - a copy that does not read its label back refuses the activation, which is
-    undone. On the way back `deactivate` refuses a return where the copy does
-    not read its label back or the policy would not start the step as above,
-    and names `deactivate --poweroff`; the emergency powers off instead of
-    returning in the same cases; and the copy for the decoy's first start is
-    left out with the units that would start it, so the decoy's records read
-    as they would without that fix, and `/run` is `noexec` again at once where
-    the activation had cleared it;
+    undone;
   - a switch can take the label off again. Where PID 1 loads the policy anew
     at a switch, as on a host that runs SELinux permissive or whose policy
     lets PID 1 map its policy file (the boolean `domain_can_mmap_files` on),
     it gives every file in `/run` the label of the files there before it
     starts the units of the root it switched to, and a `restorecon` over
-    `/run` does the same at any time. So the watcher, the sleep guard, the
-    one-shot unit and the wtmpdb writer's drop-in check the domain they run
-    in when they start: one that runs outside `unconfined_service_t` gives
-    its copy the label again and starts itself again from it, once, which
-    from `init_t` gives it the domain a start by PID 1 gets. One that then
-    still runs outside it does not do its work there: the watcher and the
-    sleep guard power the machine off, the one-shot only removes NAILS's
-    pieces from `/run`, and makes it `noexec` again where the activation had
-    cleared it, leaving the records as they would be without that fix, and
-    the drop-in starts the wtmpdb writer as the decoy runs it;
+    `/run` does the same at any time. So the watcher and the sleep guard
+    check the domain they run in when they start: one that runs outside
+    `unconfined_service_t` gives its copy the label again and starts itself
+    again from it, once, which from `init_t` gives it the domain a start by
+    PID 1 gets. One that then still runs outside it powers the machine off;
   - the last step of each switch checks its domain as well, once the switch
-    is armed: a relabel after the arm, or an `SELinuxContext=` of
-    `systemd-soft-reboot.service` that the emergency does not ask about,
-    would start it elsewhere. It starts itself again from its copy in the
-    same way, and the kernel applies the context an `SELinuxContext=` asks
-    for to the step's own start only. Where it still runs outside
-    `unconfined_service_t` it does nothing of the switch and refuses it, as
-    for an init that does not resolve; on the way back it first powers the
-    machine off, and only where neither PID 1 nor the kernel takes the
-    power-off does the hidden session go on.
+    is armed: a relabel after the arm would start it elsewhere. It starts
+    itself again from its copy in the same way. Where it still runs outside
+    `unconfined_service_t` it does nothing of the switch and powers the
+    machine off.
 
   Elsewhere, as on a stock Debian, Ubuntu or NixOS host, no copy gets a label
   and no policy is asked anything: the units started from a copy only find
@@ -189,7 +165,7 @@ The decoy also has to be one the session can enter and leave:
   gate](../nix/e2e-tests/README.md#the-admission-gate-of-fedora) runs these
   steps under an enforcing policy and checks their domains (only a dispatch of
   the staged distribution tests runs it). The Fedora 44 and 45 images of the
-  [oracle](../ci/oracle/README.md) run a hidden session and the way back under a
+  [oracle](../ci/oracle/README.md) run a hidden session under a
   permissive policy, without checking the domains. The refusal scenario of the
   distribution tests runs `nails check` on Fedora's stock image, whose loaded
   policy `lsm-status` asks what PID 1's start of the labelled copy comes to.
@@ -223,8 +199,8 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 
 Override these per run with `--allow-persistent-decoy` on `activate`/`check`,
 only if you understand and
-accept that what the decoy logs around each soft-reboot may survive on the
-decoy disk, that tuned logs its stop and start around each switch there, that
+accept that what the decoy logs around the soft-reboot into the session may
+survive on the decoy disk, that tuned logs its stop for the switch there, that
 a kernel crash during the session can leave a dump of its memory there, and
 that unattended-upgrades set to install at shutdown installs the pending
 updates on the decoy disk at activation and logs that run there (see
@@ -233,11 +209,11 @@ updates on the decoy disk at activation and logs that run there (see
 
 auditd counts while it runs, as a unit or a process, and also while its unit
 is enabled although it does not run, since the service manager starts it again
-when the decoy starts after the way back, and while a timer, path or socket
+when it next starts the decoy's units, and while a timer, path or socket
 unit that is enabled or active starts it, which can start it then too: the
 refusal names that unit. Such an auditd does not count
 where the manager cannot start it: where its unit is masked in any unit
-directory (`systemctl mask --runtime` masks it in `/run`, which the way back
+directory (`systemctl mask --runtime` masks it in `/run`, which a soft-reboot
 keeps), where no unit file is left, or where a `ConditionKernelCommandLine=`
 of its unit fails on the kernel's command line, which a soft-reboot keeps:
 every audit package NAILS knows ships `!audit=0` and `!audit=off` there, so a
@@ -319,9 +295,9 @@ changed, and the SELinux context of the `nails` process from
   with every permission the change of domain needs, or that cannot be asked
   through selinuxfs: then nothing shows that the processes systemd starts from
   it (the transition step at each switch, the watcher and the sleep guard of
-  the hidden session, and the boot-record steps after the way back) run
-  unconfined. Where the copies take no label, NAILS chooses no domain for
-  those processes, and the check refuses every host where SELinux runs;
+  the hidden session) run unconfined. Where the copies take no label, NAILS
+  chooses no domain for those processes, and the check refuses every host
+  where SELinux runs;
 - where `[session_mounts] read_only` is on, a disk guard that could not do its
   work. udevd starts it from the same copy, in udevd's own domain, `udev_t`
   under a targeted policy, which that policy confines. The check asks the
@@ -417,7 +393,7 @@ drop-in directory it may not list or that lies behind an automount point that
 nothing is mounted on yet, as persistent whatever release runs, and names the
 entry: journald reads these files when it starts,
 and an update can bring 260 before it next does, at the latest when the decoy
-starts again after the way back. To mask a vendor
+next boots. To mask a vendor
 drop-in, put an empty file of its name in `/etc/systemd/journald.conf.d/`. The
 same goes for logind's and systemd-coredump's configuration: `sleep-policy`
 then warns that the host may suspend an active session, and
@@ -470,8 +446,8 @@ volatile can count as persistent. Run them with sudo.
   `apport.service` runs or not; mask it
   (`sudo systemctl mask apport-coredump-hook@.service`). An `apport.service`
   that is stopped but still enabled warns as well, while the pattern does not
-  name apport: it sets the pattern to its pipe again when the decoy starts
-  after the way back. So does a pattern that a `sysctl.d` file sets, which
+  name apport: it sets the pattern to its pipe again when the decoy next
+  starts it. So does a pattern that a `sysctl.d` file sets, which
   systemd-sysctl applies again then, where it differs from the pattern in
   force now. An armed kdump, which reaches past the session entirely, is
   refused (see above).
@@ -500,18 +476,21 @@ volatile can count as persistent. Run them with sudo.
   of unattended-upgrades' shutdown helper set to install at shutdown: the
   decoy's helper is stopped while the decoy or the session's overlay enables
   it and nothing masks it as the session sees it, so the session starts it,
-  or the session's overlay turns the setting on. At the way back it installs
-  the pending updates into the session's overlay on the hidden volume. It
-  warns too where NAILS cannot tell what the session reads, as for a link
+  or the session's overlay turns the setting on. When the session is shut down
+  through logind (the desktop's power-off, or `systemctl poweroff`), it
+  installs the pending updates into the session's overlay on the hidden
+  volume. `nails deactivate` and `emergency` send no such signal. It warns
+  too where NAILS cannot tell what the session reads, as for a link
   among apt's files; see [Unattended upgrades](#unattended-upgrades).
 - **unattended-upgrades without python3-gi** — the decoy's shutdown helper
   enabled while python3-gi is missing: each time it starts it writes two
-  WARNING lines to its log on the decoy disk, so every way back adds a pair
-  dated at the switch (`apt install python3-gi`); see
+  WARNING lines to its log on the decoy disk (`apt install python3-gi`). The
+  way back added a pair dated at the switch. A session now ends in a
+  power-off, so the pairs carry the decoy's own boots. See
   [Unattended upgrades](#unattended-upgrades).
 - **firewalld logging to a file** — firewalld's default log target appends its
   warnings and errors to `/var/log/firewalld`, so what it logs when it stops
-  or starts around a switch stays on the decoy disk with the time; see
+  for the switch stays on the decoy disk with the time; see
   [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt).
 - **ABRT** — ABRT in use on the decoy keeps crash reports in
   `/var/spool/abrt`; see [tuned, firewalld and ABRT](#tuned-firewalld-and-abrt).
@@ -604,8 +583,8 @@ probe boots has none of them.
   `--allow-persistent-decoy` turns that into a warning for one run. tuned
   started with its log option, `-l` (`--log`), or with `-d`, writes its log to
   `/var/log/tuned/tuned.log`, or to the file the option names: it logs when it
-  stops for the switch and when it starts again after the way back, each line
-  with the time, so the decoy disk keeps both times. Fedora's `tuned.service`
+  stops for the switch, with the time, so the decoy disk keeps the time of the
+  switch. Fedora's `tuned.service`
   runs `/usr/sbin/tuned -l -P`. tuned-ppd, which serves the power profiles of
   desktops through tuned, writes its log with `-l` to
   `/var/log/tuned/tuned-ppd.log`, and Fedora's `tuned-ppd.service` passes it:
@@ -719,7 +698,7 @@ leaves, without following them, and from the kernel command line. Of the
 `SystemdOptions` EFI variable it reads only the copy the service manager made
 under `/run/systemd/efivars` when it last started, so a `systemd.wants=` that
 `bootctl systemd-efi-options` adds to the variable later is missed, though on
-systemd 255 to 257, booted by UEFI without Secure Boot, the way back reads the
+systemd 255 to 257, booted by UEFI without Secure Boot, a soft-reboot reads the
 variable again and starts that unit. A unit whose link or marker NAILS cannot
 look up, as an unprivileged `nails check` cannot in a directory only root may
 look into, counts as one that starts, wherever its commands would make the
@@ -1007,16 +986,15 @@ logind.
 
 - **Ubuntu 24.04 or 26.04** (systemd 255+). A later release runs with a
   warning that NAILS has not been tested on it. `overlayroot` is not supported:
-  an overlay root cannot be mounted again for the way back.
-- **Ubuntu 26.04: reboot fully after a session.** In the hidden session chrony
-  (time sync) and CUPS (printing) fail: AppArmor blocks their messages to
+  `decoy-root` refuses an overlay root.
+- **Ubuntu 26.04: chrony and CUPS fail in the hidden session.** chrony (time
+  sync) and CUPS (printing) fail there: AppArmor blocks their messages to
   systemd and to the journal, whose sockets were set up before the switch, so
-  the clock is not synchronized and printing times out. After the way back the
-  decoy lists chrony as failed until its next full reboot, which hints that a
-  soft-reboot happened. A plain `systemctl soft-reboot` into another root,
-  without NAILS, breaks chrony the same way. The distribution tests boot Ubuntu
-  26.04 and expect chrony to fail in the hidden session and after the way back,
-  so they show when a newer image fixes it. Their image has no CUPS, so the
+  the clock is not synchronized and printing times out. The session ends in a
+  power-off, and the decoy boots afresh with both working. A plain
+  `systemctl soft-reboot` into another root, without NAILS, breaks chrony the
+  same way. The distribution tests boot Ubuntu 26.04 and expect chrony to fail
+  in the hidden session, so they show when a newer image fixes it. Their image has no CUPS, so the
   printing half rests on a check by hand. They also require the warning that
   `nails check` gives on 26.04 to name chrony and CUPS until each is shown
   fixed.
@@ -1035,7 +1013,7 @@ logind.
   and `decoy-persistence` refuses it (see
   [Unattended upgrades](#unattended-upgrades)). Where the helper is enabled,
   install python3-gi (`apt install python3-gi`), without which it writes two
-  lines to its log on the decoy disk at every way back.
+  lines to its log on the decoy disk each time it starts.
 - Turn apport off (`sudo systemctl disable --now apport.service`), which sets
   `kernel.core_pattern` back to `core`: Ubuntu's images run it, and it logs the
   path and the command line of each crashing program to `/var/log/apport.log`
@@ -1057,7 +1035,7 @@ logind.
 
 - **Debian 13** (systemd 257+). A later release runs with a warning that NAILS
   has not been tested on it. `bilibop-lockfs` and other RAM-overlay roots are
-  not supported: the way back mounts the decoy root by device.
+  not supported: `decoy-root` refuses a root that is not on a block device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
@@ -1070,7 +1048,7 @@ logind.
   and `decoy-persistence` refuses it (see
   [Unattended upgrades](#unattended-upgrades)). Where the helper is enabled,
   install python3-gi (`apt install python3-gi`), without which it writes two
-  lines to its log on the decoy disk at every way back.
+  lines to its log on the decoy disk each time it starts.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
@@ -1097,66 +1075,25 @@ with the decoy, which would itself be a tell.
 
 ### What the decoy journal keeps
 
-The decoy journal logs the window around each soft-reboot: the sudo line of the
-activation, the hidden build's progress and the decoy's own shutdown before the
-switch, and its start after the way back, all under one boot ID. Where those
-records end up depends on the journal:
+The decoy journal logs the window before the soft-reboot into the session: the
+sudo line of the activation, the hidden build's progress and the decoy's own
+shutdown for the switch. The session ends in a power-off, so the decoy never
+starts again on that kernel. It next starts from power-on, as a new boot with
+a new boot ID. Where the records of the window end up depends on the journal:
 
 - **Persistent** (allowed with `--allow-persistent-decoy`): they are on the
-  decoy disk and stay there, with a gap where the hidden session ran.
+  decoy disk and stay there. That boot ends with the shutdown for a
+  soft-reboot, not with a power-off.
 - **Volatile** (the amnesic setup): they are in RAM, in the runtime journal
   below `/run/log/journal`, which the hidden session's journald writes to as
-  well. The way back deletes that journal whole, the decoy's own records from
-  before the session included, so the decoy journal starts at the return: it
-  holds neither the activation nor anything the decoy logged earlier, nor any
-  of the kernel's boot messages, because the kernel-message cursor that keeps
-  the hidden session's kernel records out is set past them too. `uptime` and
-  `dmesg` still go back to the boot, so until the machine is powered off,
-  anyone with a shell can see that the journal starts long after the boot.
-  Power off after the session.
+  well. The power-off ends that journal with the rest of RAM, and the next
+  boot's journal starts empty, as after any power cycle. RAM keeps data for a
+  while after the power-off, so leave the machine off for a few minutes.
 
-Either way the way back keeps what the hidden root sent journald's sockets
-out of the decoy journal. A soft-reboot keeps those sockets open, so what the
-hidden root sends journald after its own journald stopped (its last audit
-records, the stops of its last units, and the lines its last units log through
-`/dev/log`, their standard output or the native socket) would wait there for
-the decoy's journald. The way back drops journald's store of
-standard-output streams and empties journald's sockets in place: through PID
-1's own descriptors of them, it reads and drops every datagram waiting in the
-native and `/dev/log` sockets, every connection waiting on the stream socket
-and every record waiting in the audit socket. The sockets stay the ones PID 1
-carried into the session, with their labels and their units' start times, as
-a plain soft-reboot keeps them. It also stops the socket of a journald
-namespace the session started, and starts journald's socket or its `/dev/log`
-socket again where the decoy had it listening as the session began and PID 1
-has closed it since: with systemd before 258, PID 1 fails a journald socket
-that receives anything once journald has stopped for a soft-reboot, which
-drops what it held. A socket started again so is a new one, whose file below
-`/run/systemd/journal` and whose unit's start time date from the way back,
-and the decoy's start opens anew one the decoy's own shutdown had closed at
-the entry, as the hidden start after the entry did. A process the soft-reboot
-leaves running (a root storage daemon) loses its standard output to the
-journal. Where the kernel does not give the way back PID 1's descriptors, the
-sockets keep what they hold, and nothing says so.
-Where systemd is 258 or newer, the tests plant a unit that logs through each
-of those sockets after the hidden journald stopped, find none of its lines in
-the decoy journal, and find no line of the decoy's start that opens one of
-journald's sockets where the hidden start after the entry did not open it as
-well: `decoy-journal-leak` on NixOS, the distribution smoke on Ubuntu 26.04
-and the Fedora admission gate, which also finds journald's sockets, their
-labels and their units' start times after each way back as they were at the
-cold boot. With systemd before 258 (Debian 13,
-Ubuntu 24.04) PID 1 itself fails journald's sockets at the first datagram after
-journald stops, which drops what they hold, so there the smoke's plant does not
-show the way back's emptying. The way back also
-ends the session's processes that PID 1 would otherwise name as it switches,
-but leaves udevd running for the events its network restore causes (where
-the soft-reboot leaves udevd running, as with systemd 257 and 255 on Debian 13
-and Ubuntu 24.04, PID 1 then ends udevd and its workers after the cursor with
-the generic lines a plain soft-reboot logs), and writes the kernel-message
-cursor; what the kernel and PID 1 still log
-after the cursor, which the decoy journal takes in, is listed in the residue
-catalog's `kmsg-import` row below.
+The hidden session's kernel log and what the hidden root sent journald's
+sockets end with the power-off too. The way back had to keep them out of the
+decoy journal with a kernel-message cursor and by emptying journald's sockets.
+None of that runs now.
 
 ## Shell history hardening
 
@@ -1386,9 +1323,9 @@ its `.wants` or `.requires` directory outside the fstab (a NixOS
 an fstab line with the same source, type and options would get, and the ESP
 the GPT auto-generator mounted in the decoy is bound read-only into the hidden
 root. zram-generator does not run in the hidden session, which runs without
-its zram swap; after the way back the decoy's start sets its zram swap up
-again. Any other zram swap unit is left to the hidden systemd as RAM-only swap
-while its zram device has no backing device, and kept off like disk swap when
+its zram swap. The decoy's next boot sets its zram swap up again. Any other
+zram swap unit is left to the hidden systemd as RAM-only swap while its zram
+device has no backing device, and kept off like disk swap when
 it has one (see
 [What the session covers](configuration.md#what-the-session-covers)).
 
@@ -1400,7 +1337,8 @@ as the hidden systemd does for such a unit at its start, and then writes to it
 directly. The session watcher alerts on every such read-write mount, one below
 the hidden root included, and `[session_mounts] read_only` makes every disk the
 session does not use read-only for the session, including disks attached during
-it; `nails deactivate` unmounts them before the way back (see
+it; the power-off at the session's end unmounts them with every other
+filesystem (see
 [Disks mounted during the session](configuration.md#disks-mounted-during-the-session)).
 None of that holds for a disk mounted below `<hidden-root>/root`, where NAILS
 keeps its layers and every mount counts as the session's own: mount nothing
@@ -1433,15 +1371,15 @@ A soft-reboot starts the service manager again, and its generators run in the
 new root as at a boot. A link the hidden root shows would turn the start of the
 hidden session into the update: the decoy's updater would install it into the
 upper on the hidden volume and then reboot or power off the machine, so the
-session ends without its way back. That run deletes the link only in the upper,
+session ends there. That run deletes the link only in the upper,
 so the decoy keeps its own and installs the update itself at its next boot.
 
 So activation is refused while a link is staged (`pending-offline-update`),
 on the decoy or in the root overlay's upper. A dangling link counts; a link a
 session deleted (a whiteout in the upper) does not. Install or cancel a pending
 update on the decoy before you activate. A link a hidden session staged stays
-in the upper: the way back is a soft-reboot into the decoy root, which does not
-show the upper, so the decoy starts as usual, and the next activation is
+in the upper. The decoy boots from its own root after the session and does
+not see the upper, so it starts as usual, and the next activation is
 refused until `nails discard` deletes the link, as the refusal says.
 
 The check runs before activation prepares the hidden root, so it does not see
@@ -1456,9 +1394,10 @@ activation, which can take minutes.
 
 unattended-upgrades (Debian, Ubuntu) runs a shutdown helper,
 `unattended-upgrades.service`, that waits for logind's shutdown signal.
-Activation sends that signal, as `systemctl soft-reboot` does, and so does the
-way back with `nails deactivate`; `deactivate --poweroff` and `emergency` ask
-PID 1 directly and send none. The helper does not ask what kind of shutdown
+Activation sends that signal, as `systemctl soft-reboot` does, and so does any
+shutdown of the hidden session through logind (the desktop's power-off, or
+`systemctl poweroff`). `nails deactivate` and `emergency` ask PID 1 directly
+for the power-off and send none. The helper does not ask what kind of shutdown
 comes. At activation two things then reach the decoy disk.
 
 **A daily run in progress.** When the signal comes while a run of
@@ -1508,9 +1447,9 @@ of the pending updates its settings allow: at activation on the decoy disk,
 the overlays already mounted on it, and it logs that run there. With
 python3-gi installed the helper holds the switch back while the install runs;
 without it the helper polls for the signal and exits right after it starts the
-install, which then runs on into the switch. At the way back with
-`nails deactivate` the hidden session's own copy of the helper installs them
-into the session's overlay. `decoy-persistence` refuses while the decoy's
+install, which then runs on into the switch. When the hidden session is shut
+down through logind, the session's own copy of the helper installs them into
+the session's overlay. `decoy-persistence` refuses while the decoy's
 helper runs with the setting on, and where NAILS cannot tell whether it runs,
 and `--allow-persistent-decoy` turns that into a warning for one run. It
 reads the setting as apt reads it: first the
@@ -1606,9 +1545,9 @@ Without python3-gi, which unattended-upgrades only suggests and Debian 13's
 cloud image does not install, the helper cannot wait for logind's signal: each
 time it starts, it writes two WARNING lines to its log on the decoy disk,
 `Unable to monitor PrepareForShutdown() signal, polling instead.` and that
-python3-gi would let it wait. The decoy starts its enabled helper again at
-every way back, so each way back adds a pair, dated at the switch.
-`decoy-persistence` warns while the decoy's helper is enabled and
+python3-gi would let it wait. The way back started the decoy's helper again
+and added a pair dated at the switch. A session now ends in a power-off, so a
+pair carries only a boot of the decoy. `decoy-persistence` still warns while the decoy's helper is enabled and
 `/usr/lib/python3/dist-packages/gi/__init__.py`, which python3-gi installs, is
 missing: install it (`apt install python3-gi`). Where NAILS cannot tell whether
 the helper is enabled, or whether that file is there, it warns that it cannot
@@ -1628,10 +1567,10 @@ turns the setting on. A link among apt's files, or on the way to them,
 resolves in the session through the overlay, which NAILS does not follow, so
 it warns that it cannot tell. Where apt refuses a file the session reads, the
 warning says what the session's copy does: it starts with the file refused, so
-it logs to the session's journal for its whole run, and at the way back it
-installs nothing while apt still refuses the file, but a session that fixes
-the file has it read the setting again then. Set the setting to `false`, or
-end the session with `nails deactivate --poweroff`.
+it logs to the session's journal for its whole run, and at a shutdown through
+logind it installs nothing while apt still refuses the file, but a session
+that fixes the file has it read the setting again then. Set the setting to
+`false`, or end the session with `nails deactivate`, which sends no signal.
 
 As for kdump, the window's launcher stays usable with the setting on, and
 `nails status` does not call the decoy persistent for it. Like kdump it has a
@@ -1648,7 +1587,7 @@ run as root finds nothing. Run it with sudo.
 The distribution test `<image>-apt-shutdown` shows these on Debian 13, Ubuntu
 24.04 and Ubuntu 26.04: on the stock decoy both rows pass, with the setting
 off as `apt-config` reads it too, but Debian 13, which has no python3-gi,
-warns of the helper's lines, which its way back then writes; a daily run held
+warns of the helper's lines; a daily run held
 with its lock taken makes `check` and `activate` refuse and leaves no line on
 the decoy disk, while a plain `systemctl soft-reboot` during the same run
 writes the helper's line there; so does `apt-daily.service` held before its
@@ -1658,9 +1597,9 @@ the race; with the setting on, as `apt-config` reads it, `check` and
 `activate` refuse and `status --json` says so, and with
 `--allow-persistent-decoy` the decoy's helper logs its shutdown-mode run at
 the switch; with the decoy's helper stopped but enabled, `check` only warns
-and the session's copy logs its shutdown-mode run into the upper at the way
-back; with the line deleted after the helper started, `apt-config` reads the
-setting off but `check` refuses, and with the override the helper logs its
+and the session's copy logs its shutdown-mode run into the upper when the
+session is shut down through logind; with the line deleted after the helper
+started, `apt-config` reads the setting off but `check` refuses, and with the override the helper logs its
 shutdown-mode run all the same; and with a file apt refuses while the helper
 holds the setting on, `check` refuses and `status --json` says so, with the
 override the helper logs its two ERROR lines on the decoy disk and no
@@ -1676,8 +1615,8 @@ as the decoy's do, and nothing NAILS does on this computer reaches those
 records. sssd also keeps caches of the domain's accounts and credentials under
 `/var/lib/sss` and logs under `/var/log/sssd`. In the hidden session these
 writes land in the upper on the hidden volume. The decoy's own sssd, stopped
-before the switch and started again after the way back, logs both under
-`/var/log/sssd` on the decoy disk by default, as at any shutdown and boot.
+before the switch, logs that stop under `/var/log/sssd` on the decoy disk by
+default, as at any shutdown.
 
 NAILS is not tested on decoys joined to a domain, and no VM test runs a domain
 controller. `nails check` and activation warn (`decoy-persistence`) while sssd
@@ -1773,8 +1712,7 @@ updatedb, the indexer behind `locate` (plocate, mlocate, and NixOS's
 finds into the locate database on the decoy disk:
 `/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`, or
 `/var/cache/locatedb` on NixOS. A run while the hidden volume is mounted on the
-decoy, before activation or after the way back, writes every name on the
-volume there, where `locate` lists it. plocate's and NixOS's timers run daily
+decoy, before activation for one, writes every name on the volume there, where `locate` lists it. plocate's and NixOS's timers run daily
 with `Persistent=true`, which catches a missed run up right after boot, when
 the volume is unlocked for a session. Fedora installs and enables plocate by
 default. The default `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora 44 and
@@ -1823,7 +1761,7 @@ What it reads:
   transient one may stay a while after it stops); and when it is enabled
   itself: an entry for it in a `.wants`, `.requires` or `.upholds` directory,
   as `systemctl enable` and `systemctl add-wants` make. Such a service runs
-  again at the soft-reboot back to the decoy. Where NAILS cannot ask the system
+  again at the decoy's next boot. Where NAILS cannot ask the system
   manager, a transient trigger whose file is there counts, and one that is not
   enabled may run all the same, which warns. Units are read from every
   directory systemd loads them from (`/etc/systemd/system.control`,
@@ -2040,7 +1978,7 @@ The distribution test `debian-13-nix-trace` shows both sides on Debian 13. It
 installs Nix in a hidden session with Nix's multi-user installer, from the
 contents of a release tarball that it builds as Nix builds its own, and uses it
 to write to the store, through a build as a build user among other ways. After
-the way back the check reports what it reported before the session, and an
+the session the check reports what it reported before the session, and an
 image of the decoy's disk shows none of the marks the test looks for: the
 session's store writes, the installer's files, the names of the store paths it
 copies and three of the lines it writes. Installed the same way on the decoy,
