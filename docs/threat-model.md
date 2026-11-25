@@ -786,6 +786,29 @@ That full configuration was evaluated manually, once. The automated E2E
 disk-image checks cover NixOS VMs with a **LUKS2/ext4** hidden backend and, in
 the VeraCrypt backend test, a **VeraCrypt hidden volume** opened with
 `cryptsetup`, plus the Debian 13, Ubuntu 24.04 and Ubuntu 26.04 smoke runs.
+On the Cloud edition of Fedora 44 and 45, whose root is btrfs compressed with
+zstd, booted with SELinux enforcing in virtual machines, three checks read the
+decoy disk:
+
+- the smoke run's disk-image check, which besides the raw scan for both
+  sessions' canaries and the rehearsal's token reads the decoy root's files
+  through the decoy's kernel from a read-only bind of `/`, `/home` and `/var`,
+  decompresses every zstd frame on the root's partition, and reads the older
+  roots `btrfs-find-root` lists at the canary paths and the rehearsal's
+  files, with planted controls showing what each read sees; a root compressed
+  with another algorithm fails the run, since the carve reads zstd frames
+  only;
+- the admission gate's comparison, read live through the decoy's kernel and
+  not from a disk image: after each way back, every file and folder on the
+  decoy's disk mounts whose contents or inode changed since right before the
+  entry must be one a plain soft-reboot also changes or one a run of the
+  decoy's own timer after the switch changes;
+- the nightly oracle, which images the whole disk powered off before, after
+  two plain reboots and after one session of the release binary and its way
+  back, and runs bulk_extractor and the restore carve over those images; it
+  does not see what a compressed extent keeps outside the live tree
+  ([ci/oracle/README.md](../ci/oracle/README.md)).
+
 Other backends and filesystems, and physical hardware (time to the greeter, GPU
 and Wi-Fi after the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
 [backends.md](backends.md) for the per-backend status. Claims outside this scope

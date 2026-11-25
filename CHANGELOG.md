@@ -2834,7 +2834,7 @@ of this changelog for that version becomes the release notes word for word, and
   NAILS' own follows still gets a new access time, as do the files of the overlay module's first
   load, what `sudo`, `doas` or `pkexec` reads to start NAILS, and what an unprivileged `check` reads
   (What `check` touches in docs/operator-guide.md). The new access-time scenario of the
-  distribution tests ages a Debian 13 decoy disk, and a Fedora 44 one, and fails
+  distribution tests ages a Debian 13 decoy disk, a Fedora 44 one and a Fedora 45 one, and fails
   on any other read by `check`, an activation or a way back, for an operator account, that a plain
   soft-reboot does not make, though it may not see a read of `/etc/selinux/config`, which it does
   not age.
