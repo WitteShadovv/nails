@@ -182,6 +182,115 @@ class Ranges(unittest.TestCase):
         )
 
 
+WRITERS = [
+    "sectors 0-7: the whole disk, ext4 blocks 0-0: superblock of group 0",
+    "sectors 8-31: disk.raw2, ext4 blocks 1-3: group descriptors of group 0",
+    "sectors 100: disk.raw2, ext4 blocks 12-12: data of inode 8 (the journal); "
+    "data of inode 12 (no name); data of inode 393227 (//var/lib/systemd/random-seed)",
+    "sectors 200: disk.raw2, ext4 blocks 25-25 (first blocks): inode table slots "
+    "1-16, in use: 2 /; 11 lost+found; free blocks [7]",
+    "sectors 16384: disk.raw1, not ext4 (bad magic): writer not told",
+    "sectors 1: outside every partition",
+    "could not tell the writers: boom",
+]
+
+
+class Verdicts(unittest.TestCase):
+    def test_the_writers_are_compared_by_file_and_metadata_class(self) -> None:
+        self.assertEqual(
+            blockwrites.items_of(WRITERS),
+            {
+                "the whole disk: superblock",
+                "disk.raw2: group descriptors",
+                "disk.raw2: journal",
+                "disk.raw2: an unlinked inode",
+                "disk.raw2: /var/lib/systemd/random-seed",
+                "disk.raw2: inode table",
+                "disk.raw2: free blocks",
+                "disk.raw1: not ext4",
+                "outside every partition",
+                "unattributed",
+            },
+        )
+
+    def finding(self, phase: str, writers: list[str]) -> blockwrites.Finding:
+        return blockwrites.Finding(
+            "activate", phase, "drive1", True, [(0, 512)], writers
+        )
+
+    def test_the_switch_phase_must_be_a_part_of_the_control(self) -> None:
+        machine, oracle = installed()
+        oracle.findings.append(self.finding(blockwrites.SWITCH, WRITERS[:2]))
+        switch, session = oracle.verdict()
+        self.assertIn("no plain soft-reboot", switch[0])
+        oracle.controls["drive1"] = blockwrites.items_of(WRITERS[:3])
+        self.assertEqual(oracle.verdict(), ([], []))
+        oracle.findings.append(self.finding(blockwrites.SWITCH, WRITERS[4:5]))
+        switch, session = oracle.verdict()
+        self.assertIn("disk.raw1: not ext4", switch[0])
+        oracle.raise_on_findings()
+        with (
+            mock.patch.object(blockwrites, "SWITCH_VERDICT", blockwrites.STRICT),
+            self.assertRaises(AssertionError),
+        ):
+            oracle.raise_on_findings()
+        with mock.patch.object(blockwrites, "SESSION_VERDICT", blockwrites.STRICT):
+            oracle.raise_on_findings()  # the session phase holds
+
+    def test_any_session_phase_write_breaks_the_session_verdict(self) -> None:
+        machine, oracle = installed()
+        oracle.findings.append(self.finding(blockwrites.SESSION, WRITERS[:1]))
+        self.assertEqual(len(oracle.verdict()[1]), 1)
+
+    def test_an_oracle_error_fails_only_where_a_verdict_is_strict(self) -> None:
+        machine, oracle = installed()
+        oracle.errors.append("boom")
+        oracle.raise_on_findings()
+        with (
+            mock.patch.object(blockwrites, "SESSION_VERDICT", blockwrites.STRICT),
+            self.assertRaises(AssertionError),
+        ):
+            oracle.raise_on_findings()
+
+    def test_a_plain_soft_reboot_is_measured_as_the_control(self) -> None:
+        machine, oracle = installed()
+        qmp = machine.qmp_client
+        self.assertTrue(blockwrites.before_switch(machine, "soft-reboot", control=True))
+        cut = blockwrites.at_hold(machine, opened_here=True)
+        qmp.counts[("#block100", "bw1")] = 512
+        qmp.counts[("#block100", "bw2")] = 1 << 20
+        mapped = json.dumps([{"start": 0, "length": 512, "data": False}])
+        outputs = iter([mapped, ""])
+        with (
+            mock.patch.object(blockwrites, "_run", side_effect=lambda a: next(outputs)),
+            mock.patch.object(blockwrites, "describe", return_value=WRITERS[2:3]),
+        ):
+            blockwrites.after_switch(
+                machine, "soft-reboot", True, cut, cut, hidden=False
+            )
+        self.assertFalse(blockwrites.watching(machine))
+        self.assertEqual(oracle.findings, [])
+        self.assertIn("disk.raw2: journal", oracle.controls["drive1"])
+        self.assertFalse(blockwrites.needs_control(oracle))
+
+    def test_a_control_without_a_cut_is_noted_and_one_that_enters_is_an_error(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "soft-reboot", control=True)
+        blockwrites.after_switch(machine, "soft-reboot", True, None, None, hidden=False)
+        self.assertTrue(oracle.uncut_control)
+        blockwrites.before_switch(machine, "x", control=True)
+        blockwrites.after_switch(machine, "x", True, None, None, hidden=True)
+        self.assertIn("landed in the hidden root", oracle.errors[0])
+
+    def test_a_session_whose_switch_wrote_needs_a_control(self) -> None:
+        machine, oracle = installed()
+        self.assertFalse(blockwrites.needs_control(oracle))
+        oracle.findings.append(self.finding(blockwrites.SWITCH, WRITERS[:1]))
+        self.assertTrue(blockwrites.needs_control(oracle))
+
+
 class Threads(unittest.TestCase):
     def test_the_watch_thread_finishes_a_paused_power_off(self) -> None:
         machine = FakeMachine()
@@ -356,7 +465,12 @@ class Windows(unittest.TestCase):
             [(f.drive, f.decoy) for f in oracle.findings if not f.decoy],
             [("drive2", False)],
         )
-        with self.assertRaises(AssertionError) as raised:
+        oracle.raise_on_findings()  # the report mode fails no test
+        self.assertIn("sectors 16", " ".join(machine.logged))
+        with (
+            mock.patch.object(blockwrites, "SESSION_VERDICT", blockwrites.STRICT),
+            self.assertRaises(AssertionError) as raised,
+        ):
             oracle.raise_on_findings()
         self.assertIn("sectors 16", str(raised.exception))
         self.assertNotIn(
@@ -418,9 +532,12 @@ class Windows(unittest.TestCase):
         mapped = json.dumps([{"start": 0, "length": 512, "data": False}])
         with (
             mock.patch.object(blockwrites, "_run", return_value=mapped),
+            mock.patch.object(blockwrites, "_control") as control,
+            mock.patch.object(blockwrites, "SWITCH_VERDICT", blockwrites.STRICT),
             self.assertRaises(AssertionError),
         ):
             blockwrites.finish([machine])
+        control.assert_called_once()
 
     def test_a_restarted_qemu_is_an_oracle_error(self) -> None:
         machine, oracle = installed()

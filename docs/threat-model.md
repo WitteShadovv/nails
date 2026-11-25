@@ -742,6 +742,31 @@ soft-reboot row of the residual table above). Only a session ended with
 `deactivate --poweroff` (or `emergency --poweroff`), which has no way back,
 leaves none of this to chance.
 
+**Writes to the decoy disk during a session: measured, not fenced yet.**
+
+The VM tests count every write to the decoy disk from the host (the block-write
+oracle, see `nix/e2e-tests/README.md`). On NixOS, Debian 13 and Ubuntu 24.04 and
+26.04 three kinds of write remain after the switch into the hidden root:
+
+1. A power-off from inside the session (the way back powering off, the sleep
+   guard's `teardown`, an emergency or the window's power-off, the switch-timeout
+   guard, the write tripwire) writes the decoy root's ext4 superblock and one
+   journal block. The decoy root stays mounted read-write below the overlay, and
+   the final shutdown unmounts it, so the superblock's write time dates the
+   session's end.
+2. What the decoy wrote just before the switch reaches the disk after it (its
+   persistent journal where it keeps one, the ext4 journal): the switch does not
+   flush the decoy root. The write tripwire's own step flushes it.
+3. In `session-decoy-mount-table`, whose ESP is behind an automount, the first
+   sector of the ESP: most likely vfat's clean mark in its boot sector, written
+   when the last read-write mount of the ESP (kept by the session's read-only
+   bind) ends during the way back. Not confirmed.
+
+The switch itself writes what the decoy's own stop jobs write at any
+soft-reboot (`random-seed`, `wtmp`, DHCP leases, logs), stamped with the
+activation's time. None of these is fixed: the decoy disk read-only in the
+kernel for the session, after a flush, is the planned answer.
+
 ## Evaluation scope
 
 The forensic claims rest on this configuration:

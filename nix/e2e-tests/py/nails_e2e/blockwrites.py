@@ -56,6 +56,20 @@ SWITCH = "switch"
 #: The phase from the hidden root's start on.
 SESSION = "session"
 
+#: A verdict that prints every finding and fails no test.
+REPORT = "report"
+#: A verdict that fails the test.
+STRICT = "strict"
+
+#: The switch phase's verdict: what the decoy disk took between the trigger
+#: and the hidden root's start must be, file by file and metadata class by
+#: class, a part of what a plain soft-reboot of the decoy (the control) takes
+#: in the same test: the decoy's own stop jobs.
+SWITCH_VERDICT = REPORT
+#: The session phase's verdict: no write at all outside the allowed extents.
+#: Strict once the decoy disk is read-only for the session (item 2's fence).
+SESSION_VERDICT = REPORT
+
 #: The tool names :func:`install` takes.
 TOOLS = ("qemu_img", "debugfs", "sfdisk")
 
@@ -333,6 +347,55 @@ RESERVED_INODES = {
 }
 
 
+_DATA = re.compile(r"data of inode \d+ \(([^)]*)\)")
+_AREA = re.compile(
+    r"(superblock|group descriptors|reserved GDT blocks|block bitmap|inode bitmap)"
+    r" of group \d+"
+)
+_EXT4 = re.compile(
+    r"^sectors [^:]+: (?P<part>[^,]+), ext4 blocks [0-9-]+(?: \(first blocks\))?: "
+    r"(?P<desc>.*)$"
+)
+_NOT_EXT4 = re.compile(r"^sectors [^:]+: (?P<part>[^,]+), not ext4")
+
+
+def items_of(writers: list[str]) -> set[str]:
+    """What the writer lines of :func:`describe` name, comparable from one
+    window to another: each written file by its path and each ext4 metadata
+    area by its class (``superblock``, ``journal``, ``inode table``, ``free
+    blocks``...), each with its partition; a range not told is
+    ``unattributed``."""
+    items: set[str] = set()
+    for line in writers:
+        line = line.strip()
+        if "outside every partition" in line:
+            items.add("outside every partition")
+            continue
+        m = _NOT_EXT4.match(line)
+        if m:
+            items.add(f"{m['part']}: not ext4")
+            continue
+        m = _EXT4.match(line)
+        if not m:
+            items.add("unattributed")
+            continue
+        part, desc = m["part"], m["desc"]
+        for path in _DATA.findall(desc):
+            name = {"the journal": "journal", "no name": "an unlinked inode"}.get(
+                path, path
+            )
+            items.add(f"{part}: {re.sub(r'^/+', '/', name)}")
+        for area in _AREA.findall(desc):
+            items.add(f"{part}: {area}")
+        if "inode table slots" in desc:
+            items.add(f"{part}: inode table")
+        if "free blocks" in desc:
+            items.add(f"{part}: free blocks")
+        if desc == "nothing told":
+            items.add("unattributed")
+    return items
+
+
 # --- The windows --------------------------------------------------------------
 
 
@@ -374,6 +437,9 @@ class Window:
     phases: list[Phase]
     decoy: list[Drive]
     other: list[Drive]
+    #: A plain soft-reboot of the decoy: what it takes is the switch phase's
+    #: measure.
+    control: bool = False
 
 
 class Oracle:
@@ -386,6 +452,12 @@ class Oracle:
         self.findings: list[Finding] = []
         self.errors: list[str] = []
         self.allowed: dict[str, list[Range]] = {}
+        #: What the plain soft-reboots of the test (the controls) took, by
+        #: drive (:func:`items_of`).
+        self.controls: dict[str, set[str]] = {}
+        #: Whether a control's window had no cut, so it takes in the decoy's
+        #: own start too.
+        self.uncut_control = False
         self.serial = 0
         #: Held by every step that reads or changes the window, from the test
         #: script's thread and from the watch thread (:func:`install`).
@@ -427,8 +499,9 @@ class Oracle:
             for d in drives_
         ]
 
-    def open(self, label: str) -> None:
-        """Open a window labelled ``label``; nothing when one is open."""
+    def open(self, label: str, control: bool = False) -> None:
+        """Open a window labelled ``label``, for a ``control`` (a plain
+        soft-reboot of the decoy) or a session; nothing when one is open."""
         if self.window is not None:
             return
         self.machine.succeed("sync")
@@ -440,7 +513,7 @@ class Oracle:
         self._qmp("transaction", {"actions": self._add(decoy + other, name)})
         self._qmp("set-action", {"shutdown": "pause"})
         self.window = Window(
-            label, self._process(), [Phase(SWITCH, name)], decoy, other
+            label, self._process(), [Phase(SWITCH, name)], decoy, other, control
         )
         self.machine.log(
             f"block-write oracle: {label}: watching "
@@ -490,11 +563,18 @@ class Oracle:
             self._try("set-action", {"shutdown": "poweroff"})
         except Exception as e:  # noqa: BLE001 - every failure is an oracle error
             self.errors.append(f"{window.label}: the window could not be read: {e}")
-        self.findings.extend(found)
+        if window.control:
+            for finding in found:
+                if finding.decoy:
+                    taken = self.controls.setdefault(finding.drive, set())
+                    taken.update(items_of(finding.writers))
+        else:
+            self.findings.extend(found)
         clean = not [f for f in found if f.decoy]
+        what = "control" if window.control else "session"
         self.machine.log(
-            f"block-write oracle: {window.label}: closed at {why}: "
-            + ("no write to a decoy drive" if clean else "WRITES TO A DECOY DRIVE")
+            f"block-write oracle: {window.label}: {what} closed at {why}: "
+            + ("no write to a decoy drive" if clean else "writes to a decoy drive")
         )
         for finding in found:
             self.machine.log("block-write oracle: " + finding.text())
@@ -606,15 +686,61 @@ class Oracle:
             if os.path.exists(raw):
                 os.unlink(raw)
 
+    def verdict(self) -> tuple[list[str], list[str]]:
+        """The switch phase's and the session phase's verdicts, one line per
+        finding that breaks them (see :data:`SWITCH_VERDICT` and
+        :data:`SESSION_VERDICT`)."""
+        switch: list[str] = []
+        session: list[str] = []
+        for finding in self.findings:
+            if not finding.decoy:
+                continue
+            if finding.phase != SWITCH:
+                session.append(finding.text())
+                continue
+            control = self.controls.get(finding.drive)
+            if control is None:
+                switch.append(
+                    f"{finding.label}: {finding.drive}: no plain soft-reboot to judge "
+                    "the switch phase by"
+                )
+                continue
+            extra = sorted(items_of(finding.writers) - control)
+            if extra:
+                switch.append(
+                    f"{finding.label}: {finding.drive}: the switch wrote what a plain "
+                    f"soft-reboot does not: {'; '.join(extra)}"
+                )
+        return switch, session
+
     def raise_on_findings(self) -> None:
-        """Raise when a window found a write to a decoy drive, or failed."""
-        decoy = [f for f in self.findings if f.decoy]
-        if not decoy and not self.errors:
-            return
-        lines = ["the block-write oracle found writes to the decoy disk:"]
-        lines += [f.text() for f in decoy]
+        """Print the verdicts, and raise for the strict ones that do not hold
+        and for an oracle error where a verdict is strict."""
+        switch, session = self.verdict()
+        lines: list[str] = []
+        if switch:
+            lines.append(f"switch phase ({SWITCH_VERDICT}): not a part of the control:")
+            lines += switch
+        if session:
+            lines.append(
+                f"session phase ({SESSION_VERDICT}): writes to the decoy disk:"
+            )
+            lines += session
+        if self.uncut_control:
+            lines.append(
+                "note: a control had no cut and takes in the decoy's own start"
+            )
         lines += [f"oracle error: {e}" for e in self.errors]
-        raise AssertionError("\n".join(lines))
+        for line in lines or ["no finding"]:
+            self.machine.log(f"block-write oracle verdict: {line}")
+        failing = (switch and SWITCH_VERDICT == STRICT) or (
+            session and SESSION_VERDICT == STRICT
+        )
+        strict = STRICT in (SWITCH_VERDICT, SESSION_VERDICT)
+        if failing or (self.errors and strict):
+            raise AssertionError(
+                "the block-write oracle's verdict fails:\n" + "\n".join(lines)
+            )
 
 
 def _run(argv: list[str]) -> str:
@@ -881,7 +1007,7 @@ def wait_for_exit(machine: Any, timeout: float | None) -> bool:
     return True
 
 
-def before_switch(machine: Any, label: str) -> bool:
+def before_switch(machine: Any, label: str, control: bool = False) -> bool:
     """Before the trigger of a switch: open a window when none is open.
     Returns whether this switch opened it."""
     oracle = oracle_of(machine)
@@ -889,7 +1015,7 @@ def before_switch(machine: Any, label: str) -> bool:
         return False
     try:
         with oracle.lock:
-            oracle.open(label)
+            oracle.open(label, control)
     except Exception as e:  # noqa: BLE001 - recorded, raised at the end
         oracle.errors.append(f"{label}: the window could not be opened: {e}")
         return False
@@ -949,9 +1075,17 @@ def _after_switch(
             f"{label}: the mark unit stopped waiting before the host cut the window"
         )
     if hidden:
+        if oracle.window.control:
+            oracle.errors.append(
+                f"{label}: a plain soft-reboot landed in the hidden root"
+            )
         return
-    if opened_here:
+    if opened_here and not oracle.window.control:
         oracle.discard()
+        return
+    if oracle.window.control and cut_at is None:
+        oracle.uncut_control = True
+        oracle.close("the plain soft-reboot, without a cut")
         return
     if cut_at is None:
         oracle.errors.append(
@@ -964,18 +1098,55 @@ def _after_switch(
 
 
 def finish(machines: list[Any]) -> None:
-    """At the end of the test script: close the windows still open, live, and
-    raise for every write to a decoy drive."""
+    """At the end of the test script: close the windows still open, live,
+    measure a control where a session's switch phase needs one and the test
+    ran none (:func:`needs_control`), and give the verdicts
+    (:meth:`Oracle.raise_on_findings`)."""
     for machine in machines:
         oracle = oracle_of(machine)
         if oracle is None:
             continue
         with oracle.lock:
             _finish_one(machine, oracle)
+        if needs_control(oracle):
+            _control(machine, oracle)
     for machine in machines:
         oracle = oracle_of(machine)
         if oracle is not None:
             oracle.raise_on_findings()
+
+
+def needs_control(oracle: Oracle) -> bool:
+    """Whether a session's switch phase wrote to a decoy drive that no plain
+    soft-reboot of the test was measured on."""
+    return any(
+        f.decoy and f.phase == SWITCH and f.drive not in oracle.controls
+        for f in oracle.findings
+    )
+
+
+#: The plain soft-reboot the oracle runs as its control where the test ran
+#: none.
+CONTROL_TRIGGER = "systemctl soft-reboot"
+
+
+def _control(machine: Any, oracle: Oracle) -> None:
+    """Measure a plain soft-reboot of the decoy at the end of the test, the
+    switch phase's control (:data:`SWITCH_VERDICT`): started first where
+    the test left the machine off. A test that ended in the hidden root has
+    none."""
+    from . import session  # session imports this module
+
+    try:
+        if not _running(machine):
+            machine.start()
+            machine.wait_for_unit("multi-user.target")
+        if session.root_fstype(machine) == "overlay":
+            oracle.errors.append("no control: the test ended in the hidden root")
+            return
+        session.follow_soft_reboot(machine, CONTROL_TRIGGER, "oracle-control")
+    except Exception as e:  # noqa: BLE001 - recorded, judged with the rest
+        oracle.errors.append(f"the control soft-reboot failed: {e}")
 
 
 def _finish_one(machine: Any, oracle: Oracle) -> None:

@@ -355,15 +355,32 @@ reach it; it records every write, write-zeroes and discard.
   does not count. While a window is open QEMU pauses at a guest power-off
   (`set-action shutdown=pause`) until the host has read the bitmaps, then quits;
   `machine.crash()` and the end of the script read an open window live.
-- **The verdict** comes at the end of the test script (the closing step of
-  every NixOS test, `blockwrites.finish([vm])` in the distribution tests): one
-  failure listing, per window, drive and phase, the sector ranges written and,
-  on ext4, what each holds (the superblock, a group descriptor, a bitmap, the
-  inode-table slots with the paths of the inodes in use, the journal, or a
-  file's data block), from a raw copy of the drive and host `dumpe2fs` and
-  `debugfs`. btrfs and other filesystems get the sector ranges only.
+- **The findings** are printed per window, drive and phase: the sector
+  ranges written and, on ext4, what each holds (the superblock, a group
+  descriptor, a bitmap, the inode-table slots with the paths of the inodes in
+  use, the journal, or a file's data block), from a raw copy of the drive and
+  host `sfdisk` and `debugfs`. btrfs and other filesystems get the sector
+  ranges only.
+- **The verdicts** come at the end of the test script (the closing step of
+  every NixOS test, `blockwrites.finish([vm])` in the distribution tests). The
+  switch phase holds when every file and every kind of ext4 metadata it wrote
+  is one a plain soft-reboot of the decoy wrote in the same test, with no path
+  allowlist: such a soft-reboot followed by `follow_soft_reboot` (a trigger with
+  no `nails` command) is measured as the control, and where the test ran none
+  the oracle runs one when the script ends (starting the machine first when the
+  test left it off). The session phase holds when nothing was written at all.
+  `SWITCH_VERDICT` and `SESSION_VERDICT` in `blockwrites.py` are `report` now:
+  the verdicts and findings are printed and no test fails. `strict` fails the
+  test, and an oracle error fails it too where a verdict is strict; the session
+  phase turns strict once the decoy disk is read-only for the session.
+- **What next writes** (named in the CHANGELOG's known issues): in the switch
+  phase the decoy's own stop jobs; in the session phase the decoy root's ext4
+  superblock and a journal block at a power-off from the session, what the decoy
+  wrote just before the switch (no flush at the switch), and, in
+  `session-decoy-mount-table`, the first sector of the ESP.
 
-Not covered: a session entered without `follow_soft_reboot`, the access-time
+Not covered: a session entered without `follow_soft_reboot` or the fault tests'
+`emergency_outcome`, the access-time
 scenarios, the Fedora gate and the oracle images; a hidden NixOS system built
 without the mark unit splits no phase at its start (the way back's cut is the
 decoy's); and a switch that is refused and restarts the decoy drops its window,

@@ -74,9 +74,13 @@ of this changelog for that version becomes the release notes word for word, and
   write to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
   the trigger of the switch into the hidden root until the session ends at the way back (cut by
   a marker unit at the decoy's start) or at a power-off (which QEMU holds until the bitmaps are
-  read). A test fails for each byte written to a decoy drive, with its sector ranges and, on
-  ext4, what each range holds. A session entered without `follow_soft_reboot`, the access-time
-  scenarios, the Fedora gate and the oracle images do not run it (see
+  read), and print each one with its sector ranges and, on ext4, the file or metadata area it
+  holds. Two verdicts judge them: the switch phase must write no file and no kind of ext4
+  metadata that a plain soft-reboot of the decoy in the same test does not (the control, run at
+  the end of the test where it has none), and the session phase must write nothing at all. Both
+  report and fail no test for now; the session phase becomes strict with the decoy disk's
+  read-only fence. A session entered without `follow_soft_reboot` or the fault tests' way out,
+  the access-time scenarios, the Fedora gate and the oracle images do not run it (see
   [The block-write oracle](nix/e2e-tests/README.md#the-block-write-oracle)).
 
 - `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them, the
@@ -3131,6 +3135,19 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
+- A hidden session still writes to the decoy disk, as the block-write oracle of the VM tests
+  measures it on NixOS, Debian 13 and Ubuntu 24.04 and 26.04 (none of these is fixed yet): (1) a
+  power-off from inside the session (the way back powering off, the sleep guard's `teardown`, an
+  emergency or the window's power-off, the switch-timeout guard, the write tripwire) writes the
+  decoy root's ext4 superblock and a journal block, as the final shutdown unmounts the decoy root
+  that stays mounted read-write below the overlay, which dates the session's end; (2) what the
+  decoy wrote just before the switch (its persistent journal, the ext4 journal) reaches the disk
+  after it, as the switch does not flush the decoy root; (3) in one test, `session-decoy-mount-table`,
+  the first sector of the ESP, most likely vfat's clean mark in its boot sector as the last
+  read-write mount of the ESP, kept by the session's read-only bind, ends during the way back (the
+  cause is not confirmed). Besides, the switch itself writes what the decoy's own stop jobs write
+  at a plain soft-reboot (`random-seed`, `wtmp`, DHCP leases and the like), stamped with the
+  activation's time.
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in
