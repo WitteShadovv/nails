@@ -86,14 +86,16 @@ BLOCK = 4096
 # btrfs starts.
 ZSTD_MAGIC = "28b52ffd"
 # What NAILS requires of the decoy before a session: journald keeps its journal
-# in RAM, and auditd does not run.
+# in RAM, and auditd does not run. auditd is told to stop only where it runs:
+# auditctl fails where it does not, as on arch-boxes, and the test driver runs
+# each command with errexit on.
 AMNESIC = (
     "mkdir -p /etc/systemd/journald.conf.d && "
     "printf '[Journal]\\nStorage=volatile\\n' "
     "> /etc/systemd/journald.conf.d/50-volatile.conf && "
     "systemctl restart systemd-journald && "
     "systemctl disable auditd.service; systemctl mask auditd.service; "
-    "auditctl --signal stop; "
+    "if pgrep -x auditd >/dev/null; then auditctl --signal stop; fi; "
     "for i in $(seq 30); do pgrep -x auditd >/dev/null || break; sleep 1; done; "
     "{ journalctl --header 2>/dev/null || true; } | grep -m1 '^File path' || true; "
     "pgrep -x auditd || echo auditd gone"
