@@ -749,10 +749,10 @@ fn a_refusal_of_a_path_not_looked_up_leaves_the_fix_to_the_guard() {
         below: None,
     }];
     let skipped = |target: &Path| target == Path::new("/usr/local/lib/systemd/system");
-    let result = judge_fstab_not_looked_up(&refused, &[], &[], &skipped);
+    let result = judge_fstab_not_looked_up(&refused, &policy::KeptOff::default(), &[], &skipped);
     assert!(result.is_fail());
     assert_eq!(result.remediation(), None);
-    let result = judge_fstab_not_looked_up(&refused, &[], &[], &|_| false);
+    let result = judge_fstab_not_looked_up(&refused, &policy::KeptOff::default(), &[], &|_| false);
     assert!(
         result
             .remediation()
@@ -886,7 +886,7 @@ fn check_says_skipped_for_a_noauto_line_the_hidden_session_skips() {
         );
         decisions.extend(unit_decisions);
         let (kept, unskipped) = mount_units::kept_off(dirs, &entries, &decisions, &|_| true);
-        let result = judge_fstab_not_looked_up(&decisions, &kept.skips, &unskipped, &|_| false);
+        let result = judge_fstab_not_looked_up(&decisions, &kept, &unskipped, &|_| false);
         let message = result.message();
         assert_eq!(
             message.contains(
