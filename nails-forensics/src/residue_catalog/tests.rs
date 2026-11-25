@@ -385,11 +385,11 @@ fn the_tuned_firewalld_and_abrt_rows_say_how_they_are_caught() {
 }
 
 #[test]
-fn the_journal_socket_row_is_a_residual_channel_the_way_back_empties() {
+fn the_journal_socket_row_is_a_residual_channel_no_session_opens() {
     // What the hidden root sends journald after its journald stopped would
-    // reach the decoy journal through the sockets the soft-reboot keeps open:
-    // no check sees it, so it stays listed, and the way back empties them,
-    // which decoy-journal-leak asserts.
+    // reach a decoy started again on that kernel through the sockets a
+    // soft-reboot keeps open: no check sees it, so it stays listed. Every
+    // session ends in a power-off, so no session opens it.
     let row = class("journal-socket-carry").expect("the journal-socket-carry row");
     assert_eq!(row.kind, ResidueKind::Session);
     assert!(row.residual);
@@ -403,11 +403,8 @@ fn the_journal_socket_row_is_a_residual_channel_the_way_back_empties() {
         "{:?}",
         row.e2e
     );
-    assert!(
-        row.mitigation
-            .contains("empties journald's sockets in place")
-    );
-    assert!(!row.mitigation.contains("stops journald's socket units"));
+    assert!(row.mitigation.contains("power-off"), "{}", row.mitigation);
+    assert!(!row.mitigation.contains("way back"), "{}", row.mitigation);
 }
 
 #[test]
