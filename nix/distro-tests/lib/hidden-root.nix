@@ -37,7 +37,10 @@
     # console each second (a kernel line can cut one in two) and a wait, at
     # most 15 s, for the line the host types there once
     # it has cut its dirty bitmaps of the decoy disk, before the units that
-    # write to the disk early in a start. Written
+    # write to the disk early in a start. A child opens the console, as the
+    # service is a session leader whose controlling terminal the console would
+    # become, and the kernel hangs it up for every process that has it open,
+    # the test backdoor among them, when the service ends. Written
     # once, before any session, so the image carries it as its own.
     if [ ! -e /etc/systemd/system/blkstat-mark.service ]; then
       mkdir -p /usr/local/sbin
@@ -45,14 +48,17 @@
     #!/bin/sh
     read -r up _ < /proc/uptime
     if [ "''${up%%.*}" -ge 8 ]; then
-      exec 3<>/dev/ttyS0
-      i=0
-      while [ "$i" -lt 15 ]; do
-        echo 'blkstat-mark hold' >&3
-        if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
-        i=$((i + 1))
-      done
-      echo 'blkstat-mark release' >&3
+      (
+        exec 3<>/dev/ttyS0
+        i=0
+        while [ "$i" -lt 15 ]; do
+          echo 'blkstat-mark hold' >&3
+          if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
+          i=$((i + 1))
+        done
+        echo 'blkstat-mark release' >&3
+      ) &
+      wait "$!"
     fi
     MARK
       chmod 0755 /usr/local/sbin/blkstat-mark

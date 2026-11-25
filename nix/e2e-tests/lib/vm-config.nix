@@ -99,18 +99,23 @@
     script = ''
       read -r up _ < /proc/uptime
       if [ "''${up%%.*}" -ge 8 ]; then
-        # The console becomes this shell's controlling terminal: head reads it
-        # in the foreground, or the kernel would stop it (SIGTTIN).
+        # The console is opened in a child, which is no session leader: the
+        # service itself is one, and the console would become its controlling
+        # terminal, which the kernel hangs up for every process that has it
+        # open (the test backdoor's stderr among them) when the service ends.
         # The kernel can cut a line in two with one of its own, so the hold
         # line is said again each second until the host answers.
-        exec 3<>/dev/ttyS0
-        i=0
-        while [ "$i" -lt 15 ]; do
-          echo 'blkstat-mark hold' >&3
-          if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
-          i=$((i + 1))
-        done
-        echo 'blkstat-mark release' >&3
+        (
+          exec 3<>/dev/ttyS0
+          i=0
+          while [ "$i" -lt 15 ]; do
+            echo 'blkstat-mark hold' >&3
+            if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
+            i=$((i + 1))
+          done
+          echo 'blkstat-mark release' >&3
+        ) &
+        wait "$!"
       fi
     '';
   };
