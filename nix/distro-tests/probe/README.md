@@ -31,7 +31,8 @@ image, with `-enforcing` added for a Fedora image booted with SELinux enforcing.
 - `fedora-45.json`, `fedora-45-enforcing.json` -- the pinned Fedora 45 cloud
   image, booted permissive and enforcing as for Fedora 44 (recorded)
 - `arch-boxes.json` -- the pinned Arch `arch-boxes` image (recorded)
-- `arch-install.json` -- the `archinstall`-built Arch image, once hosted
+- `arch-install.json` -- the `archinstall`-built Arch image, which
+  `.github/workflows/test-images.yml` builds and publishes
 
 Debian and Ubuntu need no probe: they are admitted and covered by the smoke
 suite directly.

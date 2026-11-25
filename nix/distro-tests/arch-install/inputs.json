@@ -1,0 +1,15 @@
+{
+  "iso": {
+    "version": "2026.11.01",
+    "name": "archlinux-2026.11.01-x86_64.iso",
+    "url": "https://archive.archlinux.org/iso/2026.11.01/archlinux-2026.11.01-x86_64.iso",
+    "sha256": "sha256-Abzc8Bry99WPJ5SJnINHcNJcm/yUW9CSsyu2ZnKkohY="
+  },
+  "packages": {
+    "snapshot": "2026-11-01",
+    "server": "https://archive.archlinux.org/repos/2026/11/01/$repo/os/$arch"
+  },
+  "disk": {
+    "size": "16G"
+  }
+}
