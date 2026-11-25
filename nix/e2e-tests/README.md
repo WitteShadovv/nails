@@ -1456,7 +1456,8 @@ Arch:
   of freed memory that is not zeroed; the decoy is then prepared as
   [the decoy requirements](../../docs/decoy-requirements.md) ask of any decoy
   (every swap line of the fstab `noauto` and the swap off, `init_on_free=1`
-  through GRUB, which the next boot's command line must show, the lid locking
+  through GRUB, which the next boot's command line must show, with the
+  Fedora gate's `log_buf_len`, which every power cycle checks, the lid locking
   the screen, the journal made volatile after check refused it, then the core
   dumps discarded after check warned of them, a warning the journal's refusal
   hid in the same row), and check must refuse nothing and warn only of what
@@ -1513,9 +1514,9 @@ What the gate leaves to the admission:
 - the archinstall image (`arch-install` in `images.json`) boots UEFI with
   systemd-boot, its ESP at `/boot`, and swaps on zram. A row in
   `expectations` alone does not bring it into the gate: `arch_gate.py` sets
-  `init_on_free=1` through GRUB (`PREPARE_DECOY`) and expects the stock swap
-  file refused (`STOCK_VERDICTS`). Its gate needs that argument in its loader
-  entries instead, stock verdicts of its own, a driver that boots it with
+  `init_on_free=1` and `log_buf_len` through GRUB (`PREPARE_DECOY`) and
+  expects the stock swap file refused (`STOCK_VERDICTS`). Its gate needs those
+  arguments in its loader entries instead, stock verdicts of its own, a driver that boots it with
   UEFI firmware, and the `fstabPolicy` its own layout gives.
 - the oracle nightly's records scan does not run on arch-boxes, as it plants
   a Fedora decoy's record controls, and no oracle runs on the archinstall

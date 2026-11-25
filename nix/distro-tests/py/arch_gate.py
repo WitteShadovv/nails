@@ -24,10 +24,11 @@ with a plain soft-reboot. What differs is what Arch is:
 - the decoy is prepared as ``docs/decoy-requirements.md`` asks of any decoy
   (what NAILS enforces, and the lid switch), in the way arch-boxes needs it:
   the journal volatile (check refuses the stock persistent one first), the
-  fstab's swap line ``noauto`` and the swap off, ``init_on_free=1`` on the
-  kernel command line through GRUB, core dumps discarded, the lid switch
-  locking the screen. auditd is installed but off on arch-boxes, and check
-  must name no auditd; plocate is judged where the image has it;
+  fstab's swap line ``noauto`` and the swap off, ``init_on_free=1`` and the
+  Fedora gate's ``log_buf_len`` on the kernel command line through GRUB, core
+  dumps discarded, the lid switch locking the screen. auditd is installed but
+  off on arch-boxes, and check must name no auditd; plocate is judged where
+  the image has it;
 - the hidden volume is LUKS on a disk of its own, as the image ships
   cryptsetup;
 - the package-drift control is pacman's: a package the gate builds in RAM
@@ -95,10 +96,12 @@ mkdir -p {fg.HIDDEN}/root/work {fg.HIDDEN}/config
 """
 # The decoy prepared as its requirements ask, beyond what the gate checks
 # before and after its fix: the kernel log's settings at every start, core
-# dumps discarded, the lid switch locking the screen, and freed memory zeroed
-# (init_on_free=1 through GRUB, from the next boot on: arch-boxes boots
-# SeaBIOS and GRUB; an image that boots systemd-boot needs the argument in its
-# loader entries instead). The swap is turned off apart
+# dumps discarded, the lid switch locking the screen, freed memory zeroed, and
+# the kernel's log buffer as large as the Fedora gate makes it
+# (:data:`fedora_gate.LOG_BUF_LEN`), which every power cycle checks. Both
+# arguments go on the kernel command line through GRUB, from the next boot on:
+# arch-boxes boots SeaBIOS and GRUB; an image that boots systemd-boot needs
+# them in its loader entries instead. The swap is turned off apart
 # (:meth:`ArchGate.swap_off`).
 PREPARE_DECOY = (
     """
@@ -111,9 +114,11 @@ mkdir -p /etc/systemd/logind.conf.d
 printf '%s\\n' '[Login]' HandleLidSwitch=lock HandleLidSwitchExternalPower=lock \\
   HandleLidSwitchDocked=ignore IdleAction=ignore \\
   > /etc/systemd/logind.conf.d/10-lid.conf
-grep -q 'init_on_free=1' /etc/default/grub ||
-  sed -i 's|^\\(GRUB_CMDLINE_LINUX_DEFAULT="[^"]*\\)"|\\1 init_on_free=1"|' \\
-    /etc/default/grub
+for arg in init_on_free=1 log_buf_len=""" + fg.LOG_BUF_LEN + """; do
+  grep -q "$arg" /etc/default/grub ||
+    sed -i "s|^\\(GRUB_CMDLINE_LINUX_DEFAULT=\\"[^\\"]*\\)\\"|\\1 $arg\\"|" \\
+      /etc/default/grub
+done
 grep '^GRUB_CMDLINE_LINUX_DEFAULT=' /etc/default/grub
 grub-mkconfig -o /boot/grub/grub.cfg
 """

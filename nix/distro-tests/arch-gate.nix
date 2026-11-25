@@ -25,10 +25,11 @@
 # swap. The archinstall image (arch-install in images.json) boots UEFI with
 # systemd-boot, its ESP at /boot, and swaps on zram. An `arch-install` row
 # here would build its drivers once the image is pinned, but not a gate that
-# holds: py/arch_gate.py sets init_on_free=1 through GRUB (PREPARE_DECOY) and
-# expects the stock swap file refused (STOCK_VERDICTS). Its gate also needs
-# that argument in its loader entries, stock verdicts of its own, a driver
-# that boots it with UEFI firmware, and the fstabPolicy of its own layout.
+# holds: py/arch_gate.py sets init_on_free=1 and log_buf_len through GRUB
+# (PREPARE_DECOY) and expects the stock swap file refused (STOCK_VERDICTS).
+# Its gate also needs those arguments in its loader entries, stock verdicts
+# of its own, a driver that boots it with UEFI firmware, and the fstabPolicy
+# of its own layout.
 # The oracle nightly's records scan does not run on arch-boxes, and no oracle
 # runs on the archinstall image; no desktop session runs in this gate.
 #

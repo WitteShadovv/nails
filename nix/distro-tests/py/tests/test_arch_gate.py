@@ -143,6 +143,7 @@ class GateSettingsTest(unittest.TestCase):
 
     def test_the_decoy_is_prepared_for_init_on_free_through_grub(self) -> None:
         self.assertIn("init_on_free=1", ag.PREPARE_DECOY)
+        self.assertIn(f"log_buf_len={fg.LOG_BUF_LEN}", ag.PREPARE_DECOY)
         self.assertIn("grub-mkconfig -o /boot/grub/grub.cfg", ag.PREPARE_DECOY)
         for key, value in __import__("selinux_gate").KMSG_SETTINGS:
             self.assertIn(f"'{key} = {value}'", ag.PREPARE_DECOY)
