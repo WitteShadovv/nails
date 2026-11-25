@@ -1,0 +1,5 @@
+{
+  fileSystems."/x".device = "/dev/mapper/d\\141ta";
+  fileSystems."/mnt/D\\101TA".device = ''\057dev\057sdb2'';
+  # LABEL=s\145crets
+}

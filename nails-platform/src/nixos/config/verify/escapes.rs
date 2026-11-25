@@ -19,6 +19,12 @@
 //!   and a lone backslash is itself (`''a\nb''` is `a\nb`).
 //!
 //! `$${` is no escape: Nix keeps both dollars and reads no interpolation.
+//!
+//! NixOS writes the device, the mount point and the options of a
+//! `fileSystems` entry into `/etc/fstab` as Nix reads them, escaping only
+//! blanks, and libmount, which reads that file for `mount` and systemd,
+//! decodes a backslash and three octal digits there as the byte they give
+//! (`\141` is `a`). [`fstab`] finds these escapes in a line.
 
 use super::nix_text::Context;
 use std::ops::Range;
@@ -56,9 +62,37 @@ pub(super) fn decode(raw: &[u8], indented: bool) -> Option<Vec<u8>> {
     }])
 }
 
+/// The octal escapes of `text` as libmount decodes those of a field of
+/// `/etc/fstab`: a backslash and three octal digits are the byte of their
+/// value, cut to eight bits as libmount cuts it (`\777` is `0xff`). Any
+/// other backslash is itself, and the bytes after it are read on, so
+/// `\\141` is `\a`.
+pub(super) fn fstab(text: &[u8]) -> Vec<Escape> {
+    let mut found = Vec::new();
+    let mut at = 0;
+    while at < text.len() {
+        let digits = text
+            .get(at + 1..at + 4)
+            .filter(|digits| text[at] == b'\\' && digits.iter().all(|b| matches!(b, b'0'..=b'7')));
+        if let Some(digits) = digits {
+            let value = digits
+                .iter()
+                .fold(0u16, |value, digit| value * 8 + u16::from(digit - b'0'));
+            found.push(Escape {
+                raw: at..at + 4,
+                text: vec![value.to_le_bytes()[0]],
+            });
+            at += 4;
+        } else {
+            at += 1;
+        }
+    }
+    found
+}
+
 /// A line with the escapes of its strings decoded, lowercased like the text
 /// the markers are matched against, and where each of its bytes comes from.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct Decoded {
     pub(super) text: Vec<u8>,
     /// For each byte of `text`, the bytes of the line it stands for.

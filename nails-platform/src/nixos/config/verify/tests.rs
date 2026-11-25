@@ -719,6 +719,50 @@ fn a_path_with_a_dot_part_after_its_leading_slash_is_refused() {
     assert!(scan.is_clean(), "{scan:#?}");
 }
 
+/// NixOS writes a `fileSystems` entry's device, mount point and options
+/// into `/etc/fstab` as Nix reads them, and libmount decodes fstab's octal
+/// escapes there (`\141` is `a`). A name written with them is refused as
+/// the plain name is, in a `"…"` string that writes the backslash as `\\`,
+/// in a `''…''` string and in a comment. `\\\\141`, which libmount reads as
+/// a backslash and `a`, names nothing.
+#[test]
+fn a_name_written_with_fstab_s_octal_escapes_is_refused() {
+    use ReferenceKind::{Device, MountPoint};
+    for (content, expected) in [
+        (
+            "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\141ta\"; }",
+            (1, "/dev/mapper/d\\\\141ta", Device),
+        ),
+        (
+            "{ fileSystems.\"/mnt/d\\\\141ta\".device = \"/dev/sdc1\"; }",
+            (1, "/mnt/d\\\\141ta", MountPoint),
+        ),
+        (
+            "{ fileSystems.\"/x\".device = ''/dev/mapper/\\144\\141\\164\\141''; }",
+            (1, "/dev/mapper/\\144\\141\\164\\141", Device),
+        ),
+        (
+            "{ fileSystems.\"/x\".device = \"/DEV/MAPPER/D\\\\101TA\"; }",
+            (1, "/DEV/MAPPER/D\\\\101TA", Device),
+        ),
+        (
+            "{ }\n# device = /dev/mapper/d\\141ta\n",
+            (2, "/dev/mapper/d\\141ta", Device),
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+    for content in [
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\\\\\141ta\"; }",
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\14ta\"; }",
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\141ta2\"; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert!(scan.is_clean(), "{content}: {scan:#?}");
+    }
+}
+
 /// A unit's setting that names a file on the hidden volume behind one of
 /// systemd's prefixes (`-` for a file that may be missing) names the mount
 /// point, and is refused as the bare path is.

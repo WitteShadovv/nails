@@ -51,6 +51,8 @@
 "//"
 "/./"
 "/../"
+"\\141"
+"\\\\141"
 "/mnt/data"
 "mnt-data.mount"
 "dev-mapper-data.device"

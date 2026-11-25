@@ -392,6 +392,41 @@ fn an_escape_in_the_roots_own_name_counts() {
     }
 }
 
+/// The root's own name written with fstab's octal escapes, which NixOS
+/// passes to `/etc/fstab` unchanged and libmount decodes, counts as it does
+/// written out: in a `subvol=` or `X-mount.subdir=` option and in a bind's
+/// device.
+#[test]
+fn the_roots_own_name_written_with_fstab_s_octal_escapes_counts() {
+    let sysfs = with_udev(luks_on_a_partition());
+    let subvolume = subvolume_place();
+    let folder = folder_place();
+    let options = |options: &str| format!("{{ fileSystems.\"/srv\".options = [ {options} ]; }}");
+    for (place, content, text) in [
+        (&subvolume, options("\"subvol=@va\\\\165lt\""), "@va\\\\165lt"),
+        (&subvolume, options("\"X-mount.subdir=@va\\\\165lt\""), "@va\\\\165lt"),
+        (
+            &subvolume,
+            "{ fileSystems.\"/data\" = { device = \"/var/lib/pool/@va\\\\165lt\"; options = [ \"bind\" ]; }; }"
+                .to_string(),
+            "@va\\\\165lt",
+        ),
+        (
+            &folder,
+            "{ fileSystems.\"/srv\" = { device = \"/home/alice/va\\\\165lt\"; fsType = \"none\"; options = [ \"bind\" ]; }; }"
+                .to_string(),
+            "/home/alice/va\\\\165lt",
+        ),
+    ] {
+        let found = scan(&sysfs, Some(place), &content);
+        assert_eq!(
+            shown(&found.references),
+            [(1, text, ReferenceKind::RootPlace)],
+            "{content}"
+        );
+    }
+}
+
 /// A name of the hidden volume written with an escape counts as it does written out, as Nix reads it: its mount point, its
 /// device, a link and a label of its storage, and its mapping's name in a
 /// `luks.devices` entry, in an `inherit` there, as `encrypted.label`, as a

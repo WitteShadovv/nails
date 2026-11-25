@@ -88,3 +88,23 @@ fn ranges_map_between_the_line_and_its_decoded_text() {
     assert_eq!(decoded.raw(&(22..22)), 24..24);
     assert_eq!(decoded.decoded(&(24..24)), 22..22);
 }
+
+/// fstab's octal escapes read as libmount decodes them: three octal digits
+/// after a backslash give one byte, cut to eight bits, and any other
+/// backslash stays with the bytes after it read on.
+#[test]
+fn fstab_escapes_read_as_libmount_decodes_them() {
+    let read = |text: &[u8]| Decoded::of(text, &fstab(text)).text;
+    assert_eq!(read(b"/mnt/d\\141ta"), b"/mnt/data");
+    assert_eq!(read(b"a\\040b\\011c\\134d"), b"a b\tc\\d");
+    assert_eq!(read(b"\\101"), b"a");
+    assert_eq!(read(b"\\\\141"), b"\\a");
+    assert_eq!(read(b"\\777"), [0xff]);
+    assert_eq!(read(b"\\0141"), b"\x0c1");
+    for kept in [&b"\\14"[..], b"\\18a", b"\\x61", b"a\\"] {
+        assert_eq!(read(kept), kept, "{kept:?}");
+    }
+    let decoded = Decoded::of(b"d\\141ta", &fstab(b"d\\141ta"));
+    assert_eq!(decoded.raw(&(1..2)), 1..5);
+    assert_eq!(decoded.raw(&(0..4)), 0..7);
+}

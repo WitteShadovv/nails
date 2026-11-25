@@ -7,8 +7,11 @@
 //! a time, so a marker matches in any case and a match maps back to the line
 //! by offset. Each line is matched as the file writes it and again with the
 //! escapes of its strings decoded ([`super::escapes`]), where a match maps
-//! back to the bytes that stand for it. Every marker counts in comments as
-//! well: an examiner reads them, and a commented-out line that names the
+//! back to the bytes that stand for it. A line that matches neither way is
+//! matched once more with fstab's octal escapes (`\141`) decoded in both,
+//! as libmount reads a value NixOS wrote into `/etc/fstab`. Every marker
+//! counts in comments as well: an examiner reads them, and a commented-out
+//! line that names the
 //! hidden volume points at it as plainly as a live one. The device-mapper
 //! name and a filesystem label, often ordinary words such as `data`, count
 //! only where they name the mapping or the filesystem ([`Pattern::Name`],
