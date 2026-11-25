@@ -358,8 +358,9 @@ Keep all of it `root`-owned on the hidden volume.
      below a masked mount, and one naming it with
      `x-systemd.requires-mounts-for=`, without the mount. Where a mount, swap
      or automount unit linked in a target's `.requires` directory names the
-     mount with `Requires=` or `BindsTo=`, itself or as the last step of a
-     chain of requirements (through a service, say), or the entry's own unit
+     mount with `Requires=`, `BindsTo=` or a link in a `.requires`
+     directory, itself or as the last step of a chain of requirements NAILS
+     reads (through a service, say), or the entry's own unit
      is linked there, the warning says that the target will not be reached
      all the same.
      `nofail` with any value counts as `nofail`. An entry kept off that gives

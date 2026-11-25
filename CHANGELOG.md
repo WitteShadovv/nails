@@ -1290,7 +1290,9 @@ of this changelog for that version becomes the release notes word for word, and
   option NAILS does not read stays masked, but where a line the boot starts needs its mount and a
   boot target requires that line, or may, activation and `nails check` now warn of that target, and
   `nails status` lists the mask where NAILS reads that the target requires it through a line that
-  names the mount. A `noauto` line kept off at or below the hidden root, in the fstab an activation
+  names the mount, or where a mount, swap or automount unit linked in a target's `.requires`
+  directory names it. A `noauto` line kept off at or below the hidden root, in the fstab an
+  activation
   without a build decides or led there by a link, or on a network filesystem, whose mount a line the
   boot starts needs is kept off as a needed line is: skipped where its target requires that line and
   its device is there, masked with a warning where the device is not. NAILS masked it with no
@@ -1324,16 +1326,20 @@ of this changelog for that version becomes the release notes word for word, and
   only that a target may require the line, through an option it cannot read or a line with a
   backslash. Such a skip masked after all now gets the warning that the target may not be reached,
   and nothing is listed, unless a mount, swap or automount unit linked in a target's `.requires`
-  directory names the mount (`Requires=`, `BindsTo=`), itself or as the last step of a chain of
+  directory names the mount (`Requires=`, `BindsTo=`, or a link in the `.requires` directory of a
+  unit on the way), itself or as the last step of a chain of
   requirements NAILS reads (through a service, say), or the line's own unit is linked there: systemd
   refuses that unit, or the target's own requirement, while the mount is masked, so the warning says
   that the target will not be reached, and `nails status` lists the mask. In two rare cases it says
   so, and lists the mask, where systemd ignores the step and reaches the target, and no disk is
-  mounted in either: a chain with a step for a path (`RequiresMountsFor=`) to a unit the session
-  masks only later, as a skip it masks after all, and a link of the line's own name in a `.requires`
-  directory that points to `/dev/null`. Where the line's device is not there, its warning says that
-  the target will not be reached, naming that unit, in place of the one that said may, and the mask
-  is listed with the device. And it holds for the warning that a skipped unit requires a unit the
+  mounted in either: a chain with a step for a path (a mount point below, a source,
+  `RequiresMountsFor=` or `x-systemd.requires-mounts-for=`) into a unit the session masks only
+  later, as a skip it masks after all, and a link in a `.requires` directory on the way, the
+  target's or that of a unit on the chain, that points to `/dev/null`. Where the line's device is
+  not there, its warning says that the target will not be reached, naming that unit, in place of
+  the one that said may, and the mask is listed with the device. Where NAILS cannot read an option
+  of the line, the mask is listed as undetermined. And it holds for the warning that a skipped unit
+  requires a unit the
   session masks: one that needs it only for a path, such as the mount of an unmounted parent
   directory with `nofail`, may still start, and the warning now says "the hidden systemd may not
   start" it, "so the boot target that requires it may not be reached". Where the walk of its pulls

@@ -209,10 +209,12 @@ pub(super) fn weigh_masks(
 /// ([`KeptOff::warning`]). Returns the warnings.
 ///
 /// NAILS reads two rare shapes so too, where systemd ignores a step and
-/// reaches the target: a chain with a step for a path (`RequiresMountsFor=`)
-/// into a unit that [`super::kept_off`] masks only after this ran, as a skip
-/// it masks after all, and a link of the mount's own name in a `.requires`
-/// directory that points to `/dev/null`. The warning says will not there,
+/// reaches the target: a chain with a step for a path (a mount point below,
+/// a source, `RequiresMountsFor=` or `x-systemd.requires-mounts-for=`) into a
+/// unit that [`super::kept_off`] masks only after this ran, as a skip it
+/// masks after all, and a link in a `.requires` directory on the way, the
+/// target's or that of a unit on the chain, that points to `/dev/null`.
+/// [`weigh_masks`] reads both shapes the same way. The warning says will not there,
 /// and the mask is recorded, but no disk is mounted in either.
 pub(super) fn weigh_unsure(
     dirs: UnitDirs<'_>,

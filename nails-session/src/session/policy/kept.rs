@@ -61,7 +61,8 @@ pub struct KeptOff {
     /// ([`KeptOff::warning`]). systemd reaches the target all the same, with
     /// no disk mounted, where it ignores a step on the way: a step for a path
     /// into a unit the session masks only later, as a skip it masks after
-    /// all, or a link of the mount's own name that points to `/dev/null`.
+    /// all, or a link in a `.requires` directory on the way that points to
+    /// `/dev/null`.
     pub sure_needed: Vec<String>,
 }
 
