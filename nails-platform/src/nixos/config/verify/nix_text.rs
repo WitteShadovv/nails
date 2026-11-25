@@ -339,10 +339,10 @@ fn file_device(fields: &[u8]) -> bool {
 fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
     const PREFIX: &[u8] = b"/dev/disk/by-id/dm-uuid-crypt-";
     (0..line.len()).find_map(|start| {
-        let tail = path_end(line, start, PREFIX)?;
-        if !begins_path(line, start) {
+        if line[start] != b'/' || !begins_path(line, start) {
             return None;
         }
+        let tail = path_end(line, start, PREFIX)?;
         let end = tail
             + line[tail..]
                 .iter()
@@ -369,13 +369,18 @@ fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
     path.dedup_by(|byte, previous| *byte == b'/' && *previous == b'/');
     let rooted = path.first() == Some(&b'/');
     (0..line.len()).find_map(|start| {
-        let end = path_end(line, start, &path)?;
+        // Whether the path begins here first: a start inside a run of `.`
+        // parts never begins one, so the run is read once, not from each.
         let begins = if rooted {
-            begins_path(line, start)
+            line[start] == b'/' && begins_path(line, start)
         } else {
             !continues_file_name(start.checked_sub(1).map(|i| line[i]))
         };
-        (begins && !continues_file_name(line.get(end).copied())).then_some(start..end)
+        if !begins {
+            return None;
+        }
+        let end = path_end(line, start, &path)?;
+        (!continues_file_name(line.get(end).copied())).then_some(start..end)
     })
 }
 
