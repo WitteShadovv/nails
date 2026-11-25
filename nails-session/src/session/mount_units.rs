@@ -430,8 +430,12 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// unit masked because what describes it disagrees
 /// ([`MaskCause::ConflictingLines`]), and for each skipped unit that
 /// requires a unit the session masks, which keeps it, and the boot target
-/// that requires it, from starting. `present` tells whether a device is
-/// there now.
+/// that requires it, from starting. A skip masked instead is recorded
+/// ([`KeptOff::record_masked`]), and its warning says that the target will
+/// not be reached, unless NAILS reads only that a target may require it or
+/// that the units a target requires need it only as the mount for a path
+/// ([`KeptOff::unsure`]): then the warning says may, and nothing is
+/// recorded. `present` tells whether a device is there now.
 ///
 /// The mask of a `noauto` line that nothing NAILS reads in the fstab pulls
 /// in ([`Decision::is_noauto_mask`]) is weighed against the units outside
@@ -506,13 +510,26 @@ pub fn kept_off(
             }
             Err(why) => (why.to_string(), MaskCause::Undetermined),
         };
-        warnings.push(format!(
-            "{} is masked rather than skipped, as {why}: the hidden session will not reach the \
-             boot target that requires it, and the units only that target pulls in will not \
-             start there",
-            skip.units.join(" and ")
-        ));
-        kept.record_masked(&skip.units, cause, None);
+        let units = skip.units.join(" and ");
+        if skip.units.iter().any(|unit| kept.unsure.contains(unit)) {
+            // NAILS reads only that a target may require it, or that the
+            // units a target requires need it only as the mount for a path:
+            // the target may be reached all the same, and nothing is recorded.
+            kept.unsure.retain(|unit| !skip.units.contains(unit));
+            warnings.push(format!(
+                "{units} is masked rather than skipped, as {why}: NAILS reads only that a boot \
+                 target may require it, or that the units a target requires need it only as the \
+                 mount for a path, so the hidden session may not reach that target, and the \
+                 units only that target pulls in may not start there"
+            ));
+        } else {
+            warnings.push(format!(
+                "{units} is masked rather than skipped, as {why}: the hidden session will not \
+                 reach the boot target that requires it, and the units only that target pulls \
+                 in will not start there"
+            ));
+            kept.record_masked(&skip.units, cause, None);
+        }
         for unit in skip.units {
             if !kept.masks.contains(&unit) {
                 kept.masks.push(unit);

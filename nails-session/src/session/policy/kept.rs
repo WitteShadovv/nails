@@ -40,6 +40,15 @@ pub struct KeptOff {
     /// ([`Origin::Needed`] with `may`): warned of, but not among
     /// [`required_masks`](Self::required_masks).
     pub may_conflicts: Vec<String>,
+    /// The units of [`skips`](Self::skips) where NAILS reads only that a boot
+    /// target may require them, or that what requires them needs them only as
+    /// the mount for a path (a mount point below, `RequiresMountsFor=`,
+    /// `x-systemd.requires-mounts-for=`), not by name: systemd 260.5 started
+    /// such a unit without a masked mount. Where such a skip is masked after
+    /// all ([`super::super::mount_units::kept_off`]), the warning says the
+    /// target may not be reached, and the mask is not recorded as a required
+    /// one.
+    pub unsure: Vec<String>,
 }
 
 impl KeptOff {
@@ -78,7 +87,8 @@ impl KeptOff {
     /// that act on it ([`checkers`]); masked where it is not or where they
     /// give two devices, and then recorded with why where `record`: where
     /// that unit requires the mount by name, which keeps it from starting
-    /// while the mount is masked.
+    /// while the mount is masked. A skip made without `record` is among
+    /// [`unsure`](Self::unsure).
     pub fn needed_noauto(
         &mut self,
         fstab: &[FstabEntry],
@@ -117,6 +127,9 @@ impl KeptOff {
                     pulled,
                     device,
                 });
+                if !record && !self.unsure.iter().any(|known| known == unit) {
+                    self.unsure.push(unit.to_string());
+                }
                 NoautoNeeded::Skipped
             }
         }
@@ -185,7 +198,9 @@ fn device_of(fstab: &[FstabEntry], unit: &str) -> Option<Option<PathBuf>> {
 /// A unit a boot target requires that ends up masked is recorded with why
 /// ([`KeptOff::required_masks`]), where NAILS reads that a target requires
 /// it; where it only reads that one may, the unit is warned of
-/// ([`KeptOff::may_conflicts`]).
+/// ([`KeptOff::may_conflicts`]). A skip kept of such a unit, or of one that
+/// what requires it needs only as the mount for a path, is among
+/// [`KeptOff::unsure`].
 ///
 /// The mask of a `noauto` line that nothing NAILS reads pulls in
 /// ([`Decision::is_noauto_mask`]) is the one exception: a skip of the same
@@ -293,6 +308,9 @@ pub fn runtime_units(fstab: &[FstabEntry], decisions: &[Decision]) -> KeptOff {
     }
     for (skip, sure) in merged {
         if !skip.units.iter().any(|unit| kept.masks.contains(unit)) {
+            if !sure {
+                kept.unsure.extend(skip.units.iter().cloned());
+            }
             kept.skips.push(skip);
         } else if sure {
             kept.record_masked(&skip.units, MaskCause::ConflictingLines, None);
