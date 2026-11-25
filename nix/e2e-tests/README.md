@@ -745,6 +745,8 @@ Layout:
   its older roots, with btrfs-progs.
 - `fedora-gate.nix`: the drivers of Fedora's admission gate
   ([below](#the-admission-gate-of-fedora)).
+- `arch-gate.nix`: the drivers of Arch's admission gate
+  ([below](#the-admission-gate-of-arch)).
 - `default.nix`: maps the scenarios over the table, builds the scenarios of
   the images staged for their family's admission (`stagedImages`), and
   exposes the metadata.
@@ -1415,6 +1417,68 @@ mkdir -p /var/tmp/g/out
 TMPDIR=/var/tmp/g XDG_RUNTIME_DIR=/var/tmp/g NAILS_GATE_OUT=/var/tmp/g/out \
   ./fedora-44-rpms/bin/test-driver
 ```
+
+### The admission gate of Arch
+
+Arch is admitted in one commit with its CI matrix entry, once its admission
+gate passes. The drivers that gate runs before that commit are in
+`arch-gate.nix`, one set per Arch image its `expectations` name (arch-boxes
+today; the archinstall image joins with a row of its own once it is pinned),
+and run in the staged suite of `distro-e2e.yml`, beside the smoke and records
+scenarios of arch-boxes. Each is a host driver that writes what it found into
+the directory `NAILS_GATE_OUT` names.
+
+`<image>-gate` is the Fedora gate's scenario run on Arch (`py/arch_gate.py`,
+which builds on `py/fedora_gate.py`), with a test-only build that admits Arch
+(`lib/admitted.nix`): the same power cycles, plain soft-reboots, sessions and
+ways back in one QEMU process, the same reading of the kernel log, of the
+decoy's journal and of journald's sockets, the same login and boot record
+judgments (wtmp, btmp and lastlog2, which Arch keeps through `pam_lastlog2`),
+the consoles' process numbers against the cold boot's, `/run` and the decoy
+disk held against the plain soft-reboots. What it does otherwise follows from
+Arch:
+
+- before the decoy is prepared, check on the stock image must refuse its
+  swap file and its persistent journal, and warn of a lid that suspends and
+  of freed memory that is not zeroed; the decoy is then prepared as the Arch
+  section of the decoy requirements asks (the swap line `noauto` and the
+  swap off, `init_on_free=1` through GRUB, which the next boot's command line
+  must show, the lid locking the screen, the journal made volatile after
+  check refused it, then the core dumps discarded after check warned of
+  them, a warning the journal's refusal hid in the same row), and check must
+  refuse nothing and warn only of what the harness and the VM bring and,
+  from fstab-policy, of exactly what the hidden session does with the
+  image's own filesystems (its swap line masked, the ESP at `/efi` bound
+  read-only and masked, `/var/lib/machines` masked);
+- no mandatory access control runs: in every root the kernel's list of
+  security modules (`/sys/kernel/security/lsm`) holds neither SELinux nor
+  AppArmor and is the first boot's, no selinuxfs exists, and `lsm-status`
+  must pass and name each module. A way back must leave the module list, the
+  lockdown mode and Yama's ptrace scope as they were. In place of the
+  denials, the kernel log of every boot is judged whole: no record lost,
+  every marker in it, no gap in the audit serial numbers and no notice of a
+  suppressed record from the gate's first marker on;
+- auditd is installed but off on arch-boxes: check must name no auditd;
+  locate-database is judged where the image has a locate;
+- the hidden volume is LUKS on a disk of its own, as the image ships
+  cryptsetup;
+- the drift control is a package the gate builds in RAM and installs with
+  pacman (no signature checked, as the image's keyring is never set up): on
+  the decoy, then a newer version in the first session, then a newer one
+  again on the decoy, so that hidden sessions list it twice; check must warn
+  of it with pacman's fix and the second entry show the advisory;
+- the zram checks run only where the cold boot set up zram or the image
+  ships zram-generator. arch-boxes does neither, so they do not run there;
+- the image has no Python, so the guest runs the driver's from the Nix store
+  the harness mounts, to read the kernel log and to drive the failed console
+  logins.
+
+It writes `<image>-gate.json` and `<image>-gate.kmsg.txt`, and fails at its
+end when an assertion does not hold.
+
+`<image>-btrfs` runs the btrfs scan controls of the Fedora gate on the stock
+image, for an image whose root is btrfs. On arch-boxes the controls' folder is
+on the root, the top level of the filesystem, so discard is turned off on `/`.
 
 ### Running and CI
 
