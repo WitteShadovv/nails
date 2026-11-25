@@ -1152,10 +1152,11 @@ of this changelog for that version becomes the release notes word for word, and
   each safety path takes its fail-closed end: the last step refuses the switch, and on the way back
   powers off first; the emergency, which cannot tell then which side it runs on, powers off at
   once past PID 1's queue (or reboots, as asked), and its JSON names the side `unknown`;
-  `activate`, `deactivate`, `discard` and `recover` refuse, and so do the `rehearse` steps; the way
-  back's preparation stops before it unmounts or mounts anything; the detach of the next root and
-  of the runtime directory detaches what it can but never takes the tree for gone, so nothing below
-  it is removed; and the read-only guard and the watcher's sweep keep writable only what the
+  `activate`, `deactivate`, `discard` and `recover` refuse, and so do the `rehearse` steps but an
+  `--offline` scan, which reads only the images it is given; the way back's preparation stops
+  before it unmounts or mounts anything; the detach of the next root and of the runtime directory
+  detaches what it can but never takes the tree for gone, so nothing below it is removed; and the
+  read-only guard and the watcher's sweep keep writable only what the
   session plan records: the decoy root's device, the hidden backend and, where the hidden root is
   a volume of its own, the hidden volume's device, with the devices they sit on. `status` reports
   the place as unknown and names the mount table, the watcher sends one alert that it cannot see

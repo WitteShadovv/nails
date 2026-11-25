@@ -718,6 +718,43 @@ fn a_mount_table_that_cannot_be_read_fails_the_step() {
     );
 }
 
+/// An offline scan reads only the images it is given, and nothing it decides
+/// rests on the session: a mount table that cannot be read does not stop it,
+/// and it runs as outside a session. A live scan of the same device still
+/// fails, as it cannot tell whether it runs in the planting session.
+#[test]
+fn an_offline_scan_runs_where_the_mount_table_cannot_be_read() {
+    fn unread(_: &Path) -> std::io::Result<SessionView> {
+        Err(std::io::Error::other("no proc"))
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("clean.img");
+    ext4_image(&image, "nothing to see here");
+    let token_file = dir.path().join("token");
+    std::fs::write(&token_file, HEX_TOKEN).unwrap();
+    let rehearsal = rooted_at(dir.path()).probed_by(unread);
+    let offline = ScanOptions {
+        token_file: Some(token_file),
+        offline: true,
+        images: vec![image.clone()],
+        ..ScanOptions::default()
+    };
+    let outcome = rehearsal.scan(&offline).map_err(|e| e.message).unwrap();
+    assert_eq!(outcome.exit, ExitStatus::Ok);
+    assert_eq!(outcome.report.total_hits(), 0);
+    assert_eq!(outcome.here.session, None);
+    let live = ScanOptions {
+        offline: false,
+        images: Vec::new(),
+        devices: vec![image],
+        ..offline
+    };
+    match rehearsal.scan(&live) {
+        Ok(_) => panic!("a live scan without the mount table ran"),
+        Err(failure) => assert_eq!(failure.code, "mount_table", "{}", failure.message),
+    }
+}
+
 /// The list of swaps is read byte for byte: a swap file whose name is not
 /// UTF-8 hides no swap partition from a default scan. A list that is not
 /// there names no swap; one that cannot be read fails the scan.
