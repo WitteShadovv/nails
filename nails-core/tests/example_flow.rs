@@ -96,7 +96,12 @@ fn status_on_the_decoy_reports_the_record_next_to_the_live_view() {
 
 #[test]
 fn verify_of_a_fresh_world_is_secure() {
-    let (manager, _tmp) = TestWorld::new().manager();
+    let (manager, _tmp) = TestWorld::new()
+        .with_file(
+            "/proc/self/mountinfo",
+            "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+        )
+        .manager();
     let fs = manager.filesystem().clone();
     let config = manager.config().clone();
     let state_path = config.state_file_path.clone();

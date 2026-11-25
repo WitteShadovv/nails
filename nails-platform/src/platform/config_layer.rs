@@ -87,6 +87,10 @@ mod nixos_layer_tests {
     #[test]
     fn base_reference_check_refuses_a_dirty_base() {
         let fs = MockFilesystem::new();
+        fs.mock_set_file_content(
+            "/proc/self/mountinfo",
+            "1 0 8:1 / / rw,relatime - ext4 /dev/vda1 rw\n",
+        );
         fs.mock_set_path_type(LIVE_HARDWARE, PathKind::File);
         fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[Path::new(LIVE_HARDWARE)]);
         let gate = ConfigLayer::<MockFilesystem>::base_reference_check(

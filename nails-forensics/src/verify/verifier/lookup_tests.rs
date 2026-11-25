@@ -165,18 +165,20 @@ fn session_leftovers_verify_cannot_look_up_warn_and_never_read_as_critical() {
     );
 }
 
-/// A mount table that is there but cannot be read leaves untold whether
-/// `/run/nextroot` is populated: a warning that names the table, where an
-/// empty table passed before.
+/// A mount table that cannot be read leaves untold whether `/run/nextroot`
+/// is populated: a warning that names the table, where an empty table passed
+/// before. So does one that is not there, where `/proc` is not mounted.
 #[test]
 fn a_mount_table_verify_cannot_read_is_one_it_cannot_tell() {
-    let fs = MockFilesystem::new();
-    fs.mock_set_lookup_error("/proc/self/mountinfo", ErrorKind::PermissionDenied);
-    let findings = Verifier::new(fs).check_session_leftovers(None);
-    let table = finding(&findings, "/run/nextroot is populated");
-    assert_eq!(table.severity, Severity::Warn, "{table:?}");
-    assert!(table.message.contains("/proc/self/mountinfo"), "{table:?}");
-    assert_eq!(table.category, "session");
+    let unread = MockFilesystem::new();
+    unread.mock_set_lookup_error("/proc/self/mountinfo", ErrorKind::PermissionDenied);
+    for fs in [unread, MockFilesystem::new()] {
+        let findings = Verifier::new(fs).check_session_leftovers(None);
+        let table = finding(&findings, "/run/nextroot is populated");
+        assert_eq!(table.severity, Severity::Warn, "{table:?}");
+        assert!(table.message.contains("/proc/self/mountinfo"), "{table:?}");
+        assert_eq!(table.category, "session");
+    }
 }
 
 /// A runtime unit link that cannot be looked up is one verify cannot tell

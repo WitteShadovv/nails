@@ -61,23 +61,20 @@ impl BackendChain {
 /// Resolve the device-mapper / loop chain behind the hidden-root mount.
 ///
 /// Returns `Ok(None)` when `hidden_root` is not a mount point (already
-/// unmounted), or when there is no mount table, as in a test's tree. Reads
+/// unmounted). Reads
 /// only `/proc/self/mountinfo` and `/sys/block` through `fs`, and changes
 /// nothing: a sysfs place that is there but cannot be read ends the walk
 /// there and lands in [`BackendChain::unread`].
 ///
 /// # Errors
 ///
-/// The mount table is there but cannot be read.
+/// The mount table cannot be read, or is not there (no `/proc`): it may
+/// show the hidden root on a mapping.
 pub fn resolve_backend_chain<F: Filesystem>(
     fs: &F,
     hidden_root: &Path,
 ) -> crate::Result<Option<BackendChain>> {
-    let content = match fs.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
-        Ok(content) => content,
-        Err(error) if error.nothing_there() => return Ok(None),
-        Err(error) => return Err(error),
-    };
+    let content = fs.read_file_bytes(Path::new(SELF_MOUNTINFO))?;
 
     // Match the hidden root against both its literal and canonical form: the
     // mount table records the canonical path, but a caller may pass either.
@@ -239,17 +236,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_returns_none_without_a_mount_table() {
-        let fs = MockFilesystem::new();
-        let chain = resolve_backend_chain(&fs, Path::new("/mnt/data")).unwrap();
-        assert!(chain.is_none());
-    }
-
-    #[test]
     fn a_mount_table_that_cannot_be_read_is_an_error() {
         // It may show the hidden root on a mapping: taking it for nothing
-        // mounted would record no mapping for the way back to close.
+        // mounted would record no mapping for the way back to close. So may
+        // one that is not there, where /proc is not mounted.
         let fs = MockFilesystem::new();
+        assert!(resolve_backend_chain(&fs, Path::new("/mnt/data")).is_err());
         fs.mock_add_file(
             "/proc/self/mountinfo",
             &mountinfo_line("/mnt/data", "ext4", "/dev/dm-0"),

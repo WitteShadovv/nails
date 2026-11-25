@@ -646,6 +646,7 @@ fn the_nixos_fix_passes_the_check_of_the_decoys_own_configuration() {
     let scan = |text: &str| {
         let fs = MockFilesystem::new();
         fs.mock_set_mount_table(MOUNTS);
+        fs.mock_set_file_content("/proc/self/mountinfo", MOUNTS);
         fs.mock_set_file_content("/etc/nixos/configuration.nix", text);
         fs.mock_set_files_with_pattern(
             "/etc/nixos",

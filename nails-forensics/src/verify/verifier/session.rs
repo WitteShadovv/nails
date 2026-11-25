@@ -91,15 +91,12 @@ impl HiddenSession {
 
 impl<F: Filesystem> Verifier<F> {
     /// The live mount table, read through the filesystem seam byte for byte.
-    /// One that is not there, as on a test's tree, shows no mount, as the
-    /// other checks that read it through the seam take it; one that is there
-    /// but cannot be read is an error.
+    /// One that cannot be read is an error, and so is one that is not there
+    /// (no `/proc`): the kernel always gives a process its table.
     fn mount_table(&self) -> Result<Vec<MountEntry>> {
-        match self.filesystem.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
-            Ok(bytes) => Ok(parse_mountinfo(&bytes)),
-            Err(error) if error.nothing_there() => Ok(Vec::new()),
-            Err(error) => Err(error),
-        }
+        self.filesystem
+            .read_file_bytes(Path::new(SELF_MOUNTINFO))
+            .map(|bytes| parse_mountinfo(&bytes))
     }
 
     /// The hidden session this run is inside, if any: `/` is an overlay whose

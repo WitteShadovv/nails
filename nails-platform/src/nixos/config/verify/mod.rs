@@ -389,10 +389,9 @@ pub fn verify_base_config_clean_placed<F: Filesystem>(
 ///
 /// # Errors
 ///
-/// The mount table is there but cannot be read: without it the device
-/// names of the hidden volume are not known, and a line that names them
-/// would pass. Where it is not there, as on a test's tree, no mount shows a
-/// device.
+/// The mount table cannot be read, or is not there (no `/proc`): without
+/// it the device names of the hidden volume are not known, and a line that
+/// names them would pass.
 fn markers<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
@@ -415,11 +414,7 @@ fn markers<F: Filesystem>(
     // `tmpfs` names no device.
     // Byte for byte: a mount whose path is not valid UTF-8 no longer fails
     // the read, and one that cannot be read still fails the check.
-    let entries = match fs.read_file_bytes(Path::new(SELF_MOUNTINFO)) {
-        Ok(mountinfo) => parse_mountinfo(&mountinfo),
-        Err(error) if error.nothing_there() => Vec::new(),
-        Err(error) => return Err(error),
-    };
+    let entries = parse_mountinfo(&fs.read_file_bytes(Path::new(SELF_MOUNTINFO))?);
     let sources = resolve_backing_sources(&entries, hidden_volume_root);
     let below = storage::below(fs, &entries, hidden_volume_root);
     unread.extend(below.unread.iter().cloned());

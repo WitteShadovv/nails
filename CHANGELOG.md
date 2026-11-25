@@ -1164,18 +1164,21 @@ of this changelog for that version becomes the release notes word for word, and
   refuses a menu entry's start, saying the table could not be read, and otherwise shows its
   Emergency control from the start. An offline verify, which says how to mount each place of the
   decoy that holds nothing under the root, took the device of such a place for one not mounted here:
-  it now says the table could not be read and gives the mount for either case. A list of swaps that
-  cannot be read fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy
-  root whose subvolume name is not valid UTF-8 is refused, and so is an overlay layer at such a
-  path: the option text `mount(2)` takes cannot hold that name unchanged. A btrfs mount whose
-  `subvol=` holds an octal escape (a space in the subvolume's name) now counts as that subvolume in
-  the decoy-storage checks, as it already did for the way back. The window reads a hidden root at a
-  path with a `,`, `:` or `\` as the engine does, where before it took that hidden session for the
-  decoy. The decoy's fstab is read with a byte that is not valid UTF-8 kept as its octal escape, and
-  a mount point holds the bytes its escapes stand for, and the session policy names mount,
-  automount, swap and device units as PID 1 names them, a name of 256 characters or more shortened
-  with a hash: so what the policy masks or skips for such a line is the unit PID 1 has. A decoy unit
-  whose name may be one PID 1 shortened that way is masked.
+  it now says the table could not be read and gives the mount for either case. A mount table that is
+  not there at all, where `/proc` is not mounted, now counts as one that cannot be read in verify,
+  in the NixOS check `suspicious-nails-reference` and in the record of the hidden volume's
+  device-mapper stack too, which took it for an empty table. A list of swaps that cannot be read
+  fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy root whose
+  subvolume name is not valid UTF-8 is refused, and so is an overlay layer at such a path: the
+  option text `mount(2)` takes cannot hold that name unchanged. A btrfs mount whose `subvol=` holds
+  an octal escape (a space in the subvolume's name) now counts as that subvolume in the
+  decoy-storage checks, as it already did for the way back. The window reads a hidden root at a path
+  with a `,`, `:` or `\` as the engine does, where before it took that hidden session for the decoy.
+  The decoy's fstab is read with a byte that is not valid UTF-8 kept as its octal escape, and a
+  mount point holds the bytes its escapes stand for, and the session policy names mount, automount,
+  swap and device units as PID 1 names them, a name of 256 characters or more shortened with a hash:
+  so what the policy masks or skips for such a line is the unit PID 1 has. A decoy unit whose name
+  may be one PID 1 shortened that way is masked.
 - The way back keeps more of the hidden session out of the decoy journal. PID 1 named every process
   of the session still running at the switch in `Sending SIGKILL to PID N (<name>)` lines after
   the kmsg cursor, and the kernel logged the hidden ext4 volume's `unmounting filesystem <UUID>`
