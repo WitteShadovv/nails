@@ -1511,13 +1511,15 @@ What the gate leaves to the admission:
 - it runs on arch-boxes alone, which boots SeaBIOS and GRUB with a swap file.
   So UEFI and systemd-boot are not covered, and neither is the zram swap the
   zram checks would judge.
-- the archinstall image (`arch-install` in `images.json`) boots UEFI with
-  systemd-boot, its ESP at `/boot`, and swaps on zram. A row in
-  `expectations` alone does not bring it into the gate: `arch_gate.py` sets
-  `init_on_free=1` and `log_buf_len` through GRUB (`PREPARE_DECOY`) and
-  expects the stock swap file refused (`STOCK_VERDICTS`). Its gate needs those
-  arguments in its loader entries instead, stock verdicts of its own, a driver that boots it with
-  UEFI firmware, and the `fstabPolicy` its own layout gives.
+- the archinstall image (`arch-install` in `images.json`) is pinned and
+  boots UEFI with systemd-boot, which its drivers would get with OVMF as any
+  VM of it does (its `firmware` is `uefi`), its ESP at `/boot`, and swaps on
+  zram. A row in `expectations` alone does not bring it into the gate:
+  `arch_gate.py` sets `init_on_free=1` and `log_buf_len` through GRUB
+  (`PREPARE_DECOY`) and expects the stock swap file refused
+  (`STOCK_VERDICTS`). Its gate needs those arguments in its loader entries
+  instead, stock verdicts of its own, and the `fstabPolicy` its own layout
+  gives.
 - the oracle nightly's records scan does not run on arch-boxes, as it plants
   a Fedora decoy's record controls, and no oracle runs on the archinstall
   image.
