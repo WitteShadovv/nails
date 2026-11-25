@@ -298,14 +298,9 @@ fn render_template(root: &Path, title: &str) -> String {
 #     attached during it, is read-only for the session (mounts come up read-only,
 #     writes fail); the way back makes them writable again. A root user can still
 #     set a disk writable on purpose.
-#   write_tripwire: opt-in: power off as soon as the kernel's write counters show
-#     a sector written to a decoy disk outside the hidden volume's own partition
-#     or disk; activation refuses a hidden volume that shares a partition with
-#     the decoy or is a file on it.
 # [session_mounts]
 # alert = true
 # read_only = false
-# write_tripwire = false
 
 # What to do about system sleep (suspend/hibernate) while the hidden environment
 # is active. Suspending an active session leaves it resident in RAM behind the

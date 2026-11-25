@@ -82,5 +82,4 @@ pub mod tail;
 pub mod tools;
 pub mod transition;
 pub mod utab;
-pub mod write_counters;
 pub mod zram;

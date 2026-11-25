@@ -461,7 +461,6 @@ fn way_back_plan(hidden: &Path) -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: nails_teardown::whole_root::fresh_pids::Record::default(),
-        write_tripwire: None,
     }
 }
 
@@ -558,7 +557,6 @@ fn a_way_back_that_powers_off_writes_nothing_on_the_console() {
             tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
-            write_counters: None,
         });
 
         // The way back ran and asked for the power-off: the stand-in kernel

@@ -50,10 +50,8 @@ BACK_BEFORE_THE_FIX = """\
 
 
 def leave_out(point: str) -> bool:
-    return (
-        point.startswith("/run/")
-        or point == "/mnt/data"
-        or point.startswith("/mnt/data/")
+    return point.startswith("/run/") or point == "/mnt/data" or point.startswith(
+        "/mnt/data/"
     )
 
 

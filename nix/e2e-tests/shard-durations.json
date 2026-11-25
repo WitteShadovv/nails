@@ -64,7 +64,6 @@
   "session-wayback-poweroff": 120,
   "session-window-emergency": 75,
   "session-window-launcher": 90,
-  "session-write-tripwire": 160,
   "shell-history-fish": 31,
   "shell-history-zsh": 34,
   "smoke-verify-config": 20,

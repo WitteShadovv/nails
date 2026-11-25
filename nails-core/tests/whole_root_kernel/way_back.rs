@@ -355,7 +355,6 @@ fn the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place() {
             tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
-            write_counters: None,
         });
         assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
         let rekeyed = |mount: &MountEntry, id: i32, target: &str| {

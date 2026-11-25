@@ -750,13 +750,13 @@ oracle, see `nix/e2e-tests/README.md`). On NixOS, Debian 13 and Ubuntu 24.04 and
 
 1. A power-off from inside the session (the way back powering off, the sleep
    guard's `teardown`, an emergency or the window's power-off, the switch-timeout
-   guard, the write tripwire) writes the decoy root's ext4 superblock and one
+   guard) writes the decoy root's ext4 superblock and one
    journal block. The decoy root stays mounted read-write below the overlay, and
    the final shutdown unmounts it, so the superblock's write time dates the
    session's end.
 2. What the decoy wrote just before the switch reaches the disk after it (its
    persistent journal where it keeps one, the ext4 journal): the switch does not
-   flush the decoy root. The write tripwire's own step flushes it.
+   flush the decoy root.
 3. In `session-decoy-mount-table`, whose ESP is behind an automount, the first
    sector of the ESP: most likely vfat's clean mark in its boot sector, written
    when the last read-write mount of the ESP (kept by the session's read-only

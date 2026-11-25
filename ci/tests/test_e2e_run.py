@@ -39,8 +39,6 @@ def _running(pid: int, wait: float = 5.0) -> bool:
         if time.monotonic() > deadline:
             return True
         time.sleep(0.1)
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 E2E_ROOT = REPO_ROOT / "nix" / "e2e-tests"
 # A Nix identifier, such as a node name.
@@ -356,6 +354,7 @@ class RunBuildTest(unittest.TestCase):
             self.assertEqual(records[0]["result"], "pass")
             self.assertEqual(records[1]["result"], "fail" if require_boot else "pass")
             self.assertEqual(records[1].get("not_booted", False), require_boot)
+
 
     def environ(self, **extra: str) -> dict[str, str]:
         return {

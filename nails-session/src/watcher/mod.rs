@@ -25,10 +25,8 @@
 //! subcommand.
 
 mod cover;
-mod writes;
 
 pub use cover::CoverWatch;
-pub use writes::{Since, WriteWatch, trip};
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

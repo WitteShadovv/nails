@@ -188,7 +188,6 @@ mod kernel_tests {
                 kernel_settings: Vec::new(),
                 quiet_mounts: Vec::new(),
                 pids: Default::default(),
-                write_tripwire: None,
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

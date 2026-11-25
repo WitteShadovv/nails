@@ -128,7 +128,6 @@ fn minimal_inputs<'a>(
         program_label: None,
         rebuild_space_mb: 0,
         read_only_disks: false,
-        write_tripwire: false,
         accepted_decoy_storage: None,
         window_launcher: None,
     }

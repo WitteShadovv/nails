@@ -368,7 +368,7 @@ def auto_jobs(meminfo: Path = Path("/proc/meminfo"), cpus: int | None = None) ->
             if line.startswith("MemTotal:"):
                 total_kib = int(line.split()[1])
                 break
-    except OSError, ValueError, IndexError:
+    except (OSError, ValueError, IndexError):
         total_kib = 0
     by_memory = int((total_kib / (1024 * 1024) - RESERVED_GIB) // GIB_PER_TEST)
     cores = cpus if cpus is not None else (os.cpu_count() or 2)
@@ -883,7 +883,7 @@ def _stop_group(process: subprocess.Popen[bytes]) -> None:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(process.pid, sig)
-        except ProcessLookupError, PermissionError:
+        except (ProcessLookupError, PermissionError):
             break
         if sig == signal.SIGTERM:
             try:

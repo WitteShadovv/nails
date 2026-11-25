@@ -90,7 +90,6 @@ mod kernel_tests {
             kernel_settings: Vec::new(),
             quiet_mounts: Vec::new(),
             pids: Default::default(),
-            write_tripwire: None,
         }
     }
 
@@ -154,7 +153,6 @@ mod kernel_tests {
                 tail: None,
                 selinux: &nails_teardown::whole_root::selinux::KERNEL,
                 start: nails_teardown::whole_root::program_label::Started::by_hand(),
-                write_counters: None,
             };
             let before = boot_records::boot_clock();
             let outcome = transition::run(&env);
@@ -283,7 +281,6 @@ mod kernel_tests {
             tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
-            write_counters: None,
         };
         let outcome = transition::run(&env);
         nextroot::detach_tree(&next);

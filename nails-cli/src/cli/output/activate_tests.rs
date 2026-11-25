@@ -98,7 +98,6 @@ fn entry(warnings: Vec<String>) -> Entry {
             kernel_settings: Vec::new(),
             quiet_mounts: Vec::new(),
             pids: Default::default(),
-            write_tripwire: None,
         },
         decisions: vec![
             Decision::ReadOnlyBind {

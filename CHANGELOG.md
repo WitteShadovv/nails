@@ -58,18 +58,6 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
-- `[session_mounts] write_tripwire` (opt-in): the session watcher compares the kernel's write
-  counters of every disk that holds a decoy filesystem with the ones the last step before the
-  switch took after a `sync`, and powers the machine off at the first sector written or discarded
-  outside the hidden volume's own partition or disk, a partition table and the gaps between
-  partitions included. It counts what reached the disk, whatever program wrote it. Activation
-  refuses a hidden volume the counters cannot tell apart from the decoy: one that shares a
-  partition with it (a logical volume beside the decoy's, a folder or subvolume accepted with
-  `--allow-decoy-storage`), a container file on a disk, and a hidden root without a block device.
-  It is a tripwire, not a fence: the write is on the disk when the watcher sees it, up to one poll
-  later, and the power-off is a clean shutdown. It does not see SCSI or NVMe passthrough, what a
-  device writes on its own, EFI variables or a TPM, nor a disk that holds no decoy filesystem at
-  activation (see [Disks mounted during the session](docs/configuration.md#disks-mounted-during-the-session)).
 - The NixOS VM tests and the distribution smoke, records, apt-shutdown and Nix tests count every
   write to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
   the trigger of the switch into the hidden root until the session ends at the way back (cut by
@@ -3138,7 +3126,7 @@ of this changelog for that version becomes the release notes word for word, and
 - A hidden session still writes to the decoy disk, as the block-write oracle of the VM tests
   measures it on NixOS, Debian 13 and Ubuntu 24.04 and 26.04 (none of these is fixed yet): (1) a
   power-off from inside the session (the way back powering off, the sleep guard's `teardown`, an
-  emergency or the window's power-off, the switch-timeout guard, the write tripwire) writes the
+  emergency or the window's power-off, the switch-timeout guard) writes the
   decoy root's ext4 superblock and a journal block, as the final shutdown unmounts the decoy root
   that stays mounted read-write below the overlay, which dates the session's end; (2) what the
   decoy wrote just before the switch (its persistent journal, the ext4 journal) reaches the disk
