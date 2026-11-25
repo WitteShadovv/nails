@@ -338,8 +338,9 @@ fn file_device(fields: &[u8]) -> bool {
 /// be doubled, as in a [`Pattern::Path`]. The range of the whole path.
 fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
     const PREFIX: &[u8] = b"/dev/disk/by-id/dm-uuid-crypt-";
+    let mut begins = Begins::default();
     (0..line.len()).find_map(|start| {
-        if line[start] != b'/' || !begins_path(line, start) {
+        if line[start] != b'/' || !begins.at(line, start) {
             return None;
         }
         let tail = path_end(line, start, PREFIX)?;
@@ -368,11 +369,12 @@ fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
     let mut path = path.to_vec();
     path.dedup_by(|byte, previous| *byte == b'/' && *previous == b'/');
     let rooted = path.first() == Some(&b'/');
+    let mut begins_at = Begins::default();
     (0..line.len()).find_map(|start| {
         // Whether the path begins here first: a start inside a run of `.`
         // parts never begins one, so the run is read once, not from each.
         let begins = if rooted {
-            line[start] == b'/' && begins_path(line, start)
+            line[start] == b'/' && begins_at.at(line, start)
         } else {
             !continues_file_name(start.checked_sub(1).map(|i| line[i]))
         };
@@ -452,6 +454,27 @@ fn begins_path(line: &[u8], start: usize) -> bool {
         .take_while(|b| SYSTEMD_PREFIXES.contains(b))
         .count();
     starts_value(line, at + 1 - prefixes)
+}
+
+/// [`begins_path`] for the slashes of a line in turn, read once for each run
+/// of slashes: every slash of a run has the same byte before the run, so a
+/// long run is not read back from each of its slashes.
+#[derive(Debug, Default)]
+struct Begins {
+    /// The slash read last and whether a path begins there.
+    last: Option<(usize, bool)>,
+}
+
+impl Begins {
+    /// Whether a path begins at `start`, a slash of `line`.
+    fn at(&mut self, line: &[u8], start: usize) -> bool {
+        let begins = match self.last {
+            Some((last, begins)) if last + 1 == start => begins,
+            _ => begins_path(line, start),
+        };
+        self.last = Some((start, begins));
+        begins
+    }
 }
 
 /// Whether a value starts at `at` in `line`: at the start of the line, or
