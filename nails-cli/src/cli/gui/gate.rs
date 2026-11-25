@@ -89,10 +89,17 @@ pub(super) fn decide(
 fn session_view(env: &RuntimeEnv, config: Option<&Path>) -> SessionView {
     let config = nails_core::app::config::load_config_or_defaults(config).into_config();
     let state_path = config.state_file_path.clone();
-    NailsManager::new(RealFilesystem, config, state_path)
-        .with_runtime_env(env.clone())
-        .session_view()
-        .unwrap_or(SessionView::Decoy)
+    view_or_decoy(
+        NailsManager::new(RealFilesystem, config, state_path)
+            .with_runtime_env(env.clone())
+            .session_view(),
+    )
+}
+
+/// The view the gate decides on for `view` as the probe read it: the
+/// decoy's, the stricter gate, where the mount table could not be read.
+pub(super) fn view_or_decoy(view: nails_core::Result<SessionView>) -> SessionView {
+    view.unwrap_or(SessionView::Decoy)
 }
 
 /// What the gate reads of the decoy: its persistent records, without writing
