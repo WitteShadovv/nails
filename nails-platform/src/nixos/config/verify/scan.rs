@@ -881,19 +881,23 @@ fn identifier_len(line: &[u8], at: usize) -> usize {
         .count()
 }
 
-/// The length of the number that starts at `at`: digits, or digits around a
-/// `.` and an exponent after them. 0 where none starts.
+/// The length of the number that starts at `at`, as Nix's lexer reads one:
+/// digits, or a float and its exponent. 0 where none starts.
 fn number_len(line: &[u8], at: usize) -> usize {
     let digits = |from: usize| {
         line.get(from..).map_or(0, |rest| {
             rest.iter().take_while(|b| b.is_ascii_digit()).count()
         })
     };
-    let mut end = at + digits(at);
-    let mut fraction = false;
-    if line.get(end) == Some(&b'.') && (end > at || digits(end + 1) > 0) {
+    let int = digits(at);
+    let mut end = at + int;
+    // Nix's float is `[1-9][0-9]*\.[0-9]*` or `0?\.[0-9]+`, then an
+    // exponent: `0.e5` is the integer 0, a `.` and the name `e5`.
+    let fraction = line.get(end) == Some(&b'.')
+        && ((int > 0 && line[at] != b'0')
+            || ((int == 0 || (int == 1 && line[at] == b'0')) && digits(end + 1) > 0));
+    if fraction {
         end += 1 + digits(end + 1);
-        fraction = true;
     }
     if fraction
         && matches!(line.get(end), Some(b'e' | b'E'))

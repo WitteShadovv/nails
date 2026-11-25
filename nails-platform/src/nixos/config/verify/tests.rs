@@ -844,6 +844,33 @@ fn a_mapping_after_a_carriage_return_in_code_is_refused() {
     }
 }
 
+/// Nix reads a float only as `[1-9][0-9]*.[0-9]*` or `0?.[0-9]+` with an
+/// exponent after it, so `0.e5''` is the integer 0, a `.` and the name
+/// `e5''`, and no string starts there: the mapping counts in a
+/// `luks.devices` block after it, as Nix 2.36 reads it.
+#[test]
+fn a_mapping_after_a_name_nix_reads_after_a_number_is_refused() {
+    for number in [
+        "0.e5''", "00.e5''", "01.e5''", "0.E5''", "0.e5-''", "0.e-5''", "09.e1''",
+    ] {
+        for content in [
+            format!(
+                "let y = {number}; in {{ boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }}; }}"
+            ),
+            format!(
+                "{{ config, ... }}:\nlet\n  y = {number};\nin\n{{\n  boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }};\n}}\n"
+            ),
+        ] {
+            let scan = scan_configuration(&content);
+            assert_eq!(
+                shown_lines(&scan),
+                [ReferenceKind::MapperName],
+                "{content:?}"
+            );
+        }
+    }
+}
+
 /// The kinds of the references `scan` holds, in order.
 fn shown_lines(scan: &BaseConfigScan) -> Vec<ReferenceKind> {
     scan.references.iter().map(|found| found.kind).collect()
