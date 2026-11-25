@@ -27,6 +27,16 @@
 //! lines keep no indentation of their own. A block whose lines are indented
 //! less than its first is not followed. Parentheses are not followed.
 //!
+//! Comments and tokens end where Nix's lexer ends them. A block comment ends
+//! at its first `*/`, whatever quotes it holds (`/* a 5" disk */`), and
+//! starts at a `/*` right after a word too (`true/* … */`); a `#` comment
+//! ends at a carriage return as well as at the end of the line, and what
+//! follows the carriage return is code. A `'` continues an identifier
+//! (`a''` is a name, not the start of a string), and a URI holds every byte
+//! Nix allows in one, `'` and `*` among them (`http://example.org/a''`). A
+//! scanner made with [`Reading::Quotes`] reads them by quotes and brackets
+//! alone instead, and the check counts what either reading finds.
+//!
 //! The scanner also records the escapes of the strings and quoted attribute
 //! names it reads, in code and in comments ([`Scanner::escapes`]), and the
 //! attribute names each line defines ([`Scanner::defined`]).
@@ -120,9 +130,25 @@ struct Comment {
     trailing: bool,
 }
 
+/// How a [`Scanner`] reads comments and tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Reading {
+    /// As Nix's lexer reads them; see the module docs.
+    #[default]
+    Nix,
+    /// By quotes and brackets alone: a quote opens a string in a comment as
+    /// in code, and the string runs on past the comment's end; a `#` comment
+    /// runs to the end of the line; a token is a run of the bytes of words,
+    /// paths and URLs, with no `'` and no URI of Nix's own. Where it parts
+    /// from Nix it reads text as code, a string or a comment that Nix does
+    /// not, and the check counts the names either reading finds.
+    Quotes,
+}
+
 /// Reads a file line by line; see the module docs.
 #[derive(Debug, Default)]
 pub(super) struct Scanner {
+    reading: Reading,
     code: Stack,
     comment: Option<Comment>,
     /// Inside a `/* … */` comment.
@@ -136,6 +162,14 @@ pub(super) struct Scanner {
 }
 
 impl Scanner {
+    /// A scanner that reads comments and tokens as `reading` says.
+    pub(super) fn reading(reading: Reading) -> Self {
+        Self {
+            reading,
+            ..Self::default()
+        }
+    }
+
     /// The attribute names the line [`Scanner::line`] read last defines,
     /// without quotes, in code and in comments, `let` bindings among them.
     pub(super) fn defined(&mut self) -> Vec<Range<usize>> {
@@ -173,10 +207,35 @@ impl Scanner {
                 comment.recover(indent);
             }
         }
+        let nix = self.reading == Reading::Nix;
         let mut in_comment = self.in_block_comment;
         let mut attribute = self.stack(in_comment).expects_attribute();
+        // Where the comment the line is in ends on it.
+        let mut close = comment_end(line, 0, in_comment);
+        let full = line;
         let mut i = 0;
-        while i < line.len() {
+        while i < full.len() {
+            // A comment ends where Nix's lexer ends it, whatever the copy of
+            // the frames it is read on holds: a block comment at its first
+            // `*/`, also inside a quote the comment holds, and a `#` comment
+            // at a carriage return as well as at the end of the line. What
+            // it holds is read up to there, a string in it ends with it, and
+            // what follows is code.
+            if nix && in_comment && i >= close {
+                i = close + if self.in_block_comment { 2 } else { 1 };
+                self.in_block_comment = false;
+                in_comment = false;
+                attribute = self.code.expects_attribute();
+                if let Some(comment) = &mut self.comment {
+                    comment.stack.end_strings(comment.base);
+                }
+                continue;
+            }
+            let line = if nix && in_comment {
+                &full[..close]
+            } else {
+                full
+            };
             if let Some(Frame::Str { indented }) = self.stack(in_comment).top() {
                 let indented = *indented;
                 let next = self.stack(in_comment).string(line, i, indented);
@@ -202,9 +261,10 @@ impl Scanner {
                     attribute = self.stack(true).expects_attribute();
                 }
                 i += if block { 2 } else { 1 };
+                close = comment_end(full, i, block);
                 continue;
             }
-            if in_comment && self.in_block_comment && line[i..].starts_with(b"*/") {
+            if !nix && in_comment && self.in_block_comment && line[i..].starts_with(b"*/") {
                 self.in_block_comment = false;
                 in_comment = false;
                 attribute = self.code.expects_attribute();
@@ -240,8 +300,12 @@ impl Scanner {
                     continue;
                 }
             }
-            if is_token_start(line, i) {
-                let end = token_end(line, i);
+            if is_token_start(line, i, nix) {
+                let end = if nix {
+                    token_end(line, i)
+                } else {
+                    i + line[i..].iter().take_while(|&&b| is_token_byte(b)).count()
+                };
                 attribute = self.stack(in_comment).keyword(&line[i..end], indent);
                 i = end;
                 continue;
@@ -684,6 +748,16 @@ fn component(line: &[u8], start: usize) -> Option<(Component, usize)> {
     Some(((line[range.clone()].to_vec(), range), start + len))
 }
 
+/// Where a comment that holds `from` ends in `line`: a block comment
+/// (`block`) at its first `*/`, a `#` comment at a carriage return; the end
+/// of the line when it does not end on it.
+fn comment_end(line: &[u8], from: usize, block: bool) -> usize {
+    let end: &[u8] = if block { b"*/" } else { b"\r" };
+    line.get(from..)
+        .and_then(|rest| rest.windows(end.len()).position(|window| window == end))
+        .map_or(line.len(), |at| from + at)
+}
+
 /// Where the text of a comment line starts, past blanks, comment markers and
 /// the carriage return of a CRLF line: its column is the line's indentation.
 fn comment_text(line: &[u8], from: usize) -> usize {
@@ -706,13 +780,78 @@ fn is_blank(byte: u8) -> bool {
 }
 
 /// The start of a token (a word, a path, a URL or a number), not the inside
-/// of one.
-fn is_token_start(line: &[u8], i: usize) -> bool {
-    is_identifier_byte(line[i]) && (i == 0 || !is_token_byte(line[i - 1]))
+/// of one. As Nix reads it (`nix`), a word right after the `.` that selects
+/// an attribute of a value in brackets or a string starts one too
+/// (`{ a'' = 1; }.a''`).
+fn is_token_start(line: &[u8], i: usize, nix: bool) -> bool {
+    let not_in_token = |at: usize| !is_token_byte(line[at]);
+    is_identifier_byte(line[i])
+        && (i == 0
+            || not_in_token(i - 1)
+            || (nix && line[i - 1] == b'.' && (i == 1 || not_in_token(i - 2))))
 }
 
+/// Where the token that starts at `i` ends, as Nix's lexer reads it. A URI
+/// (`http://example.org/a''`) takes every byte Nix allows in one, `'` and
+/// `*` among them. Elsewhere `/*` starts a comment, also right after a word
+/// (`true/* a 5" disk */`), and `'` continues an identifier (`a''`), but not
+/// a path (`./a''` is a path and a string).
 fn token_end(line: &[u8], i: usize) -> usize {
-    i + line[i..].iter().take_while(|&&b| is_token_byte(b)).count()
+    if let Some(end) = uri_end(line, i) {
+        return end;
+    }
+    let mut at = i;
+    let mut path = false;
+    while let Some(&byte) = line.get(at) {
+        let continues = match byte {
+            b'/' => {
+                path = true;
+                line.get(at + 1) != Some(&b'*')
+            }
+            b'\'' => !path && ends_identifier(&line[i..at]),
+            _ => is_token_byte(byte),
+        };
+        if !continues {
+            break;
+        }
+        at += 1;
+    }
+    at
+}
+
+/// Whether `text`, the token read so far, ends in an identifier, which a `'`
+/// continues: its last part, after the last byte no identifier holds, has a
+/// letter or `_`, from which on Nix reads it as one (`1a` is `1` and `a`).
+fn ends_identifier(text: &[u8]) -> bool {
+    let start = text
+        .iter()
+        .rposition(|&b| !(is_identifier_byte(b) || b == b'\''))
+        .map_or(0, |at| at + 1);
+    text[start..]
+        .iter()
+        .any(|&b| b.is_ascii_alphabetic() || b == b'_')
+}
+
+/// The end of the URI that starts at `i`, if one does, as Nix's lexer reads
+/// one: a scheme (a letter, then letters, digits, `+`, `-` or `.`), a `:`
+/// and at least one byte of the URI's own.
+fn uri_end(line: &[u8], i: usize) -> Option<usize> {
+    if !line.get(i)?.is_ascii_alphabetic() {
+        return None;
+    }
+    let scheme = line[i..]
+        .iter()
+        .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
+        .count();
+    let colon = i + scheme;
+    if line.get(colon) != Some(&b':') {
+        return None;
+    }
+    let rest = line[colon + 1..]
+        .iter()
+        .take_while(|&&b| b.is_ascii_alphanumeric() || b"%/?:@&=+$,-_.!~*'".contains(&b))
+        .count();
+    (rest > 0).then_some(colon + 1 + rest)
 }
 
 /// A byte of a token: a Nix identifier, or a path, URL or number. A keyword

@@ -204,3 +204,44 @@ fn the_attribute_names_a_line_defines_are_recorded() {
         ]
     );
 }
+
+/// A comment ends where Nix's lexer ends it, and a token too, so the code
+/// after it is read as code: a block comment at its first `*/` though it
+/// holds an odd quote or `''`, also right after a word; a `#` comment at a
+/// carriage return; a name or a URI that holds `''`. Each entry after such a
+/// place counts.
+#[test]
+fn the_code_after_a_comment_or_a_token_nix_ends_is_read_as_code() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for before in [
+        "x = 1; /* a 5\" disk */",
+        "x = 1; /* a 5'' disk */",
+        "y = true/* a 5\" disk */;",
+        "y = \"${/* a 5\" disk */ \"a\"}\";",
+        "x = 1; # a note\r",
+        "# a 5\" disk\r",
+        "y = let a'' = 1; in a'';",
+        "y = { a'' = 1; }.a'';",
+        "y = http://example.org/a'';",
+    ] {
+        let text = format!("{{ {before} {entry} }}");
+        assert_eq!(names(&text), [mapping(1, "data")], "{text:?}");
+    }
+    // A block comment's quote does not reach the next line either.
+    let text = format!("{{\n  /* a 5\" disk */ {entry}\n  x = 1;\n}}");
+    assert_eq!(names(&text), [mapping(2, "data")], "{text:?}");
+}
+
+/// Where Nix reads a string, so does the scanner: `''` after a path or a
+/// number opens one, as does `"` after a URI. An entry inside it names
+/// nothing.
+#[test]
+fn a_string_or_a_comment_after_a_path_is_read_as_one() {
+    for text in [
+        "{ y = ./a''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
+        "{ y = 1''{ boot.initrd.luks.devices = { data = { }; }; }''; }",
+        "{ y = http://example.org/a\"{ boot.initrd.luks.devices = { data = { }; }; }\"; }",
+    ] {
+        assert_eq!(names(text), [], "{text:?}");
+    }
+}

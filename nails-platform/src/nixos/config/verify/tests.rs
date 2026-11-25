@@ -763,6 +763,45 @@ fn a_name_written_with_fstab_s_octal_escapes_is_refused() {
     }
 }
 
+/// The mapping name counts in a `luks.devices` block after a place where
+/// Nix's lexer ends a comment or a token otherwise than a scan that knows
+/// only strings and brackets would: an odd quote in a block comment, a block
+/// comment right after a word, a `#` comment a carriage return ends, and
+/// `''` in a name or a URI.
+#[test]
+fn a_mapping_after_a_comment_or_a_token_nix_ends_is_refused() {
+    for before in [
+        "x = 1; /* a 5\" disk */",
+        "y = true/* a 5\" disk */;",
+        "x = 1; # a note\r",
+        "y = let a'' = 1; in a'';",
+        "y = http://example.org/a'';",
+    ] {
+        let content = format!(
+            "{{ {before} boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }}; }}"
+        );
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            only_reference(&scan),
+            (1, "data", ReferenceKind::MapperName),
+            "{content:?}"
+        );
+    }
+}
+
+/// Where a reading by quotes and brackets alone parts from Nix's lexer, what
+/// it finds counts too: here it takes the quote in the block comment for a
+/// string, which runs on to hold `/mnt/d\ata`, and Nix reads the second
+/// block comment as a comment with no string in it.
+#[test]
+fn a_name_that_only_the_reading_by_quotes_finds_still_counts() {
+    let scan = scan_configuration("{ x = [ true/* 5\" */ \"a\" ]; /* /mnt/d\\ata */ }");
+    assert_eq!(
+        only_reference(&scan),
+        (1, "/mnt/d\\ata", ReferenceKind::MountPoint)
+    );
+}
+
 /// A unit's setting that names a file on the hidden volume behind one of
 /// systemd's prefixes (`-` for a file that may be missing) names the mount
 /// point, and is refused as the bare path is.
