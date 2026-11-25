@@ -1,8 +1,8 @@
 # Test 80: UEFI ESP / EFI NVRAM invariant
 #
 # Enforces the bootloader/ESP/NVRAM invariant from docs/threat-model.md: a
-# hidden session (a soft-reboot into the whole-root overlay and a soft-reboot
-# back) must not change any boot entry, ESP file or EFI NVRAM variable beyond
+# hidden session (a soft-reboot into the whole-root overlay, then deactivate's
+# power-off and a cold boot of the decoy through the firmware) must not change any boot entry, ESP file or EFI NVRAM variable beyond
 # what a plain reboot already does. A boot entry, bootloader config file or
 # NVRAM variable that enables the hidden mode is itself evidence, and none of it
 # is captured by the root overlay. In the hidden session the ESP is a read-only
@@ -26,7 +26,8 @@ let
 in
 {
   name = "uefi-esp-nvram-invariant";
-  # OVMF boot plus a full reboot (control), two soft-reboots and a LUKS setup
+  # OVMF boot plus a full reboot (control), a soft-reboot in, a power-off and
+  # a cold OVMF boot out, and a LUKS setup
   # run well over a direct-boot test; this is a nightly-only forensic check.
   # Twice the estimated shard weight (300 s) until the nightly run refreshes it.
   globalTimeout = 1200;
@@ -211,7 +212,7 @@ in
     print("✓ The ESP is read-only in the hidden session")
 
     canonical_deactivate(headless_config, "deactivate")
-    print("✓ Deactivated: soft-rebooted back to the decoy")
+    print("✓ Deactivated: powered off, and the decoy booted cold")
 
     status = json.loads(machine.succeed(f"nails --config {headless_config} status --json"))["data"]
     assert status["place"] == "decoy", f"Expected the plain decoy, got: {status}"

@@ -3,13 +3,14 @@
 #
 # The window's Emergency control does not ask the person anything and does
 # not go through the window's worker: it writes the engine's emergency onto
-# the helper's pipe itself, ending as `window.emergency` chose in advance.
-# The way back to the decoy, its default, is the request
+# the helper's pipe itself, ending as `window.emergency` chose in advance. A
+# hidden session never goes back to the decoy: the engine's default ending,
+# the request
 #
 #   {"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}
 #
-# and a power-off, which is also the window's ending before it read the
-# setting, the request
+# (what `nails emergency` without a flag sends), powers off, as does the
+# window's default setting, the request
 #
 #   {"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}
 #
@@ -26,14 +27,13 @@
 # emergency ends the window with the session's other programs, and the
 # client stands in for the window there. It marks each quarter of a second
 # it lives on the serial console, and says so once it outlives the grace,
-# which fails the test: a window still running then would power off a
-# return. The second session runs the window's power-off command line from
-# the operator's login on tty1, in a scope of the user's service manager,
-# where a desktop or a terminal runs the window. The test shows:
+# which fails the test: the engine's emergency did not end the window in
+# time. The third session runs the window's power-off command line from the
+# operator's login on tty1, in a scope of the user's service manager, where a
+# desktop or a terminal runs the window. The test shows:
 #
-#   - the helper takes the request for the way back, and the engine's
-#     emergency returns to the plain decoy, with the hidden volume closed,
-#     ending the client within the window's grace;
+#   - the helper takes the engine's default request, and the engine's
+#     emergency powers the machine off, ending the client within the grace;
 #   - the helper takes the request for a power-off, and the engine's
 #     emergency powers the machine off, ending the client within the grace;
 #   - polkit and logind let the operator's power-off through without a
@@ -43,7 +43,8 @@
 # Each power-off is proved, not taken from QEMU's exit: the driver starts the
 # machine with -no-reboot, so a reboot or a kernel panic ends QEMU too. Only
 # the kernel's own "reboot: Power down" on the console, with no reboot or
-# panic before it, passes (`session.wait_for_real_power_off`).
+# panic before it and no userspace coming up instead, passes
+# (`session.follow_power_off`).
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -86,16 +87,16 @@ let
       echo "window-emergency-${name}: still running after the window's grace" >/dev/ttyS0
       sleep 600
     '';
-  # The Emergency control with `window.emergency` at its default, and set to
-  # a power-off.
-  returnClient = client "return" ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}'';
+  # The engine's default ending, and the Emergency control with
+  # `window.emergency` at its default, a power-off.
+  defaultClient = client "default" ''{"v":1,"id":0,"op":{"emergency":{"poweroff":false,"reboot":false}}}'';
   powerOffClient = client "poweroff" ''{"v":1,"id":0,"op":{"emergency":{"poweroff":true,"reboot":false}}}'';
 in
 {
   name = "session-window-emergency";
   meta.tags = [ "session" ];
 
-  # Four soft-reboots, two power-offs and two cold boots.
+  # Three soft-reboots, three power-offs and three cold boots.
   globalTimeout = 2100;
 
   nodes.machine =
@@ -106,7 +107,7 @@ in
       security.polkit.enable = true;
       system.extraDependencies = [
         windowEngine
-        returnClient
+        defaultClient
         powerOffClient
       ];
     };
@@ -159,18 +160,19 @@ in
         )
         session.assert_hidden_root(machine, UPPER)
 
-    with subtest("the window's emergency request for the way back returns to the decoy"):
+    with subtest("the engine's default emergency request through the helper powers off"):
         # A client that fails on the hello ends at once, which fails the wait:
-        # nothing soft-reboots.
+        # nothing powers off.
         since = len(machine.full_console_log)
-        session.follow_soft_reboot(
+        session.follow_power_off(
             machine,
-            "${returnClient} 2>/mnt/data/client-return.err",
-            "window emergency return",
+            "${defaultClient} 2>/mnt/data/client-default.err",
+            "window emergency default",
         )
-        ended_within_the_grace(since, "return")
-        session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        ended_within_the_grace(since, "default")
+
+    with subtest("the first cold boot is the plain decoy with the hidden volume closed"):
+        session.boot_decoy(machine)
 
     with subtest("activate again, for the power-off"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -186,19 +188,15 @@ in
         # The helper answers the hello before anything else: a client that
         # fails on it ends at once, and the machine stays on.
         since = len(machine.full_console_log)
-        machine.execute(
-            "(${powerOffClient}) </dev/null >/dev/null 2>/mnt/data/client.err &",
-            check_return=False,
-            check_output=False,
+        session.follow_power_off(
+            machine,
+            "${powerOffClient} 2>/mnt/data/client.err",
+            "window emergency power-off",
         )
-        session.wait_for_real_power_off(machine, 300)
         ended_within_the_grace(since, "poweroff")
 
     with subtest("the next cold boot is the plain decoy with the hidden volume closed"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+        session.boot_decoy(machine)
 
     with subtest("activate again, and log the operator in on tty1"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -226,17 +224,15 @@ in
         # The window's fallback command line (`Fallback::system` on NixOS,
         # which a unit test of the window pins), in a scope of the user's
         # manager, with no terminal and an empty environment.
+        since = len(machine.full_console_log)
         machine.send_chars(
             "setsid -f systemd-run --user --scope --quiet -- env -i "
             "/run/current-system/sw/bin/systemctl poweroff --no-ask-password "
             "</dev/null >/dev/null 2>&1\n"
         )
-        session.wait_for_real_power_off(machine, 300)
+        session.follow_power_off(machine, None, "operator power-off", console_index=since)
 
     with subtest("the cold boot after it is the plain decoy too"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+        session.boot_decoy(machine)
   '';
 }

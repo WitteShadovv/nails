@@ -16,12 +16,10 @@
 #      kernel modules still come from /run/booted-system. The network-identity
 #      module names the host `localhost`, and NetworkManager gives the device a
 #      random MAC address when it connects it again.
-#   2. Deactivation repoints /run/current-system back to the decoy toplevel and
-#      the decoy comes back without the marker, the canary user or any change
-#      to its /var/lib/nixos and /etc/passwd, with its own MAC address and
-#      hostname. The decoy's /etc/hostname names no host, so PID 1 keeps
-#      whatever hostname it finds at every start, the return included: only
-#      the way back sets the decoy's own name again.
+#   2. Deactivation powers the machine off for real. The cold boot runs the
+#      decoy toplevel without the marker, the canary user or any change to its
+#      /var/lib/nixos and /etc/passwd, with its own MAC address and the
+#      hostname of its first boot.
 #   3. A second activation re-enters the same toplevel.
 #   4. A flake that does not evaluate refuses the entry and leaves nothing.
 #   5. No boot entry or ESP file changed at any point (the VM has no
@@ -115,7 +113,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("NetworkManager.service")
-    machine.succeed("hostname decoy-probe")
+    decoy_hostname = hostname()
     decoy_mac = mac()
     decoy_system = machine.succeed("readlink -f /run/current-system").strip()
     booted_system = machine.succeed("readlink -f /run/booted-system").strip()
@@ -169,16 +167,16 @@ in
         )
         machine.log(f"eth0 in the hidden session: {mac()}, the decoy's: {decoy_mac}")
 
-    with subtest("deactivation returns to the decoy toplevel with its state untouched"):
+    with subtest("after the power-off the decoy toplevel boots with its state untouched"):
         canonical_deactivate(CONFIG, "deactivate-1")
         current = machine.succeed("readlink -f /run/current-system").strip()
-        assert current == decoy_system, f"current-system is {current} after the way back"
+        assert current == decoy_system, f"current-system is {current} after the cold boot"
         machine.fail(f"test -e {MARKER}")
         machine.fail("getent passwd hiddencanary")
         machine.fail("test -e /run/nails-hidden-oneshot")
         assert nixos_state() == state_before, "the decoy's /var/lib/nixos or passwd changed"
-        assert mac() == decoy_mac, f"eth0 kept {mac()} after the way back, not {decoy_mac}"
-        assert hostname() == "decoy-probe", hostname()
+        assert mac() == decoy_mac, f"eth0 has {mac()} after the cold boot, not {decoy_mac}"
+        assert hostname() == decoy_hostname, (hostname(), decoy_hostname)
 
     with subtest("a second activation re-enters the same toplevel"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")

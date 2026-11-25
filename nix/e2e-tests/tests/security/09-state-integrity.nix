@@ -1,11 +1,11 @@
 # Test 09: State file integrity across whole-root sessions
 #
 # The state file lives on the hidden volume (/mnt/data/state.json). In each of
-# three activate/deactivate cycles (each one a soft-reboot into the hidden root
-# and one back):
+# three activate/deactivate cycles (each one a soft-reboot into the hidden root,
+# then a power-off and a cold boot of the decoy):
 #   - in the hidden session the file exists, is owner-only (0600), records the
 #     Active state, and `status` reports the "active" posture;
-#   - after the way back (and reopening the backend, which the switch closed)
+#   - after the power-off (and reopening the backend on the cold-booted decoy)
 #     the file records Inactive and `status` reports the plain "decoy" posture.
 _:
 let
@@ -18,7 +18,8 @@ in
     "security"
     "state"
   ];
-  # Three round trips, six soft-reboots at about 15-30 s each, plus setup.
+  # Three round trips (a soft-reboot in, a power-off and a cold boot out) at
+  # about 30-45 s each, plus setup.
   globalTimeout = 1500;
 
   testScript = _: ''
@@ -66,9 +67,9 @@ in
             status = read_status_json(config_path=CONFIG)
             assert status["place"] == "hidden", status
 
-        with subtest(f"cycle {cycle}: the way back records Inactive"):
+        with subtest(f"cycle {cycle}: the power-off records Inactive"):
             canonical_deactivate(CONFIG, f"deactivate-{cycle}")
-            # The switch closed the backend: reopen it to read the state.
+            # The cold boot left the backend closed: reopen it to read the state.
             machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
             session.assert_decoy_root(machine)
             kind = read_state_kind()

@@ -6,8 +6,8 @@
 # come from the decoy lower), so a canary written into the synced folder in the
 # hidden session lands in the upper on the hidden volume and is pushed to the
 # peer. The hidden Syncthing's index changes are copy-ups into the upper too, so
-# after `nails deactivate` the decoy Syncthing starts from its pre-activation
-# index, reconciles with the peer and pulls the canary back onto the decoy disk,
+# after `nails deactivate` (a power-off) the cold-booted decoy's Syncthing
+# starts from its pre-activation index, reconciles with the peer and pulls the canary back onto the decoy disk,
 # where a post-use examiner can find it.
 #
 # This is asserted as the documented known limitation and doubles as a positive
@@ -28,8 +28,9 @@ in
   name = "persona-sync-pullback";
   meta.tags = [ "forensic" ];
 
-  # Two Syncthing nodes, a baseline disk image (a power cycle), two
-  # soft-reboots and a disk image of the decoy root afterwards.
+  # Two Syncthing nodes, a baseline disk image (a power cycle), a soft-reboot
+  # in, a power-off and a cold boot out, and a disk image of the decoy root
+  # afterwards.
   globalTimeout = 2400;
 
   nodes = {
@@ -126,9 +127,9 @@ in
             f"grep -q {CANARY_TOKEN} {PEER_SYNC}/{CANARY}", timeout=180
         )
 
-    with subtest("deactivate: back on the plain decoy"):
-        # canonical_deactivate asserts the plain decoy root and the closed
-        # backend. Whether the decoy home already shows the canary again
+    with subtest("deactivate: the cold-booted plain decoy"):
+        # canonical_deactivate follows the power-off and asserts the cold
+        # boot's plain decoy root and the closed backend. Whether the decoy home already shows the canary again
         # depends on how quickly the decoy Syncthing reconnects to the peer and
         # pulls it back; that reappearance is exactly the limitation the next
         # subtest asserts, so it is not checked here.

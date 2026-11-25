@@ -16,8 +16,9 @@
 #      `sleep:idle` and a `handle-lid-switch` block inhibitor under neutral
 #      names, a closed lid does not suspend and logind refuses a suspend that
 #      is asked for. Stopping the guard releases both, after which a closed lid
-#      suspends again; started again, the guard is gone after the way back and
-#      the decoy holds no inhibitor of it.
+#      suspends again; started again, the guard does not keep deactivate from
+#      powering the machine off, and the cold-booted decoy runs no guard and
+#      holds no inhibitor of it.
 #   3. `teardown`: the guard holds a sleep delay inhibitor; a closed lid powers
 #      the machine off and the stubbed suspend never runs; the next cold boot
 #      is the plain decoy.
@@ -72,8 +73,8 @@ in
     "security"
     "session"
   ];
-  # Five soft-reboots at about 15 s each, a power-off and a cold boot, plus
-  # the waits for a suspend that must not come.
+  # Three sessions, each a soft-reboot in and a power-off and a cold boot out,
+  # plus the waits for a suspend that must not come.
   globalTimeout = 1500;
 
   nodes.machine =
@@ -273,7 +274,7 @@ in
         close_lid_expect_suspend()
         machine.succeed("systemctl stop lid-switch.service")
 
-    with subtest("block: the way back ends the guard and its inhibitors"):
+    with subtest("block: deactivate powers off past the guard, and the decoy has none"):
         machine.succeed(f"systemctl start {GUARD}")
         machine.wait_until_succeeds(
             "busctl --json=short call org.freedesktop.login1 /org/freedesktop/login1 "
@@ -281,7 +282,6 @@ in
             timeout=60,
         )
         canonical_deactivate(CONFIG, "deactivate-block")
-        session.assert_decoy_root(machine)
         machine.fail(f"systemctl is-active {GUARD}")
         assert guard_inhibitors() == [], inhibitors()
 
@@ -301,14 +301,11 @@ in
         start_lid()
         stubs_before = machine.get_console_log().count(STUB_LINE)
         machine.succeed("systemctl kill -s USR1 lid-switch.service")
-        session.wait_for_power_off(machine, 300)
+        session.wait_for_real_power_off(machine, 300)
         console = machine.get_console_log()
         assert console.count(STUB_LINE) == stubs_before, "the suspend ran before the power-off"
 
     with subtest("teardown: the next cold boot is the plain decoy"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+        session.boot_decoy(machine)
   '';
 }

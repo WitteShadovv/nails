@@ -9,54 +9,38 @@
 #      the activation command never reaches the decoy's ~/.bash_history.
 #   2. In the hidden session, a login shell on tty1 runs commands and then
 #      `sudo nails emergency`. Every hidden process dies at once (the login
-#      session included), the machine soft-reboots back to the plain decoy and
-#      the decoy greeter (here: getty) comes back; nothing typed in the hidden
-#      session reaches the decoy's history file. The decoy's services that
-#      keep a PID file in /run start again although the kill left their hidden
-#      copies' files behind: avahi-daemon (with resolvconf, which signals it)
-#      and a probe that, like avahi, refuses to start while its file is there.
-#      The units the hidden root does not need (the boot-loader and
-#      root-filesystem units) and systemd's GPT auto-generator are masked in
-#      the hidden session only, and the kernel log names no session drop-in
-#      and no failed unmount of the hidden volume. On either side of each
-#      switch, every line of libmount's utab that libmount joins to a mount
-#      names the mount it was written for: by its mount ID, a live mount with
-#      the line's source and root at the line's target (an initrd's target
-#      seen from the root it switched to); without an ID, a live mount at its
-#      target with its source and root.
-#      The kernel reuses the IDs of the mounts a switch leaves behind, and a
-#      stale x-initrd.mount line would take a reused or a new mount out of the
-#      shutdown order. A stale line without an ID for /run/wrappers, added on
-#      the decoy before the first entry, is gone in the hidden session, whose
-#      start would have joined it to its own /run/wrappers. After the way
-#      back the decoy has its own lines again: each line it had before the
-#      entry whose mount came back, under that mount's new ID, and besides
-#      those only lines for filesystems it mounted itself after the switch.
-#      libmount marks the same mount points x-initrd.mount as at boot, so the
-#      decoy's next shutdown leaves them alone as a fresh boot's does. Every
-#      mount outside /run and the hidden volume is back as before the entry
-#      (its filesystem, directory, place, options and propagation type, in the
-#      decoy's order, and no mount more): the store's overlay with NixOS's
-#      read-only bind of it stacked on top, and the tmpfs at /nix/.rw-store
-#      that holds the overlay's upper.
+#      session included) and the machine powers off for real (a hidden session
+#      never goes back to the decoy); the next cold boot is the plain decoy
+#      with its greeter (here: getty), its services (avahi-daemon and a probe
+#      that keeps a PID file in /run) and its own units, and nothing typed in
+#      the hidden session reaches the decoy's history file. The units the
+#      hidden root does not need (the boot-loader and root-filesystem units)
+#      and systemd's GPT auto-generator are masked in the hidden session only,
+#      and the hidden session's kernel log names no session drop-in. In the
+#      hidden session every line of libmount's utab that libmount joins to a
+#      mount names the mount it was written for: by its mount ID, a live mount
+#      with the line's source and root at the line's target (an initrd's
+#      target seen from the root it switched to); without an ID, a live mount
+#      at its target with its source and root. A stale line without an ID for
+#      /run/wrappers, added on the decoy before the first entry, is gone in the
+#      hidden session, whose start would have joined it to its own
+#      /run/wrappers.
 #   3. In the hidden session, a desktop shell stand-in leads a session and a
 #      process group of its own, as a unit's main process does, and starts
 #      an app as its direct child in both, as GNOME Shell and niri start menu
 #      entries; the app ignores SIGTERM, and the unit never escalates its stop.
 #      The stand-in's terminal (a pseudo-terminal of script's) runs
 #      `sudo nails emergency` itself, as a menu entry that asks for a terminal
-#      does. The emergency's kill ends the app at once, or the switch would wait
-#      for it for ever, and the emergency itself lives on past its kill: it logs
-#      its phases on the hidden volume.
+#      does. The emergency's kill ends the app at once, or the power-off would
+#      wait for it for ever, and the emergency itself lives on past its kill:
+#      it logs its phases on the hidden volume.
 #   4. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
 #      session, deactivate is refused with root_covered, emergency still ends
-#      the session (the mounts the way back needs sit under the covered root,
-#      so it powers off instead, as it does whenever the way back cannot be
-#      prepared), and the scratch disk received nothing: no logs/, state.json,
-#      .lock or write probe, and its root directory's mtime and ctime are
-#      unchanged.
+#      the session with a real power-off, and the scratch disk received
+#      nothing: no logs/, state.json, .lock or write probe, and its root
+#      directory's mtime and ctime are unchanged.
 #   5. `nails emergency --poweroff` in the hidden session powers the machine
 #      off; the next cold boot is the plain decoy with the backend closed.
 { self, pkgs, ... }:
@@ -134,9 +118,10 @@ in
   testScript = _: ''
     import secrets
 
-    from nails_e2e import mounts, session, utab
+    from nails_e2e import session, utab
 
     ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalEmergencyFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
     WATCH_UNIT = "overlay-runtime-monitor.service"
@@ -172,14 +157,6 @@ in
     #: A stale utab line without an ID: libmount joins it to whatever is
     #: mounted at its target with its source and root, also a mount made later.
     STALE_WRAPPERS = "SRC=tmpfs TARGET=/run/wrappers ROOT=/ OPTS=x-initrd.mount"
-
-
-    def outside_the_decoy_tree(point):
-        # A soft-reboot into a new root carries /run without the mounts below
-        # it, and the hidden volume goes with the session.
-        return (
-            point.startswith("/run/") or point == "/mnt/data" or point.startswith("/mnt/data/")
-        )
 
 
     def utab_and_mounts():
@@ -249,7 +226,7 @@ in
     decoy_initrd_mounts = initrd_mounts()
     machine.log(f"initrd mounts on the decoy: {sorted(decoy_initrd_mounts)}")
     assert "/" in decoy_initrd_mounts, decoy_initrd_mounts
-    decoy_utab, decoy_mountinfo = utab_and_mounts()
+    decoy_utab, _ = utab_and_mounts()
     machine.log(f"utab on the decoy:\n{decoy_utab}")
     machine.succeed(f"echo '{STALE_WRAPPERS}' >> /run/mount/utab")
 
@@ -287,7 +264,7 @@ in
         machine.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
 
     hidden_token = "hidden-" + secrets.token_hex(6)
-    with subtest("emergency from a hidden login shell kills it and returns"):
+    with subtest("emergency from a hidden login shell kills it and powers off"):
         machine.succeed(
             "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
@@ -301,47 +278,24 @@ in
             f"{session.TRIGGER_EXIT_MARKER}$? $(sudo systemctl is-system-running) "
             f"| sudo tee {session.SERIAL_CONSOLE}\n"
         )
-        timings = session.follow_soft_reboot(
-            machine,
-            command.strip(),
-            "emergency-from-tty",
-            start=lambda: machine.send_chars(command),
-        )
-        machine.log(f"emergency timings: {timings}")
-        session.assert_decoy_root(machine)
+        # Typed, so the ending starts outside the follower: it reads the
+        # console from before the keystrokes, the typed command's own report
+        # of a failure among it.
+        since = len(machine.full_console_log)
+        machine.send_chars(command)
+        session.follow_power_off(machine, None, "emergency-from-tty", console_index=since)
+
+    with subtest("the next cold boot is the plain decoy with its own services and units"):
+        session.boot_decoy(machine)
         machine.fail("systemctl is-active hidden-writer.service")
         machine.fail("loginctl list-sessions --no-legend | grep -q testuser")
         machine.wait_for_unit("getty@tty1.service")
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
-
-    with subtest("the decoy's services start again after the emergency killed their copies"):
         machine.wait_for_unit("pidfile-probe.service")
         machine.wait_for_unit("avahi-daemon.service")
-        machine.wait_for_unit("resolvconf.service")
-        _, avahi = machine.execute("journalctl -b -u avahi-daemon.service --no-pager")
-        assert "trying to remove PID file" not in avahi, avahi
         assert load_states() == decoy_masked_units, "the decoy's own units again"
         machine.fail(f"test -L {GPT_AUTO_MASK}")
-        assert_quiet_kernel_log("after the emergency")
         assert_utab_names_live_mounts("after the emergency")
-        back_utab, back_mountinfo = utab_and_mounts()
-        foreign, lost = utab.not_given_back(
-            decoy_utab, decoy_mountinfo, back_utab, back_mountinfo
-        )
-        assert not foreign and not lost, (
-            f"the decoy's utab after the way back:\n{back_utab}\n"
-            f"lines not its own: {foreign}; its lines not given back: {lost}"
-        )
         assert initrd_mounts() == decoy_initrd_mounts, sorted(initrd_mounts())
-
-    with subtest("the decoy has every mount back as it had it before the entry"):
-        # The store is the initrd's overlay with NixOS's read-only bind of it
-        # on top, and /nix/.rw-store the tmpfs that holds the overlay's upper.
-        found = mounts.differences(
-            mounts.shape(decoy_mountinfo, outside_the_decoy_tree),
-            mounts.shape(back_mountinfo, outside_the_decoy_tree),
-        )
-        assert not found, "mounts not as before the entry:\n" + "\n".join(found)
 
     with subtest("nothing typed in either shell reached the decoy history"):
         history = decoy_history()
@@ -372,16 +326,14 @@ in
             "/run/wrappers/bin/sudo /run/current-system/sw/bin/nails "
             f"--config {CONFIG} emergency"
         )
-        # A spared app would hold the switch for ever: the deadline fails it.
-        timings = session.follow_soft_reboot(
+        # A spared app would hold the power-off for ever: the deadline fails it.
+        session.follow_power_off(
             machine,
             f"echo '{command}' > /run/desktop-standin/launch",
             "emergency-from-a-desktop-terminal",
             deadline_s=300,
         )
-        machine.log(f"emergency from the desktop's terminal: {timings}")
-        session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        session.boot_decoy(machine)
         # The emergency outlived its kill, which took its terminal, sudo and
         # the desktop: it logged its phases after it.
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -430,17 +382,8 @@ in
         assert '"code":"root_covered"' in out, out
         session.assert_hidden_root(machine)
         # The state lock refuses the covered root, but emergency proceeds
-        # without it. The way back's mounts are under the covered root, so it
-        # cannot be prepared and emergency powers off instead.
-        machine.execute(
-            f"(nails --config {covered_config} emergency) </dev/null >/dev/null 2>&1 &",
-            check_return=False,
-            check_output=False,
-        )
-        session.wait_for_power_off(machine, 300)
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
+        # without it and powers off.
+        canonical_emergency(covered_config, "emergency-covered")
         machine.succeed(
             "mkdir -p /run/scratch && "
             "mount -o ro,noload /dev/disk/by-id/virtio-scratch /run/scratch"
@@ -455,18 +398,10 @@ in
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         write_config()
         canonical_activate(CONFIG, "--overlay-only", "activate-poweroff")
-        machine.execute(
-            f"(nails --config {CONFIG} emergency --poweroff) </dev/null >/dev/null 2>&1 &",
-            check_return=False,
-            check_output=False,
-        )
-        session.wait_for_power_off(machine, 300)
+        canonical_emergency(CONFIG, "emergency-poweroff", "--poweroff", boot=False)
 
     with subtest("the next cold boot is the plain decoy with the backend closed"):
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /dev/mapper/data")
+        session.boot_decoy(machine)
         assert activation_token not in decoy_history()
   '';
 }

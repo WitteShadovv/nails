@@ -987,9 +987,8 @@ _GENERIC_IMAGE_VOLATILE = (
 # Extra entries only a NixOS decoy legitimately churns at every boot: the Nix
 # store's own bookkeeping, and the ``bin/sh`` and ``usr/bin/env`` links the
 # NixOS activation replaces (a new inode each time) whenever the decoy's
-# userspace starts -- at a boot and at the soft-reboot back from a hidden
-# session alike, since the way back starts the decoy once more, the same as a
-# reboot would. On an FHS distribution none of these is activation noise: a
+# userspace starts, at every boot (the cold boot after a hidden session's
+# power-off among them). On an FHS distribution none of these is activation noise: a
 # changed ``/bin/sh`` or a Nix database that appeared there is a real finding,
 # so they are allowlisted only when the decoy's os-id is NixOS.
 _NIXOS_IMAGE_VOLATILE = r"nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"

@@ -2,8 +2,7 @@
 #
 # A decoy that keeps a persistent journal, or runs rsyslog or auditd,
 # records on its own disk what it logs while it shuts down for the soft-reboot
-# into the hidden session and while it starts again on the way back, so
-# activation must fail closed unless the operator explicitly accepts the risk.
+# into the hidden session, so activation must fail closed unless the operator explicitly accepts the risk.
 # This node forces journald back to persistent storage (the standard decoy
 # models an amnesic one) and runs rsyslogd (as syslog.service, the NixOS unit
 # name) and auditd. The refusal names the daemon, rsyslog, whatever unit it
@@ -13,7 +12,8 @@
 #      sink and the override; the refused activation leaves the plain decoy
 #      root, no next root and no root upper on the hidden volume.
 #   2. With --allow-persistent-decoy the activation soft-reboots into the
-#      hidden root, and deactivation returns to the plain decoy.
+#      hidden root, and deactivation powers the machine off; the cold boot is
+#      the plain decoy.
 { self, pkgs, ... }:
 let
   inherit (pkgs) lib;

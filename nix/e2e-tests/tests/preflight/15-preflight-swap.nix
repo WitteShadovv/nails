@@ -4,7 +4,7 @@
 # `swapoff` remediation, and nothing is prepared: the machine stays on the
 # plain decoy. A RAM-only zram swap is permitted: the same configuration then
 # enters the hidden session (a soft-reboot into the root overlay) and leaves
-# it again.
+# it again (deactivate powers the machine off; the decoy boots cold).
 
 { self, ... }:
 let

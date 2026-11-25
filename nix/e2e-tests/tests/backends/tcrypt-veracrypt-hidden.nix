@@ -4,9 +4,9 @@
 #   cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden <device> data
 # This test opens a real VeraCrypt hidden volume under the neutral mapper name,
 # runs a whole-root session over it (a soft-reboot into the root overlay with
-# its upper on the tcrypt volume, and a soft-reboot back), checks that the way
-# back closed the tcrypt mapping like a LUKS one, and then images the decoy
-# root (with the host-side forensic harness) to prove the hidden-session
+# its upper on the tcrypt volume, then deactivate's power-off), checks that the
+# cold-booted decoy is the plain decoy with no mapping open, and then images
+# the decoy root (with the host-side forensic harness) to prove the hidden-session
 # canaries never reach the decoy disk when the backend is tcrypt rather than
 # LUKS.
 #
@@ -17,7 +17,8 @@
 #
 # As in forensic/05, the images are also compared by MAC times and content
 # hashes against a control run (one plain reboot: the session spans the boot
-# after the baseline and two soft-reboots), so a decoy file modified in place
+# after the baseline, the decoy's shutdown for the soft-reboot in and one cold
+# boot after the power-off), so a decoy file modified in place
 # fails the test even when it carries no token.
 #
 # It is not in the `ci` group (`ciNames`): it runs in every E2E run that rebuilds
@@ -45,7 +46,8 @@ in
   meta.tags = [ "forensic" ];
 
   # VeraCrypt container creation (outer + hidden) plus the imaging lineage, a
-  # control reboot and two soft-reboots; generous margin for the slow volume
+  # control reboot, a soft-reboot in and a power-off and a cold boot out;
+  # generous margin for the slow volume
   # formatting.
   globalTimeout = 3300;
 
@@ -108,9 +110,9 @@ in
         baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
 
     with subtest("control run: a plain reboot with no hidden session"):
-        # The session below spans the boot after this snapshot and two
-        # soft-reboots (the decoy's shutdown and its start again), so the
-        # control is one plain reboot. Whatever changes here is boot noise, not
+        # The session below spans the boot after this snapshot, the decoy's
+        # shutdown for the soft-reboot in and, after the power-off, one cold
+        # boot, so the control is one plain reboot. Whatever changes here is boot noise, not
         # the hidden session.
         machine.shutdown()
         machine.start()
@@ -172,9 +174,9 @@ in
             f"grep -q {canary_file_token} /mnt/data/root/upper/home/testuser/secret-notes.txt"
         )
 
-    with subtest("deactivation returns to the plain decoy and closes the tcrypt mapping"):
-        # canonical_deactivate also waits for /dev/mapper/data to go away: the
-        # deferred close must release a tcrypt mapping like a LUKS one.
+    with subtest("deactivation powers off; the decoy boots cold with no mapping open"):
+        # canonical_deactivate follows the power-off and checks that the cold
+        # boot has no /dev/mapper/data.
         canonical_deactivate(headless_config, "deactivate-tcrypt")
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")

@@ -1,8 +1,8 @@
 # Test 05: A whole-root session leaves no trace on the decoy disk image
 #
 # One disk lineage: baseline -> activate (a soft-reboot into the hidden root)
-# and plant canaries -> deactivate (a soft-reboot back) -> image the decoy
-# root. The decoy keeps a persistent journal and an on-disk Nix store, the
+# and plant canaries -> deactivate (a power-off) -> cold boot of the decoy ->
+# image the decoy root. The decoy keeps a persistent journal and an on-disk Nix store, the
 # strict case: the hidden journal and the hidden store writes must land in the
 # upper on the hidden volume, never on this disk. The hidden canaries (a file, a shell
 # history line and a logged journal line) and every artifact-indicator token
@@ -33,7 +33,8 @@ in
   meta.tags = [ "forensic" ];
 
   # Disk imaging three times (baseline, control, post), an extra reboot for the
-  # control run, two soft-reboots and three carve-and-hash passes.
+  # control run, a soft-reboot, a power-off and a cold boot, and three
+  # carve-and-hash passes.
   globalTimeout = 2700;
 
   nodes = {
@@ -94,9 +95,10 @@ in
         baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
 
     with subtest("control run: a plain reboot with no hidden session"):
-        # The session below spans the boot after this snapshot and two
-        # soft-reboots (the decoy's shutdown and its start again), so the
-        # control is one plain reboot. Whatever changes here is boot noise, not
+        # The session below spans the boot after this snapshot, the decoy's
+        # shutdown for the soft-reboot into the hidden root and, after the
+        # session's power-off, one cold boot, so the control is one plain
+        # reboot. Whatever changes here is boot noise, not
         # the hidden session.
         machine.shutdown()
         machine.start()

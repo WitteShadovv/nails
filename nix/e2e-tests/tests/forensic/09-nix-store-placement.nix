@@ -10,8 +10,8 @@
 # In the hidden session the test realises two run-unique store paths through
 # the hidden nix-daemon: `nix store add` of a nonce file and a
 # `builtins.toFile` evaluation. Both must exist in the hidden session and
-# live in a store upper on the hidden volume. After `nails deactivate` the
-# paths must not resolve on the decoy, and the powered-off decoy image must
+# live in a store upper on the hidden volume. After `nails deactivate` (a
+# power-off) the paths must not resolve on the cold-booted decoy, and the powered-off decoy image must
 # carry no trace of the nonce: not in the fls listing (deleted entries
 # included), not in the raw image bytes, and not among the paths registered in
 # the decoy store's db.sqlite.
@@ -26,8 +26,9 @@ in
   name = "nix-store-placement";
   meta.tags = [ "forensic" ];
 
-  # Two soft-reboots, store writes through the daemon, then a power-off and an
-  # image of the decoy root; the imaging dominates the runtime.
+  # A soft-reboot in, store writes through the daemon, the session's power-off
+  # and a cold boot, then a power-off and an image of the decoy root; the
+  # imaging dominates the runtime.
   globalTimeout = 1800;
 
   nodes = {

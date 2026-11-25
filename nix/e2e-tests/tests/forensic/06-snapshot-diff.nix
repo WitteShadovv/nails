@@ -3,7 +3,8 @@
 # Two complementary views of the same activate/populate/deactivate workflow on
 # one disk lineage. The session is a soft-reboot into the whole-root overlay,
 # work in the hidden root (which must land in the upper on the hidden volume),
-# and a soft-reboot back. From inside the decoy afterwards, the live filesystem
+# and deactivate, which powers the machine off. From inside the cold-booted
+# decoy afterwards, the live filesystem
 # is diffed against its baseline, so a stray artifact with no telltale keyword
 # still turns the test red. From outside, the powered-off decoy root is imaged
 # and its fls listing (deleted names included) is diffed against the baseline
@@ -13,8 +14,9 @@
 # same name. So each image also yields a sleuthkit bodyfile (`fls -r -m /`, kept
 # in the test output under forensics/ and ready for `mactime -b`) and a content
 # hash of every file. A control run records which (path, field) pairs boot noise
-# changes: the session spans two soft-reboots (the decoy's shutdown and its
-# start again), so the control is one plain reboot, as in forensic/05. The
+# changes: the session spans the decoy's shutdown for the soft-reboot in and,
+# after the power-off, one cold boot, so the control is one plain reboot, as in
+# forensic/05. The
 # hidden-session run may change nothing beyond that and the volatile allowlist:
 # no inode, mode, owner, size, mtime, ctime or crtime of an existing decoy
 # inode, and no file contents. atime drift is reported, not asserted.
@@ -55,8 +57,8 @@ in
 
     UPPER = "/mnt/data/root/upper"
 
-    # Paths that legitimately change on their own across a reboot and the two
-    # soft-reboots of a session. Everything NOT matched here must be
+    # Paths that legitimately change on their own across a reboot and a
+    # session (a soft-reboot in, a power-off and a cold boot out). Everything NOT matched here must be
     # byte-identical before and after. /var is the decoy's own runtime state
     # (journal, systemd, dhcp, nixos) written by its shutdown and start, so it
     # is treated as wholly volatile; /home and /etc are diffed strictly.
@@ -133,9 +135,9 @@ in
         baseline_state = disk_forensics.image_state(baseline_image, "baseline", machine)
 
     with subtest("control run: a plain reboot with no hidden session"):
-        # The workflow below spans the boot after the control snapshot and two
-        # soft-reboots (the decoy's shutdown and its start again), so the
-        # control is one plain reboot. Whatever changes here is boot noise.
+        # The workflow below spans the boot after the control snapshot, the
+        # decoy's shutdown for the soft-reboot in and, after the power-off, one
+        # cold boot, so the control is one plain reboot. Whatever changes here is boot noise.
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")

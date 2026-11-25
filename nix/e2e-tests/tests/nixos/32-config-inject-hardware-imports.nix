@@ -7,9 +7,9 @@
 # nails/configuration.nix symlink to the hidden module. All of it parses, and
 # the nixos-config pre-flight check accepts it. In the hidden session (entered
 # with --overlay-only, so no hidden system is built) /etc/nixos shows the
-# wrapper, the base and the hidden module through the root overlay. After the
-# way back the decoy /etc/nixos is the original no-imports file again, with no
-# base file and no nails directory.
+# wrapper, the base and the hidden module through the root overlay. After
+# deactivate's power-off the cold-booted decoy's /etc/nixos is the original
+# no-imports file again, with no base file and no nails directory.
 
 { self, ... }:
 let
@@ -19,7 +19,8 @@ in
 {
   name = "config-inject-hardware-imports";
   meta.tags = [ "nixos" ];
-  # Two soft-reboots at about 15 s each, plus setup.
+  # A soft-reboot in, a power-off and a cold boot out, at about 15 s each,
+  # plus setup.
   globalTimeout = 900;
 
   nodes.machine =
@@ -115,7 +116,7 @@ in
         machine.succeed("test -s /etc/nixos/nails/configuration.nix")
         machine.succeed("nix-instantiate --parse /etc/nixos/hardware-configuration.nix")
 
-    with subtest("the decoy /etc/nixos is the original file after the way back"):
+    with subtest("the decoy /etc/nixos is the original file after the power-off"):
         canonical_deactivate(CONFIG, "deactivate-hardware")
         machine.fail("test -e /etc/nixos/nails")
         machine.fail("test -e /etc/nixos/hardware-configuration.base.nix")

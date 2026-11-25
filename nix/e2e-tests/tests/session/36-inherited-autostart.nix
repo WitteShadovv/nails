@@ -18,8 +18,9 @@
 #   - the decoy filesystem (mounted read-only at a scratch dir) still holds the
 #     original files byte for byte.
 #
-# After `nails deactivate` the decoy home is byte-for-byte what it was before
-# activation: the masks never existed outside the upper. The activation is run
+# `nails deactivate` powers the machine off; after the cold boot the decoy
+# home is byte-for-byte what it was before activation: the masks never existed
+# outside the upper. The activation is run
 # through sudo by the decoy user, the way an operator runs it, so the masks are
 # written for that user's home.
 { self, pkgs, ... }:
@@ -31,7 +32,7 @@ in
   name = "inherited-autostart";
   meta.tags = [ "session" ];
 
-  # A graphical boot and two soft-reboots.
+  # Two graphical boots, a soft-reboot and a power-off.
   globalTimeout = 1500;
 
   nodes.machine =
@@ -235,7 +236,7 @@ in
             f"test ! -e {PEEK}{package_entry} && test ! -L {PEEK}{unknown_unit}",
         )
 
-    with subtest("deactivate: the decoy home is byte-for-byte unchanged"):
+    with subtest("after deactivate's power-off the decoy home is byte-for-byte unchanged"):
         canonical_deactivate(CONFIG, "deactivate")
         # The decoy autostart entry and the decoy user unit are what they were
         # before activation (the unit file is a real file, not the /dev/null

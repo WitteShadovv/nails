@@ -7,7 +7,8 @@
 # session. Modelled here by not carrying the decoy Syncthing into the hidden
 # session: the canary the hidden session writes into its fresh synced folder
 # (an opaque home in the root upper) therefore never reaches the peer, and the
-# decoy client finds nothing to pull back when it resumes after the way back.
+# decoy client finds nothing to pull back when it starts again on the decoy's
+# cold boot after the session's power-off.
 #
 # Hard assertions: the peer never receives the canary, and the decoy disk image
 # stays clean. Test 76 is the positive control that proves this plumbing can leak.
@@ -119,9 +120,10 @@ in
         peer.fail(f"test -e {PEER_SYNC}/{CANARY}")
 
     with subtest("deactivate and let the decoy client resume"):
+        # The power-off dropped the runtime mask with the rest of /run: the
+        # cold-booted decoy starts its client on its own.
         canonical_deactivate(config_path, "deactivate")
-        client.succeed("systemctl unmask --runtime syncthing.service")
-        client.succeed("systemctl start syncthing.service")
+        client.wait_for_unit("syncthing.service")
         st_wait_ready(client, CLIENT_CFG)
         st_rescan(client, CLIENT_CFG, FOLDER)
         # Nothing to pull back: the canary never reached the peer and the hidden

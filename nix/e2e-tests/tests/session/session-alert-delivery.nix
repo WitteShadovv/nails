@@ -166,10 +166,9 @@ in
             assert alert["expire_timeout"] == -1, alert
             machine.succeed("umount /mnt/extra")
 
-        with subtest(f"{program}: the session ends as usual"):
-            canonical_deactivate(CONFIG, f"deactivate-{node.name}")
-
-        machine.shutdown()
+        with subtest(f"{program}: the session ends as usual, in a power-off"):
+            # The machine stays off: the next scenario runs on the other node.
+            canonical_deactivate(CONFIG, f"deactivate-{node.name}", boot=False)
 
 
     scenario(notify_send, "notify-send")

@@ -2,15 +2,15 @@
 #
 # The operator-facing canary self-test, run the way the operator guide
 # describes it: plant inside an active hidden session (entered by a
-# soft-reboot into the whole-root overlay), deactivate (a soft-reboot back),
-# reopen the hidden volume and scan. The decoy here keeps a persistent journal
+# soft-reboot into the whole-root overlay), deactivate (a power-off), boot the
+# decoy again, reopen the hidden volume and scan. The decoy here keeps a persistent journal
 # and an on-disk Nix store (forensic-vm-config), so the journal and process
 # channels have somewhere durable to leak to.
 #
 # Plant writes its files through the root overlay: they land in the upper on
 # the hidden volume, and the state records the session's entry time. A scan in
-# the hidden session itself is refused. Back on the decoy, in the same boot
-# (the soft-reboots keep the boot ID), the scan runs without any override, and
+# the hidden session itself is refused. On the cold-booted decoy (a new boot
+# ID) the scan runs without any override, and
 # the clean scan must find nothing on the raw decoy devices. Then the test
 # writes the token onto the decoy itself, once in ASCII and once in UTF-16LE,
 # and the same scan must find both by offset: proof that the clean result came
@@ -27,7 +27,8 @@ in
   name = "rehearse-canary";
   meta.tags = [ "forensic" ];
 
-  # One session (two soft-reboots) and three raw scans of the 20 GB root disk
+  # One session (a soft-reboot in, a power-off and a cold boot out) and three
+  # raw scans of the 20 GB root disk
   # (mostly unallocated qcow2, so fast); generous margin.
   globalTimeout = 1800;
 
@@ -102,12 +103,12 @@ in
         assert rc == 6, (rc, out, err)
         assert "same_boot" in out + err, (out, err)
 
-    with subtest("deactivate and reopen the hidden volume"):
+    with subtest("deactivate powers off; reopen the hidden volume on the cold boot"):
         canonical_deactivate(config, "deactivate")
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         machine.fail(f"test -e /rehearse-{token}.txt")
         machine.fail(f"test -e /home/testuser/rehearse-{token}.txt")
-        # The same boot, but no hidden session: the planting session is over.
+        # A new boot with no hidden session: the planting session is over.
         rc, out, err = rehearse("status")
         assert rc == 0, (rc, out, err)
         next_step = json.loads(out)["data"]["next_step"]

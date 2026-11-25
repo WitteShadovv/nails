@@ -15,16 +15,23 @@
 # garbage collection deletes its own paths (the toplevel, its /etc, its units).
 #
 #   1. Session 1 builds (realises) the hidden toplevel, keeps its closure on
-#      the hidden volume and enters it. Back on the decoy, the decoy store is
-#      unchanged: its database (as content), its profiles and roots are as
-#      before, and every path of the decoy and hidden systems still hashes as
-#      the database recorded it. (The VM's tmpfs store layer is not compared:
-#      after the way back the decoy mounts a fresh one at /nix/.rw-store.)
+#      the hidden volume and enters it. Deactivate powers the machine off; on
+#      the cold-booted decoy the decoy store is unchanged: its database (as
+#      content), its profiles and roots are as before, and every path of the
+#      decoy and hidden systems still hashes as the database recorded it.
 #   2. The decoy rebuilds (a new rooted build) and garbage-collects: the hidden
 #      toplevel is gone from the decoy store.
 #   3. Session 2 enters the same hidden toplevel again: it still starts, from
-#      the copy on the hidden volume, and copies nothing new. The decoy store
-#      is again unchanged by the session.
+#      the copy on the hidden volume, and copies nothing new. After its
+#      power-off the decoy's profiles and roots are as before it, and the
+#      database lists every path it listed, and no other path than the VM's
+#      own boot registers again.
+#
+# The VM's writable store layer is a tmpfs (/nix/.rw-store), which every boot
+# starts empty, and the VM registers its own closure (the hidden toplevel
+# among it) at every boot (register-nix-paths). So a cold boot puts the
+# collected toplevel back from the VM's read-only store and loses the decoy
+# rebuild's output: neither is the session's doing, and neither is compared.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -39,7 +46,8 @@ in
     "slow"
   ];
   # Two hidden builds, a copy of the whole system closure onto the hidden
-  # volume, a decoy garbage collection and four soft-reboots.
+  # volume, a decoy garbage collection and two sessions (a soft-reboot in, a
+  # power-off and a cold boot out).
   globalTimeout = 4800;
 
   nodes.machine =
@@ -123,12 +131,8 @@ in
 
 
       def ram_layer():
-          # The VM's writable store layer is a tmpfs fstab entry, which the
-          # fstab policy leaves to each side's systemd: after the way back the
-          # decoy mounts a fresh, empty one at /nix/.rw-store, while its
-          # /nix/store overlay (carried across the session) keeps the old one
-          # as its upper. So this path no longer shows the store's upper and is
-          # only logged, never compared.
+          # The VM's writable store layer is a tmpfs, which every boot starts
+          # empty: it is only logged, never compared.
           return machine.succeed(
               "findmnt -no SOURCE,FSTYPE,OPTIONS /nix/.rw-store; "
               "findmnt -no OPTIONS /nix/store; "
@@ -154,6 +158,23 @@ in
           # database recorded it: the store contents are byte for byte intact.
           paths = " ".join(roots)
           machine.succeed(f"nix-store --verify-path $(nix-store --query --requisites {paths})")
+
+
+      def valid_paths():
+          return set(machine.succeed("nix path-info --all").split())
+
+
+      def registered_at_boot():
+          # The VM's own closure, which register-nix-paths registers at every
+          # boot, from the regInfo= file on the kernel command line.
+          words = machine.succeed("cat /proc/cmdline").split()
+          files = [word.split("=", 1)[1] for word in words if word.startswith("regInfo=")]
+          assert files, words
+          return {
+              line
+              for line in machine.succeed(f"cat {files[0]}").splitlines()
+              if line.startswith("/nix/store/")
+          }
 
 
       def kept_in():
@@ -209,7 +230,7 @@ in
           missing = [p for p in closure if p.rsplit("/", 1)[-1] not in kept]
           assert not missing, f"closure paths not kept: {missing[:10]}"
 
-      with subtest("the way back leaves the decoy store unchanged"):
+      with subtest("after the power-off the decoy store is unchanged"):
           canonical_deactivate(CONFIG, "deactivate-1")
           current = machine.succeed("readlink -f /run/current-system").strip()
           assert current == decoy_system, current
@@ -232,6 +253,8 @@ in
           machine.fail(f"nix-store --check-validity {HIDDEN_SYSTEM}")
           machine.succeed(f"test -e {rebuilt}")
           store_before = decoy_store_state()
+          valid_before = valid_paths()
+          assert rebuilt in valid_before and HIDDEN_SYSTEM not in valid_before
 
       with subtest("session 2 still starts the hidden toplevel"):
           machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -242,8 +265,12 @@ in
 
       with subtest("session 2 leaves the decoy store unchanged"):
           canonical_deactivate(CONFIG, "deactivate-2")
-          assert_store_unchanged(store_before, "session 2")
-          verify_contents("/run/current-system", rebuilt)
-          machine.fail(f"test -e {HIDDEN_SYSTEM}")
+          assert_store_unchanged({"roots": store_before["roots"]}, "session 2")
+          after = valid_paths()
+          lost = sorted(valid_before - after)
+          assert not lost, f"paths the decoy's database no longer lists: {lost[:20]}"
+          gained = sorted(after - valid_before - registered_at_boot())
+          assert not gained, f"paths the session added to the decoy's database: {gained[:20]}"
+          verify_contents("/run/current-system")
     '';
 }

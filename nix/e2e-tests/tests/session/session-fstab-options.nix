@@ -30,9 +30,10 @@
 # session the hidden systemd mounts none of the disks, formats none and
 # changes none, local-fs.target is reached, the noauto line with the
 # unknown option is masked with a reason that names it, and the tmpfs lines
-# that need the skipped noauto lines are mounted. Back on the decoy
-# every disk is byte for byte as before, and `check` reads a decoy line with
-# noauto,auto=1, written without a reload, as one the boot mounts.
+# that need the skipped noauto lines are mounted. Each session ends in a
+# power-off; on the cold-booted decoy every disk is byte for byte as before,
+# and `check` reads a decoy line with noauto,auto=1, written without a
+# reload, as one the boot mounts.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -44,7 +45,7 @@ in
     "forensic"
     "session"
   ];
-  # Two sessions, four soft-reboots.
+  # Two sessions, each a soft-reboot in and a power-off and a cold boot out.
   globalTimeout = 1500;
 
   nodes.machine = _: {
@@ -191,7 +192,7 @@ in
 
     canonical_deactivate(CONFIG, "deactivate-2")
 
-    with subtest("back on the decoy, every disk is as before"):
+    with subtest("on the cold-booted decoy, every disk is as before"):
         assert hashes() == before, "a session changed a disk"
         for disk in (AUTO, AUTOMOUNT, PROBE, PARENT, PULL):
             machine.succeed(

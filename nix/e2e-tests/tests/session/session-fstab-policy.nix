@@ -35,8 +35,8 @@
 #     parent disk stays unmounted and unchanged;
 #   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
 #     which is what lets PID 1 find its own binary in the hidden root;
-#   - the hidden volume and the LVM filesystem the session carries for the way
-#     back are still mounted: the switch ran blk-availability's stop with its
+#   - the hidden volume and the LVM filesystem the session carries are still
+#     mounted: the switch ran blk-availability's stop with its
 #     command cleared. On real hardware the uncleared stop unmounted the hidden
 #     volume below /run/nextroot; here the carried store mounts below the
 #     volume keep it busy, and the LVM filesystem shows the same loss.
@@ -55,9 +55,11 @@
 # backend-entries as one that is not plain, naming the option, so the decoy
 # here has its units pull them in by local-fs.target or a link instead.
 #
-# Back on the decoy, the filesystems are mounted by the decoy's own fstab
-# again, without a trace of the hidden writes, and blk-availability's stop is
-# back for the decoy's own shutdown.
+# Deactivate powers the machine off for real. After the cold boot the decoy's
+# own fstab mounts its filesystems, without a trace of the hidden writes; the
+# disks the session kept off, and those the test mounted at run time (LVM, the
+# unit's own), are byte for byte or file for file as before, and
+# blk-availability's stop is the decoy's own.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -483,12 +485,10 @@ in
         source = machine.succeed("findmnt -no SOURCE /mnt/data").strip()
         assert source == "/dev/mapper/data", source
         machine.succeed("test -s /mnt/data/activate.log && test -d /mnt/data/root/upper")
-        # The session holds the decoy's own /srv/files for the way back, which
-        # binds it at /srv/files again.
+        # The session carries the decoy's own /srv/files.
         held = machine.succeed(f"lsblk -no MOUNTPOINTS {LV}").strip()
-        assert held, f"{LV} is not mounted: the way back has no /srv/files to put back"
-        # The unit runs in the hidden session too; its stop stays cleared until
-        # the way back has switched.
+        assert held, f"{LV} is not mounted: blk-availability's stop took it"
+        # The unit runs in the hidden session too; its stop stays cleared.
         machine.succeed(f"systemctl is-active {BLK_UNIT}")
         stop = blk_availability_stop()
         assert stop == "", f"{BLK_UNIT} still stops with {stop}"
@@ -581,33 +581,41 @@ in
         assert machine.succeed("findmnt -no FSTYPE /nix/store").strip() == "overlay"
         machine.succeed("test -x /run/current-system/systemd/lib/systemd/systemd")
 
+    # Powers off for real. The decoy then boots cold from its own fstab,
+    # without the lines the test added to it at run time.
     canonical_deactivate(CONFIG, "deactivate")
 
-    with subtest("back on the decoy, nothing of the hidden writes is on its disks"):
+
+    def peek(device, where):
+        machine.succeed(f"mkdir -p /run/peek && mount -o ro,noload {device} /run/peek")
+        try:
+            machine.fail("test -e /run/peek/hidden-file")
+            assert machine.succeed("cat /run/peek/decoy-file").strip() == "decoy", where
+        finally:
+            machine.succeed("umount /run/peek && rmdir /run/peek")
+
+
+    with subtest("after the cold boot, nothing of the hidden writes is on the decoy's disks"):
         machine.succeed("mountpoint -q /boot && mountpoint -q /srv/data")
         machine.fail("test -e /srv/data/hidden-file")
         machine.fail("test -e /boot/hidden-write")
         assert machine.succeed("cat /srv/data/decoy-file").strip() == "decoy"
         assert esp_hashes() == esp_before, "the ESP changed"
-        state = machine.succeed(f"systemctl show -p LoadState --value '{SWAP_UNIT}'").strip()
-        assert state != "masked", f"the swap mask leaked into the decoy: {state}"
-        state = machine.succeed(f"systemctl show -p LoadState --value '{ZRAM_UNIT}'").strip()
-        assert state != "masked", f"the zram swap mask leaked into the decoy: {state}"
-        state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
-        assert state != "masked", f"the noauto disk's mask leaked into the decoy: {state}"
-        state = machine.succeed(f"systemctl show -p LoadState --value '{CHILD_UNIT}'").strip()
-        assert state != "masked", f"the child disk's mask leaked into the decoy: {state}"
-        source = machine.succeed("findmnt -no SOURCE /srv/files").strip()
-        assert source == LV, f"/srv/files is {source!r} after the way back"
-        assert machine.succeed("cat /srv/files/decoy-file").strip() == "decoy"
-        machine.fail("test -e /srv/native/hidden-file")
-        assert machine.succeed("cat /srv/native/decoy-file").strip() == "decoy"
-        # The decoy mounts its disk again, and skips none of its units.
+        for unit in (SWAP_UNIT, ZRAM_UNIT, LATER_UNIT, CHILD_UNIT, SPARE_UNIT):
+            state = machine.succeed(f"systemctl show -p LoadState --value '{unit}'").strip()
+            assert state != "masked", f"a mask of {unit} reached the decoy: {state}"
+        assert later_hash() == later_before, "the noauto disk changed"
+        assert parent_hash() == parent_before, "the noauto parent disk changed"
+        machine.succeed("vgchange -q -ay vg0 && udevadm settle")
+        peek(LV, "/srv/files")
+        peek("/dev/disk/by-id/virtio-native", "/srv/native")
+        # The decoy's boot mounts the disk local-fs.target requires, and skips
+        # none of its units.
         machine.fail(f"test -e /run/systemd/system/{SPARE_UNIT}.d")
         machine.succeed(f"systemctl start {SPARE_UNIT} && mountpoint -q /srv/spare")
         assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
 
-    with subtest("blk-availability's stop is back for the decoy's own shutdown"):
+    with subtest("blk-availability's stop is the decoy's own after the cold boot"):
         machine.fail(f"test -e /run/systemd/system/{BLK_UNIT}.d")
         machine.succeed(f"systemctl is-active {BLK_UNIT}")
         stop = blk_availability_stop()

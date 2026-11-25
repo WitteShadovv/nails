@@ -4,7 +4,8 @@
 # less free space than `minimum_space_mb`, activation refuses with the
 # remediation and the machine stays on the plain decoy. Freeing the space lets
 # the same configuration enter the hidden session (a soft-reboot into the root
-# overlay) and leave it again.
+# overlay) and leave it again (deactivate powers the machine off; the decoy
+# boots cold).
 
 _:
 let

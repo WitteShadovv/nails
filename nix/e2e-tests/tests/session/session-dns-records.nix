@@ -1,33 +1,28 @@
 # The hidden session's DNS settings and network state never reach the decoy.
 #
-# On a decoy that keeps its name servers with openresolv (the NixOS default
-# without systemd-resolved), NetworkManager hands every DNS update to
-# resolvconf, which keeps it as a record below /run/resolvconf, and
-# NetworkManager leaves that record in place when it stops. A soft-reboot
-# carries /run, and the decoy's resolvconf.service rebuilds /etc/resolv.conf on
-# the decoy disk from those records at every start, before NetworkManager runs:
-# a record the hidden session left would put the hidden name servers and search
-# domains there. A soft-reboot also keeps the kernel's network state, which the
-# way back puts back before the switch.
+# A hidden session never goes back to the decoy: it ends in a power-off, so
+# neither the records NetworkManager leaves below /run/resolvconf nor the
+# kernel's network state reach the decoy's next start, a cold boot. On a decoy
+# that keeps its name servers with openresolv (the NixOS default without
+# systemd-resolved), resolvconf.service rebuilds /etc/resolv.conf on the decoy
+# disk at every start, before NetworkManager runs, from those records.
 #
 #   1. In the hidden session, NetworkManager brings up a connection with a name
 #      server and a search domain that only the hidden session uses, on a dummy
 #      link of its own, from a profile it keeps only in memory (below
-#      /run/NetworkManager, which it loads again at its next start). The
-#      session also adds a WireGuard full tunnel's policy-routing rules and an
-#      nftables table, turns forwarding on, sets arp_ignore as a VPN app does,
-#      and sets a hostname of its own.
-#   2. After deactivate, none of the hidden DNS settings is in the records below
+#      /run/NetworkManager). The session also adds a WireGuard full tunnel's
+#      policy-routing rules and an nftables table, turns forwarding on, sets
+#      arp_ignore as a VPN app does, and sets a hostname of its own.
+#   2. `nails deactivate` powers the machine off for real. After the cold boot
+#      none of the hidden DNS settings is in the records below
 #      /run/resolvconf, in /etc/resolv.conf as the decoy's resolvconf.service
 #      wrote it at the decoy's start (a probe copies it before NetworkManager
 #      starts), in /etc/resolv.conf now, in NetworkManager's device state and
 #      in-memory profiles below /run/NetworkManager, or in the decoy journal.
-#   3. The way back put the decoy's network state back: the dummy link, the
-#      rules and the table are gone, the settings are the decoy's again, the
-#      decoy's NetworkManager does not list the hidden profile, and the
-#      hostname is the decoy's. The decoy's /etc/hostname names no host, so
-#      PID 1 keeps whatever hostname it finds at every start, the return
-#      included: only the way back sets the decoy's own name again.
+#   3. The decoy's network state is that of its first boot: the dummy link,
+#      the rules and the table are gone, the settings and the hostname are the
+#      decoy's, and the decoy's NetworkManager does not list the hidden
+#      profile.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -63,8 +58,7 @@ in
       # An /etc/hostname that names no host.
       environment.etc.hostname.text = lib.mkForce "";
       # What the decoy's resolvconf.service wrote into /etc/resolv.conf at its
-      # start, before NetworkManager replaced it. It runs at every start of the
-      # service manager, the decoy's return included.
+      # start, before NetworkManager replaced it. It runs at every boot.
       systemd.services.resolv-conf-at-start = {
         after = [ "resolvconf.service" ];
         before = [ "NetworkManager.service" ];
@@ -78,9 +72,8 @@ in
     };
 
   testScript = _: ''
-    from nails_e2e import session
-
     ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
     # Used by the hidden session only.
@@ -107,7 +100,6 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.wait_for_unit("NetworkManager.service")
-    machine.succeed("hostname decoy-probe")
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("nails init /mnt/data")
     machine.succeed(
@@ -118,7 +110,7 @@ in
     )
     machine.log(f"the decoy's records before the session:\n{records()}")
     decoy = network_state()
-    machine.log(f"the decoy's network state before the session: {decoy}")
+    machine.log(f"the decoy's network state at its first boot: {decoy}")
 
     with subtest("the hidden session's NetworkManager registers its own name server"):
         canonical_activate(CONFIG, "--overlay-only", "activate")
@@ -149,11 +141,8 @@ in
         for part in decoy:
             assert changed[part] != decoy[part], f"the session did not change {part}"
 
-    with subtest("no hidden DNS setting reaches the decoy after the way back"):
-        session.follow_soft_reboot(
-            machine, f"nails --config {CONFIG} deactivate -y", "deactivate"
-        )
-        session.assert_decoy_root(machine)
+    with subtest("no hidden DNS setting reaches the decoy after the power-off"):
+        canonical_deactivate(CONFIG, "deactivate")
         machine.wait_for_unit("resolv-conf-at-start.service")
         machine.wait_for_unit("NetworkManager.service")
         at_start = machine.succeed("cat /run/resolv-conf-at-start")
@@ -163,9 +152,10 @@ in
             f"grep -rhF --devices=skip -e {DOMAIN} -e {SERVER} "
             "/run/NetworkManager/devices /run/NetworkManager/system-connections"
         )
-        _, journal = machine.execute(f"journalctl -b --no-pager | grep -F {DOMAIN}")
+        # Every boot the decoy journal kept, not only this one.
+        _, journal = machine.execute(f"journalctl --no-pager | grep -F {DOMAIN}")
         machine.log(
-            "after the way back:\n"
+            "after the cold boot:\n"
             f"/etc/resolv.conf at the decoy's start:\n{at_start}\n"
             f"/etc/resolv.conf now:\n{now}\n"
             f"the records:\n{after}\n"
@@ -181,12 +171,12 @@ in
         ]:
             assert DOMAIN not in text and SERVER not in text, f"{where}:\n{text}"
 
-    with subtest("the way back puts the decoy's network state back"):
+    with subtest("the decoy's network state after the cold boot is its first boot's"):
         machine.fail("ip link show dns0")
         profiles = machine.succeed("nmcli -g NAME connection show")
         assert "probe" not in profiles.split("\n"), profiles
         restored = network_state()
-        machine.log(f"the network state after the way back: {restored}")
+        machine.log(f"the network state after the cold boot: {restored}")
         assert restored == decoy, f"before: {decoy}\nafter: {restored}"
   '';
 }

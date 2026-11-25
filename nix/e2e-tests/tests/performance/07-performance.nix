@@ -4,14 +4,17 @@
 # guest:
 #   - `nails status` (on the decoy and in the hidden session) and `nails check`
 #     stay fast: they only read;
-#   - `nails activate` and `nails deactivate`, from the trigger until the new
-#     userspace has settled after the soft-reboot (the `trigger_to_settled`
-#     timing follow_soft_reboot takes from the guest's uptime), stay within a
-#     generous VM budget, over two round trips;
-#   - `nails emergency` in the hidden session gets a shell on the plain decoy
-#     back quickly (`trigger_to_backdoor`): its hot path phases are logged by
-#     the hidden process, which the switch kills, so the user-visible time to
-#     the next userspace is what is measured.
+#   - `nails activate`, from the trigger until the new userspace has settled
+#     after the soft-reboot (the `trigger_to_settled` timing follow_soft_reboot
+#     takes from the guest's uptime), stays within a generous VM budget, over
+#     two round trips;
+#   - `nails deactivate`, from the trigger until the machine is off (the
+#     `trigger_to_off` timing follow_power_off takes on the host: the guest has
+#     no clock left to read), stays within the same budget;
+#   - `nails emergency` in the hidden session powers the machine off quickly
+#     (`trigger_to_off`): its hot path phases are logged by the hidden
+#     process, which the power-off ends, so the time until the machine is off
+#     is what is measured.
 # The slowest sample must stay under each budget. Wall-clock budgets on shared
 # runners cannot gate a merge, so only the nightly E2E run executes this test.
 
@@ -23,8 +26,8 @@ let
 in
 {
   name = "performance-validation";
-  # Five soft-reboots at about 15 s each, plus setup; the old weight was
-  # measured while every sample rebooted the VM.
+  # Three soft-reboots in and three power-offs with a cold boot out, at about
+  # 15-30 s each, plus setup.
   globalTimeout = 1500;
   meta.tags = [ "performance" ];
 
@@ -38,10 +41,9 @@ in
   };
 
   testScript = _: ''
-    from nails_e2e import session
-
     ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${testHelpers.canonicalEmergencyFn}
     ${perf.detectTcgThresholdMultiplierFn}
     ${perf.guestElapsedMsFn}
 
@@ -99,19 +101,16 @@ in
             if cycle == 0:
                 timed_reads("Status (hidden)", f"nails --config {CONFIG} status", status_threshold)
             timings = canonical_deactivate(CONFIG, f"perf-deactivate-{cycle}")
-            deactivate_s.append(timings["trigger_to_settled"])
+            deactivate_s.append(timings["trigger_to_off"])
         assert_within_budget("Activate to the settled hidden root", activate_s, switch_threshold)
-        assert_within_budget("Deactivate to the settled decoy", deactivate_s, switch_threshold)
+        assert_within_budget("Deactivate to the power-off", deactivate_s, switch_threshold)
 
-    with subtest("emergency returns a decoy shell quickly"):
+    with subtest("emergency powers off quickly"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         canonical_activate(CONFIG, "--overlay-only", "perf-activate-emergency")
-        timings = session.follow_soft_reboot(
-            machine, f"nails --config {CONFIG} emergency", "perf-emergency"
-        )
-        session.assert_decoy_root(machine)
+        timings = canonical_emergency(CONFIG, "perf-emergency", boot=False)
         assert_within_budget(
-            "Emergency to the decoy backdoor", [timings["trigger_to_backdoor"]], emergency_threshold
+            "Emergency to the power-off", [timings["trigger_to_off"]], emergency_threshold
         )
   '';
 }

@@ -1,17 +1,21 @@
-# A switch the transition refuses, and the reason `status` gives for it.
+# A switch the transition refuses powers the machine off, and `status` gives
+# the reason once the hidden volume is open again.
 #
 # Right before PID 1 switches, the transition checks the next root the way PID
-# 1 will, and detaches it when the check fails, so PID 1 restarts the root it
-# is on instead of freezing. It runs after `umount.target`: the decoy's
-# shutdown has unmounted the hidden volume at /mnt/data by then, and the reason
-# can reach the volume only through its bind in the next root. Here a unit's
-# stop, which runs in the decoy's shutdown after the activation enqueued the
-# soft-reboot, covers the next root's /etc with an empty tmpfs, so the next
-# root is no OS tree any more:
+# 1 will. The step fails closed: an entry that fails any check powers the
+# machine off (the decoy's shutdown already ran, as for a power-off, and a
+# return into the decoy would write records an ordinary boot never writes).
+# It runs after `umount.target`: the decoy's shutdown has unmounted the hidden
+# volume at /mnt/data by then, and the reason can reach the volume only
+# through its bind in the next root. Here a unit's stop, which runs in the
+# decoy's shutdown after the activation enqueued the soft-reboot, covers the
+# next root's /etc with an empty tmpfs, so the next root is no OS tree any
+# more:
 #
-#   1. the soft-reboot comes back to the plain decoy, the next root detached
-#      and the hidden mapping closed, and the reason is nowhere on the decoy's
-#      root filesystem;
+#   1. the machine powers off for real (the kernel's "reboot: Power down" and
+#      no userspace before it), and the next cold boot is the plain decoy with
+#      the hidden mapping closed, the decoy's own soft-reboot unit and the
+#      reason nowhere on the decoy's root filesystem;
 #   2. the hidden volume, opened again, holds the reason: `status` names the
 #      refused switch with its time and reason, and its JSON reports
 #      `switch_refused` with the refusal's own reason;
@@ -55,7 +59,7 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     write_headless_config(CONFIG)
 
-    with subtest("a switch the transition refuses comes back to the plain decoy"):
+    with subtest("a switch the transition refuses powers the machine off"):
         # It stops with the rest of the decoy, after the activation enqueued the
         # soft-reboot and before the transition checks the next root.
         machine.succeed(
@@ -64,25 +68,23 @@ in
             "/run/current-system/sw/bin/true"
         )
         machine.succeed("systemctl is-active break-next-root.service")
-        timings = session.follow_soft_reboot(
+        # The step's power-off: QEMU exits after the kernel said it powered
+        # off, and no userspace (the hidden one or the decoy's) came up first.
+        session.follow_power_off(
             machine,
             f"set -o pipefail; nails --config {CONFIG} activate -y --overlay-only 2>&1 "
             f"| tee /mnt/data/refused.log > {session.SERIAL_CONSOLE}",
             "refused",
         )
-        machine.log(f"refused switch timings: {timings}")
-        session.assert_decoy_root(machine)
-        machine.fail("test -e /run/overlay-runtime")
+
+    with subtest("the next cold boot is the plain decoy, without the reason"):
+        session.boot_decoy(machine)
         machine.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
-        # The timeout guard went with the drop-in: the decoy's PID 1 forces a
-        # hung switch through again, as its own unit says.
         machine.fail("test -e /run/systemd/system/soft-reboot.target.d")
         action = machine.succeed(
             "systemctl show -P JobTimeoutAction soft-reboot.target"
         ).strip()
         assert action == "soft-reboot-force", action
-        # The refused entry closes the hidden backend, as a reboot would.
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
         # The reason went to the hidden volume, never to the decoy's disk (the
         # volume itself holds it: see below).
         found = machine.succeed("find / -xdev -name last-switch.json -print 2>/dev/null || true")

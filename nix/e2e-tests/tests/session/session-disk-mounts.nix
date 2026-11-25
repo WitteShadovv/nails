@@ -1,5 +1,5 @@
 # Disks mounted during the hidden session: the watcher alert, the
-# opt-in read-only guard, and the way back.
+# opt-in read-only guard, and the power-off that ends the session.
 #
 # The fstab policy covers every filesystem the decoy knows about at entry. A
 # disk the hidden session mounts itself is a real disk. Here a second disk
@@ -12,11 +12,9 @@
 #      operator logged in on the console, and so does mounting the third disk
 #      at /mnt/data/inner, below the hidden root: the session tells its own
 #      storage by device, not by path. The disk is left mounted and busy;
-#      `nails deactivate` still returns to the decoy, and its own record on
-#      the hidden volume shows that it unmounted both disks before the way
-#      back, and neither the hidden volume nor a filesystem the session
-#      carries. Nothing holds either disk afterwards, and the decoy mounts
-#      them read-write as usual. The session also puts a line for the third
+#      `nails deactivate` still powers the machine off for real, and after
+#      the cold boot the decoy mounts both disks read-write as usual, with
+#      what the session wrote to them. The session also puts a line for the third
 #      disk at /mnt/data/inner into its own /etc/fstab, a file in place of
 #      NixOS's link into the store.
 #   2. The next `--overlay-only` entry decides that fstab: the line below the
@@ -31,8 +29,10 @@
 #      backend stay writable. The
 #      third disk, mounted read-only below the hidden root and set writable
 #      again by hand, is set read-only again by the watcher's sweep. After the
-#      way back every disk is writable again, the second disk is byte for byte
-#      as before the session, and the decoy mounts it read-write.
+#      power-off and the cold boot every disk is writable again, the second
+#      disk is byte for byte as before the session, the decoy mounts it
+#      read-write, and the hot-plugged disk's image is as blank as it was
+#      attached.
 #
 # A notification server on testuser's session bus (lib/notification-server.nix)
 # records the alert, as in faults-backend-watch-alert.
@@ -47,7 +47,7 @@ in
     "session"
     "security"
   ];
-  # Two sessions, four soft-reboots.
+  # Two sessions, each a soft-reboot in and a power-off and a cold boot out.
   globalTimeout = 1500;
 
   nodes.machine = _: {
@@ -72,7 +72,6 @@ in
   };
 
   testScript = _: ''
-    import json
     import shlex
 
     from nails_e2e import desktop
@@ -88,7 +87,6 @@ in
     # The line the session adds to its own fstab for that disk, and its unit.
     INNER_LINE = f"{INNER} {BELOW} ext4 defaults,nofail 0 2"
     INNER_UNIT = "mnt-data-inner.mount"
-    LOGS = "/mnt/data/logs/*.log"
     HOTPLUG = "/dev/disk/by-id/virtio-hotplug"
     WATCH_UNIT = "overlay-runtime-monitor.service"
     RULE = "/run/udev/rules.d/60-overlay-runtime.rules"
@@ -116,19 +114,6 @@ in
 
     def decoy_root_device():
         return machine.succeed("findmnt -no SOURCE /").strip()
-
-
-    def unmounted_before_the_way_back():
-        # The disks the last way back unmounted before it soft-rebooted, as
-        # deactivate records them in its log on the hidden volume.
-        lines = machine.succeed(f"cat {LOGS}").splitlines()
-        enqueued = [
-            json.loads(line)["fields"]
-            for line in lines
-            if '"the way back is enqueued"' in line
-        ]
-        assert enqueued, f"no way back in {LOGS}"
-        return enqueued[-1]["unmounted"]
 
 
     machine.start()
@@ -159,7 +144,7 @@ in
         # Without the opt-in the write reaches the disk: that is what the alert
         # is about.
         machine.succeed("echo session-1 > /mnt/extra/hidden-1 && sync")
-        # Keep the mount busy across the way back.
+        # Keep the mount busy up to the power-off.
         machine.succeed(
             "systemd-run --unit hold-extra -p WorkingDirectory=/mnt/extra "
             "-E PATH=/run/current-system/sw/bin \"$(command -v sleep)\" infinity"
@@ -186,7 +171,7 @@ in
             f"&& echo {shlex.quote(INNER_LINE)} >> /etc/fstab"
         )
 
-    with subtest("the way back leaves the busy disk free for the decoy"):
+    with subtest("deactivate powers off with the busy disk mounted, and the decoy uses it"):
         canonical_deactivate(CONFIG, "deactivate-1")
         machine.fail(f"findmnt -S \"$(readlink -f {EXTRA})\"")
         assert not is_read_only(EXTRA)
@@ -195,15 +180,9 @@ in
         machine.succeed("echo decoy-2 > /mnt/extra/decoy-2 && umount /mnt/extra")
         extra_before = machine.succeed(f"sha256sum < {EXTRA}")
 
-    with subtest("the way back unmounted the disk below the hidden root, and only the disks"):
+    with subtest("the disk mounted below the hidden root is the decoy's to mount again"):
         machine.fail(f"findmnt -S \"$(readlink -f {INNER})\"")
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        unmounted = unmounted_before_the_way_back()
-        machine.log(f"unmounted before the way back: {unmounted}")
-        for disk in (BELOW, "/mnt/extra"):
-            assert f'"{disk}"' in unmounted, unmounted
-        assert '"/mnt/data"' not in unmounted, unmounted
-        assert "/mnt/data/root/" not in unmounted, unmounted
+        assert not is_read_only(INNER)
         machine.succeed(f"mkdir -p /mnt/inner && mount {INNER} /mnt/inner")
         machine.succeed("grep -Fx session-1 /mnt/inner/hidden-1 && umount /mnt/inner")
 
@@ -279,13 +258,12 @@ in
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {HOTPLUG})\" = 1", timeout=10)
         machine.fail(f"dd if=/dev/zero of={HOTPLUG} bs=512 count=1 conv=notrunc oflag=direct")
 
-    with subtest("the way back makes the disks writable again and changes nothing on them"):
+    with subtest("after the power-off the disks are writable and nothing changed on them"):
         canonical_deactivate(CONFIG, "deactivate-2")
         machine.fail(f"findmnt -S \"$(readlink -f {EXTRA})\"")
         machine.fail(f"test -e {RULE}")
         assert not is_read_only(EXTRA), "the disk must be writable again on the decoy"
         assert not is_read_only(INNER), "the disk swept below the root must be writable again"
-        assert not is_read_only(HOTPLUG), "the hot-plugged disk must be writable again"
         assert machine.succeed(f"sha256sum < {EXTRA}") == extra_before, (
             "the read-only session wrote to the disk"
         )
@@ -294,6 +272,9 @@ in
         machine.succeed("echo decoy-3 > /mnt/extra/decoy-3 && sync")
         machine.fail("test -e /mnt/extra/hidden-2")
         machine.succeed("umount /mnt/extra")
-        machine.succeed(f"dd if=/dev/zero of={HOTPLUG} bs=512 count=1 conv=notrunc oflag=direct")
+        # The cold boot's QEMU starts without the disk hot-plugged during the
+        # session: its image, read on the host, is as blank as it was attached.
+        with open(image, "rb") as handle:
+            assert not handle.read().strip(b"\0"), "the read-only session wrote to the hot-plugged disk"
   '';
 }

@@ -10,7 +10,7 @@
 # hidden volume as an operator runs it (sudo from testuser), with the gui
 # workspace's window beside it. A driver plays the window (helper_driver.py):
 # it activates through the helper, sees each step and the point of no return
-# come before the answer, and comes back the same way. In the hidden session
+# come before the answer, and ends the session the same way. In the hidden session
 # the test shows:
 #
 #   - the entry, valid for desktop-file-validate, runs the window with the
@@ -35,14 +35,16 @@
 #     accessibility bus;
 #   - both files lie on the hidden volume, and the decoy root, mounted
 #     read-only beside the session, has neither;
-#   - the helper plans a deactivation with its token for each ending;
+#   - the helper plans a deactivation with its token for each ending, each a
+#     power-off with nothing to warn of (a hidden session never goes back to
+#     the decoy);
 #   - `sudo <engine> gui` opens the window: its own directory in the
 #     operator's runtime directory, handed over by root, and the window as
 #     the operator with no supplementary group and no_new_privs.
 #
-# After the way back the decoy has neither file and polkit no such action, and
-# the decoy disk image, read from the host after a power-off, holds none of
-# their text.
+# The window's deactivation powers the machine off for real; after the cold
+# boot the decoy has neither file and polkit no such action, and the decoy
+# disk image, read from the host after a shutdown, holds none of their text.
 { self, pkgs, ... }:
 let
   inherit (pkgs) lib;
@@ -82,7 +84,8 @@ in
   name = "session-window-launcher";
   meta.tags = [ "session" ];
 
-  # Two soft-reboots, a power-off and the scan of the decoy image.
+  # A soft-reboot, a power-off and a cold boot, a shutdown and the scan of the
+  # decoy image.
   globalTimeout = 1500;
 
   nodes.machine =
@@ -404,17 +407,18 @@ in
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
         peek_decoy(decoy_dev, f"test ! -e {PEEK}{ENTRY} && test ! -e {PEEK}{ACTION}")
 
-    with subtest("the helper plans a deactivation for each ending, with its token"):
+    with subtest("the helper plans a power-off for each ending, with its token"):
         found = frames(
             machine.succeed(f"{DRIVER} /dev/stdout /tmp/plans.err plans -- {HELPER}").splitlines()
         )
         results = answers(found)
         assert len(results) == 4, results
-        for result, poweroff in ((results[1], False), (results[2], True)):
+        for result in (results[1], results[2]):
             assert result["exit"] == 0, result
             data = result["envelope"]["data"]
-            assert data["poweroff"] is poweroff, data
-            assert isinstance(data["warnings"], list), data
+            assert data["poweroff"] is True, data
+            assert data["warnings"] == [], data
+            assert data.get("powers_off_instead") is None, data
             assert len(data["token"]) == 32, data
         assert results[1]["envelope"]["data"]["token"] != results[2]["envelope"]["data"]["token"]
 
@@ -456,35 +460,36 @@ in
         ):
             assert line in [" ".join(entry.split()) for entry in status], (line, status)
 
-    with subtest("after the way back the decoy has neither file, and polkit no action"):
-        # The way back through the helper of the same build from the store,
-        # as the other session tests run the way back, so nothing on the
-        # hidden volume is busy when it closes. Its frames go to the serial
-        # console, which outlives the switch.
+    with subtest("the window's deactivation through the helper powers off"):
+        # Through the helper of the same build from the store, so nothing on
+        # the hidden volume is busy at the power-off. Its frames go to the
+        # serial console, which records up to the power-off.
         since = len(machine.full_console_log)
         store_helper = (
             f"su testuser -c 'sudo ${windowEngine}/bin/nails --config {CONFIG} helper --stdio'"
         )
-        session.follow_soft_reboot(
+        session.follow_power_off(
             machine,
             f"{DRIVER} /dev/ttyS0 /dev/ttyS0 {FRAME.strip()} deactivate -- {store_helper}",
             "deactivate",
         )
-        session.assert_decoy_root(machine)
+        # Read before the next start, which begins a new console log.
         results = answers(console_frames(since))
         print(results)
         assert len(results) == 3, results
         plan, applied = results[1], results[2]
-        assert plan["envelope"]["data"]["poweroff"] is False, plan
+        assert plan["envelope"]["data"]["poweroff"] is True, plan
         assert applied["exit"] == 0, applied
-        assert applied["envelope"]["data"]["status"] == "return_requested", applied
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        assert applied["envelope"]["data"]["status"] == "poweroff_requested", applied
+
+    with subtest("after the cold boot the decoy has neither file, and polkit no action"):
+        session.boot_decoy(machine)
         machine.succeed(f"test ! -e {ENTRY} && test ! -e {ACTION}")
         no_such_action()
 
     with subtest("the decoy disk image holds none of the launcher's text"):
         machine.succeed(f"echo {CONTROL} > /root/scan-control && sync")
-        image = disk_forensics.snapshot(machine, "post-way-back", restart=False)
+        image = disk_forensics.snapshot(machine, "post-session", restart=False)
         hits = disk_forensics.run_strings_scan(image, TOKENS + [CONTROL])
         assert CONTROL in hits, "the scan did not find the control it was given"
         leaked = sorted(hits - {CONTROL})

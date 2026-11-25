@@ -35,8 +35,9 @@
 #   5. On the plain decoy, `sudo nails emergency --poweroff` is typed into a
 #      window as in 1, and the machine powers off and boots again.
 #
-# After each, back on the decoy, neither testuser nor root has a history
-# file: no shell wrote one.
+# Each session ends with `nails deactivate`, which powers the machine off (a
+# hidden session never goes back to the decoy). After each, on the decoy's
+# cold boot, neither testuser nor root has a history file: no shell wrote one.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -260,7 +261,8 @@ in
 
     def activate_typed(label):
         """Type the activation into the shell in the foreground, follow the
-        switch and come back to the decoy."""
+        switch, then end the session: a power-off and the decoy's cold
+        boot."""
         type_a_line()
         token = "act-" + secrets.token_hex(6)
         command = (

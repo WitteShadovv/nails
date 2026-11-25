@@ -44,7 +44,8 @@ in
   meta.tags = [ "forensic" ];
 
   # Imaging the decoy root three times (baseline, control, post), one extra
-  # reboot for the control run, the activate/deactivate soft-reboots and three
+  # reboot for the control run, the session (a soft-reboot in, a power-off and
+  # a cold boot out) and three
   # sparse retain copies; the same generous margin forensic/06 uses.
   globalTimeout = 2700;
 
@@ -158,8 +159,9 @@ in
         print(f"retained before.raw from {before_raw}")
 
     with subtest("control run: a plain reboot with no hidden session"):
-        # The workflow below spans the boot after the control snapshot and the
-        # activate/deactivate soft-reboots, so the control is one plain reboot;
+        # The workflow below spans the boot after the control snapshot, the
+        # decoy's shutdown for the soft-reboot in and, after the session's
+        # power-off, one cold boot, so the control is one plain reboot;
         # whatever it changes is boot noise the oracle subtracts. The lease file
         # an earlier boot left is already there, so wait for this boot's own.
         machine.shutdown()
@@ -203,8 +205,9 @@ in
         machine.fail("test -e /dev/mapper/data")
 
     with subtest("image the powered-off decoy as the oracle's after image"):
-        # The way back starts the decoy's dhcpcd again, which leases eth0 anew
-        # as a boot does; image the decoy once it has, as before and control.
+        # The cold boot after the session's power-off starts the decoy's
+        # dhcpcd, which leases eth0 anew; image the decoy once it has, as
+        # before and control.
         wait_for_settled_lease()
         after_raw = disk_forensics.snapshot(machine, "post", restart=False, retain=True)
         print(f"retained after.raw from {after_raw}")

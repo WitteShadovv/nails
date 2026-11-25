@@ -5,7 +5,8 @@
 #      integrity digest does not hide the session: status reads the live
 #      facts, still reports the active posture and exits 0.
 #   2. Emergency does not refuse a corrupt state: it kills the session and
-#      soft-reboots back to the plain decoy, and the backend closes.
+#      powers the machine off; the cold boot is the plain decoy with the
+#      backend closed.
 #   3. On the decoy, a changed `version` under the stale digest refuses the
 #      next activation with the invalid-state exit 6 before anything is
 #      prepared, and status fails closed with the same exit code.
@@ -26,6 +27,7 @@ in
 
     ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalEmergencyFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
     STATE = "/mnt/data/state.json"
@@ -67,12 +69,8 @@ in
         assert rc == 0, f"status must report the live session, got rc={rc}: {status}"
         assert status["place"] == "hidden", status
 
-    with subtest("emergency still runs on a corrupt state and returns to the decoy"):
-        session.follow_soft_reboot(
-            machine, f"nails --config {CONFIG} emergency", "state-corruption-emergency"
-        )
-        session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+    with subtest("emergency still runs on a corrupt state and powers off"):
+        canonical_emergency(CONFIG, "state-corruption-emergency")
 
     with subtest("a tampered version field blocks the next activation"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -91,7 +89,9 @@ in
         )
         session.assert_decoy_root(machine)
         machine.fail("test -e /run/nextroot/etc")
-        assert machine.succeed("systemctl show -p SoftRebootsCount --value").strip() == "2"
+        # The refused activation enqueued no switch in this cold boot.
+        count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
+        assert count in ("", "0"), f"a soft-reboot happened: SoftRebootsCount={count}"
 
         # Without a session, the unknown record makes status fail closed.
         rc, status = read_status_json_with_rc(config_path=CONFIG)

@@ -12,8 +12,8 @@
 #   2. `nails activate` soft-reboots into the root overlay with its upper in
 #      the bound directory, and status reports the session;
 #   3. a hidden write lands in that directory (/mnt/data/root/upper/...);
-#   4. `nails deactivate` soft-reboots back to the plain decoy, which does not
-#      see the hidden file, while the backing disk still holds it.
+#   4. `nails deactivate` powers the machine off; the cold-booted plain decoy
+#      does not see the hidden file, while the backing disk still holds it.
 
 _:
 let
@@ -77,13 +77,13 @@ in
         machine.succeed("su - testuser -c 'echo bind-backend-ok > ~/notes.txt' && sync")
         machine.succeed(f"grep -qx bind-backend-ok {UPPER}/{NOTE}")
 
-    with subtest("deactivate returns to the plain decoy; the backing disk keeps the file"):
+    with subtest("deactivate powers off; the backing disk keeps the file"):
         canonical_deactivate(headless_config, "deactivate-bind")
         status = read_status_json(config_path=headless_config)
         assert status["place"] == "decoy", status
         machine.fail("su - testuser -c 'test -e ~/notes.txt'")
-        # The switch dropped the bind with the hidden root; mount the backing
-        # disk again to look at it.
+        # The cold boot mounted neither the bind nor the backing disk; mount
+        # the backing disk again to look at it.
         machine.succeed("mount /dev/disk/by-id/virtio-data /mnt/backing")
         machine.succeed(f"grep -qx bind-backend-ok /mnt/backing/vol/root/upper/{NOTE}")
         machine.succeed("umount /mnt/backing")

@@ -2,28 +2,19 @@
 # through a bootloader, so its Nix store lives on its root disk as on a real
 # install: NixOS binds the store over itself, read-only, nosuid and nodev, once
 # the initrd has mounted the root. The decoy also has an fstab filesystem at
-# /srv/data with a read-only bind of itself stacked on it, the way NixOS stacks
-# a store that is a filesystem of its own; a directory of a store path bound
-# at /opt/pkg after the store bind, so the way back reaches it on the root
-# filesystem below a mount it made a moment before; and its ESP at /boot
-# behind an automount (x-systemd.automount), which an access mounts. The
-# hidden session has the ESP read-only and the automount skipped:
-# local-fs.target requires it, and a mask would leave the target unreached
-# without a failure.
+# /srv/data, a directory of a store path bound at /opt/pkg after the store
+# bind, and its ESP at /boot behind an automount (x-systemd.automount), which
+# an access mounts. The hidden session has the ESP read-only and the
+# automount skipped: local-fs.target requires it, and a mask would leave the
+# target unreached without a failure.
 #
-# Before the first entry the test records the decoy's mount table and utab.
-# After the way back every mount outside /run, /boot and the hidden volume is
-# there again, in the order the decoy made it: the same filesystem and
-# directory at the same place in the tree, with the same source, type, options
-# and propagation type (only the IDs and peer groups are new), and no mount
-# more. The decoy's utab lines are back under the new mount IDs, libmount
-# marks the same mounts x-initrd.mount as before, and the store is read-only
-# again. The decoy's own start sets up the automount on /boot again, as after
-# a plain soft-reboot, and the next access mounts the same ESP on it. Before
-# the way back made the decoy's mounts again, the store bind and the bottom
-# layer at /srv/data never came back, and the store stayed writable until the
-# next boot; a way back that put the ESP straight back on /boot left
-# boot.automount failed.
+# A hidden session never goes back to the decoy: deactivate powers the machine
+# off, and the decoy's next start is a cold boot. After it the decoy's mount
+# table is that of its first boot: the store is a read-only bind of the root
+# filesystem's again, /opt/pkg and /srv/data are there with the decoy's files
+# only, the automount on /boot is active and an access mounts the ESP on it,
+# every utab line names the mount it was written for, and libmount marks the
+# same mounts x-initrd.mount as at the first boot.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -35,8 +26,8 @@ in
     "forensic"
     "session"
   ];
-  # A boot through the firmware and a bootloader, a LUKS setup and one
-  # soft-reboot round trip.
+  # Two boots through the firmware and a bootloader, a LUKS setup and one
+  # session (a soft-reboot in, a power-off out).
   globalTimeout = 1200;
 
   nodes.machine =
@@ -86,9 +77,8 @@ in
 
 
     def leave_out(point):
-        # A soft-reboot into a new root carries /run without the mounts below
-        # it, and the hidden volume goes with the session. The automount on
-        # /boot is the decoy's start's own, a new autofs every time.
+        # /run is the boot's own, and the hidden volume goes with the
+        # session. The automount on /boot is a new autofs at every boot.
         return (
             point.startswith("/run/")
             or point in ("/mnt/data", "/boot")
@@ -125,18 +115,23 @@ in
         return marked
 
 
+    def assert_store_and_binds(where):
+        table = machine.succeed("cat /proc/self/mountinfo")
+        shapes = {mount.place: mount for mount in mounts.shape(table, leave_out)}
+        store, root = shapes[("/", "/nix/store")], shapes[("/",)]
+        assert (store.dev, store.root) == (root.dev, "/nix/store"), (where, store)
+        assert {"ro", "nosuid", "nodev"} <= set(store.options.split(",")), (where, store)
+        machine.fail("touch /nix/store/.write-probe")
+        pkg = shapes[("/", "/opt/pkg")]
+        assert pkg.dev == root.dev and pkg.root.startswith("/nix/store/"), (where, pkg)
+        assert ("/", "/srv/data") in shapes, (where, sorted(shapes))
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
     with subtest("the decoy's store is a read-only bind of its root filesystem's"):
-        table = machine.succeed("cat /proc/self/mountinfo")
-        shapes = {mount.place: mount for mount in mounts.shape(table, leave_out)}
-        store, root = shapes[("/", "/nix/store")], shapes[("/",)]
-        assert (store.dev, store.root) == (root.dev, "/nix/store"), store
-        assert {"ro", "nosuid", "nodev"} <= set(store.options.split(",")), store
-        machine.fail("touch /nix/store/.write-probe")
-        pkg = shapes[("/", "/opt/pkg")]
-        assert pkg.dev == root.dev and pkg.root.startswith("/nix/store/"), pkg
+        assert_store_and_binds("the first boot")
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     machine.succeed("nails init /mnt/data")
@@ -146,10 +141,7 @@ in
         "minimum_space_mb = 100\n"
         "EOF"
     )
-    machine.succeed(
-        "echo decoy > /srv/data/decoy-file && "
-        "mount --bind /srv/data /srv/data && mount -o remount,bind,ro /srv/data"
-    )
+    machine.succeed("echo decoy > /srv/data/decoy-file && sync")
     mount_boot()
     before, before_utab = mount_table()
     before_marked = initrd_mounts()
@@ -176,41 +168,32 @@ in
         machine.fail("systemctl is-failed --quiet boot.automount")
         assert machine.succeed("systemctl is-active local-fs.target").strip() == "active"
         machine.fail("touch /boot/.write-probe")
+        # A write to the decoy's disk from the session is refused or lands
+        # in the session's overlay: never on the disk.
+        machine.succeed("echo hidden > /srv/data/hidden-file || true")
 
+    # Powers off for real; the decoy then boots cold.
     canonical_deactivate(CONFIG, "deactivate")
 
-    with subtest("the decoy's start sets up the automount on /boot again"):
+    with subtest("the decoy's boot sets up the automount on /boot again"):
         machine.fail("test -e /run/systemd/system/boot.automount.d")
         machine.succeed("systemctl is-active boot.automount")
         machine.fail("systemctl is-failed --quiet boot.automount")
         mount_boot()
 
-    with subtest("the decoy has every mount back as it had it before the entry"):
+    with subtest("the decoy's mount table after the cold boot is its first boot's"):
         after, after_utab = mount_table()
-        machine.log(f"the decoy's mount table after the way back:\n{after}\nutab:\n{after_utab}")
-        found = mounts.differences(
-            mounts.shape(before, leave_out), mounts.shape(after, leave_out)
-        )
-        assert not found, "mounts not as before the entry:\n" + "\n".join(found)
-        # The automount is new; the ESP an access mounted on it is the same.
+        machine.log(f"the decoy's mount table after the cold boot:\n{after}\nutab:\n{after_utab}")
+        assert_store_and_binds("the cold boot")
+        machine.succeed("nix-store --verify-path $(readlink -f /run/current-system)")
         boot = boot_stack(after)
         assert [m.fstype for m in boot] == ["autofs", "vfat"], boot
-        assert boot[1] == boot_stack(before)[1], (boot_stack(before), boot)
-
-    with subtest("its utab lines are back with its mounts"):
         wrong = utab.wrong_lines(after_utab, after)
         assert not wrong, f"utab lines naming no live mount or another: {wrong}"
-        foreign, lost = utab.not_given_back(before_utab, before, after_utab, after)
-        assert not foreign and not lost, (
-            f"the decoy's utab after the way back:\n{after_utab}\n"
-            f"lines not its own: {foreign}; its lines not given back: {lost}"
-        )
         assert initrd_mounts() == before_marked, sorted(initrd_mounts())
 
-    with subtest("the store is read-only again and the stack at /srv/data is the decoy's"):
-        machine.fail("touch /nix/store/.write-probe")
-        machine.succeed("nix-store --verify-path $(readlink -f /run/current-system)")
-        machine.fail("touch /srv/data/hidden-file")
+    with subtest("/srv/data holds the decoy's files only"):
         assert machine.succeed("cat /srv/data/decoy-file").strip() == "decoy"
+        machine.fail("test -e /srv/data/hidden-file")
   '';
 }

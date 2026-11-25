@@ -4,8 +4,8 @@
 # login on tty1 starts an interactive zsh and types a command; zsh writes its
 # history file on exit. That write is a copy-up into the hidden root's upper
 # (/mnt/data/root/upper/home/testuser/.zsh_history) on the hidden volume, and
-# after `nails deactivate` the decoy history file is byte-for-byte what it was
-# before activation.
+# after `nails deactivate` (a power-off) the cold-booted decoy's history file is
+# byte-for-byte what it was before activation.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;

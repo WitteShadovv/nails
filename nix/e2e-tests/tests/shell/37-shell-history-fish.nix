@@ -4,8 +4,9 @@
 # login on tty1 starts an interactive fish and types a command; fish saves its
 # history after every command. That write is a copy-up into the hidden root's
 # upper (/mnt/data/root/upper/home/testuser/.local/share/fish/fish_history) on
-# the hidden volume, and after `nails deactivate` the decoy history file is
-# byte-for-byte what it was before activation.
+# the hidden volume, and after `nails deactivate` (a power-off) the
+# cold-booted decoy's history file is byte-for-byte what it was before
+# activation.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;

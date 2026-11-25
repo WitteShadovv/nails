@@ -66,8 +66,9 @@
 #      both still fail backend-entries and the fix keeps them;
 #  14. the accepted case: a whole session runs on a LUKS container file on
 #      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
-#      hidden write lands in the container, and deactivate returns to a decoy
-#      that does not see it.
+#      hidden write lands in the container, and deactivate powers the machine
+#      off; the cold-booted decoy does not see the write, which the container
+#      still holds.
 #
 # Every refused target keeps its mtime and ctime: no probe file was created
 # and deleted in it.

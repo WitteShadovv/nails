@@ -10,18 +10,20 @@ same versions, and then sends the requests of each STEP in order, each one
 only once the last is answered:
 
 - `activate`: an activation plan (`--overlay-only`), then its apply;
-- `plans`: a deactivation plan for each ending, then a status request,
-  which withdraws the second plan unapplied;
-- `deactivate`: a deactivation plan, then its apply.
+- `plans`: a deactivation plan for each ending (`poweroff` false and true,
+  both of which plan a power-off: a hidden session never goes back to the
+  decoy), then a status request, which withdraws the second plan unapplied;
+- `deactivate`: a deactivation plan, then its apply, which powers off.
 
 Every frame the helper writes goes to OUT as one line, PREFIX and a space
 before it when given (the serial console carries other lines too), flushed
 and synced as it arrives: an activation's frames must reach the hidden
-volume before the switch, and a deactivation's the console, which outlives
-it. The helper's stderr goes to ERR. The driver ignores SIGTERM and SIGHUP:
-the window's pipe stays open until the answer, as the switch that an apply
-enqueues stops this process too, and a window that went away before the
-point of no return would cancel the activation. It exits 0 once the last
+volume before the switch, and a deactivation's the console, which records
+up to the power-off. The helper's stderr goes to ERR. The driver ignores
+SIGTERM and SIGHUP: the window's pipe stays open until the answer, as the
+switch or the power-off that an apply enqueues stops this process too, and a
+window that went away before the point of no return would cancel the
+activation. It exits 0 once the last
 answer is in and every answer but the status has exit 0, and 1 otherwise.
 """
 

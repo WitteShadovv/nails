@@ -2,8 +2,8 @@
 #
 # With `[persona] mode = "fresh-home"` the entry makes the operator's home in
 # the root upper an opaque directory, so in the hidden session the decoy home's
-# contents are not visible and every write lands in the upper. Back on the
-# decoy the home is unchanged.
+# contents are not visible and every write lands in the upper. The emergency
+# powers the machine off, and on the cold-booted decoy the home is unchanged.
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -15,9 +15,8 @@ in
   globalTimeout = 1200;
 
   testScript = _: ''
-    from nails_e2e import session
-
     ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalEmergencyFn}
 
     CONFIG = "/var/lib/nails-tests/fresh-home.toml"
     machine.start()
@@ -48,9 +47,8 @@ in
         machine.succeed("su - testuser -c 'printf %s hidden-note > ~/hidden-note.txt'")
         machine.succeed("test -f /mnt/data/root/upper/home/testuser/hidden-note.txt")
 
-    with subtest("emergency returns to the decoy home, unchanged"):
-        session.follow_soft_reboot(machine, f"nails --config {CONFIG} emergency", "emergency")
-        session.assert_decoy_root(machine)
+    with subtest("after the emergency's power-off the decoy home is unchanged"):
+        canonical_emergency(CONFIG, "emergency")
         decoy = machine.succeed("cat /home/testuser/decoy-secret.txt").strip()
         assert decoy == "decoy-secret", f"decoy home changed: {decoy!r}"
         machine.fail("test -e /home/testuser/hidden-note.txt")

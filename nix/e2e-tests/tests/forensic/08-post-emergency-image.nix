@@ -2,8 +2,8 @@
 #
 # The sibling of test 05 for the emergency path. One disk lineage: baseline ->
 # activate (a soft-reboot into the hidden root) and plant canaries ->
-# `nails emergency` (every hidden process killed at once and a soft-reboot
-# back) -> image the decoy root. The decoy keeps a persistent journal and an
+# `nails emergency` (every hidden process killed at once and a power-off) ->
+# cold boot of the decoy -> image the decoy root. The decoy keeps a persistent journal and an
 # on-disk Nix store, the strict case. The hidden canaries (a file, a shell
 # history line and a logged journal line) must be absent from the
 # post-emergency image, and so must every artifact-indicator token that was not
@@ -11,8 +11,9 @@
 # because forensic/80 is taken by the ESP/NVRAM invariant.)
 #
 # As in forensic/05, the images are also compared by MAC times and content
-# hashes against a control run (one plain reboot: the session spans two
-# soft-reboots), so an emergency that left a decoy file modified in place
+# hashes against a control run (one plain reboot: the session spans the
+# decoy's shutdown for the soft-reboot in and one cold boot after its
+# power-off), so an emergency that left a decoy file modified in place
 # fails too.
 
 { self, pkgs, ... }:
@@ -25,8 +26,9 @@ in
   name = "post-emergency-image";
   meta.tags = [ "forensic" ];
 
-  # Disk imaging three times, an extra reboot for the control run, two
-  # soft-reboots and three carve-and-hash passes; generous margin.
+  # Disk imaging three times, an extra reboot for the control run, a
+  # soft-reboot in, a power-off and a cold boot out, and three carve-and-hash
+  # passes; generous margin.
   globalTimeout = 2700;
 
   nodes = {
@@ -43,9 +45,8 @@ in
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalEmergencyFn}
     ${diskForensics.pythonSetup}
-
-    from nails_e2e import session
 
     canary_file_token = "NAILS_CANARY_EMERG_FILE_2026a"
     canary_hist_token = "NAILS_CANARY_EMERG_HISTORY_2026a"
@@ -73,8 +74,9 @@ in
         baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
 
     with subtest("control run: a plain reboot with no hidden session"):
-        # The session below spans the boot after this snapshot and two
-        # soft-reboots, so the control is one plain reboot. Whatever changes
+        # The session below spans the boot after this snapshot, the decoy's
+        # shutdown for the soft-reboot in and one cold boot after the
+        # emergency's power-off, so the control is one plain reboot. Whatever changes
         # here is boot noise, not the hidden session.
         machine.shutdown()
         machine.start()
@@ -100,13 +102,10 @@ in
             "test -s /mnt/data/root/upper/home/testuser/secret-notes.txt"
         )
 
-    with subtest("emergency kills the hidden session and soft-reboots back"):
-        timings = session.follow_soft_reboot(
-            machine, f"nails --config {headless_config} emergency", "emergency"
-        )
-        machine.log(f"emergency soft-reboot timings: {timings}")
-        session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+    with subtest("emergency kills the hidden session and powers off"):
+        # Followed to the kernel's power-down line, then the decoy boots cold
+        # with the hidden mapping closed.
+        canonical_emergency(headless_config, "emergency")
         machine.fail("test -e /home/testuser/secret-notes.txt")
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")

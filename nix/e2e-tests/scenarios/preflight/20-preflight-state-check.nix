@@ -7,8 +7,9 @@
 # Test 20: Preflight State Check Integrity
 #
 # A completed session (activate: a soft-reboot into the hidden root;
-# deactivate: a soft-reboot back) must leave a signed state file behind on the
-# hidden volume, and status must read it as the plain decoy. Refusing a
+# deactivate: a power-off, then a cold boot of the decoy inside the batch's
+# scenario) must leave a signed state file behind on the hidden volume, and
+# status must read it as the plain decoy. Refusing a
 # tampered state file is covered once, in state/52-state-corruption.nix.
 
 _:
@@ -44,8 +45,8 @@ in
             status = read_status_json(config_path=config_path)
             assert status["place"] == "hidden", status
             canonical_deactivate(config_path, "preflight-state-deactivate")
-            # The way back closed the hidden volume; reopen it to read the state
-            # file the session left behind.
+            # The cold boot left the hidden volume closed; reopen it to read the
+            # state file the session left behind.
             machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
             persisted = json.loads(machine.succeed("cat /mnt/data/state.json"))
             assert persisted.get("integrity_sha256"), (

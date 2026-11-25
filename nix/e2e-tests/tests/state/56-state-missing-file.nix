@@ -2,8 +2,9 @@
 #
 # A hidden volume without a state file reads as the plain decoy, and
 # activation bootstraps the file: the hidden session starts and the state
-# file it records carries its integrity digest. The way back works from that
-# bootstrapped state. Finally, with the state file gone from under a live
+# file it records carries its integrity digest. Deactivation (a power-off)
+# works from that bootstrapped state, and the cold-booted decoy reads it as the
+# plain decoy. Finally, with the state file gone from under a live
 # hidden session (the hidden volume lazily unmounted), status probes the live
 # root and never reports the plain decoy.
 
@@ -52,6 +53,9 @@ in
 
     with subtest("deactivation still succeeds after the missing-file bootstrap"):
         canonical_deactivate(headless_config, "state-missing-deactivate")
+        # The power-off took /run, and the config in it, along: write it again
+        # on the cold-booted decoy.
+        write_headless_config(headless_config)
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         payload = read_status_json(config_path=headless_config)
         assert payload["place"] == "decoy", payload

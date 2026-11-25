@@ -5,8 +5,10 @@
 # (JobTimeoutAction=soft-reboot-force): PID 1 switches without
 # systemd-soft-reboot.service, so without the session's transition step. The
 # session installs a runtime drop-in for soft-reboot.target next to its other
-# drop-ins that makes that timeout power off by force (poweroff-force), and the
-# way back removes it.
+# drop-ins that makes that timeout power off by force (poweroff-force). The
+# drop-in stays for the whole session: a hidden session never goes back to the
+# decoy, and every ending (deactivate, emergency) is a power-off that asks
+# about no guard.
 #
 # Two pieces of the node exist only for this test: a unit that holds up the
 # next switch once it is started, as long as its instance says
@@ -18,45 +20,32 @@
 # the product knows about either.
 #
 #   1. A session loads the drop-in in the hidden PID 1, which keeps the
-#      test's timeout, and the way back leaves the decoy's own unit.
-#   2. The positive control, on the decoy after that session: a plain
-#      soft-reboot held up by the unit is forced through at the timeout, and
-#      the machine comes back up.
+#      test's timeout, and keeps it through a reload of PID 1; deactivate
+#      powers off, and the next cold boot has the decoy's own unit.
+#   2. The positive control, on the decoy: a plain soft-reboot held up by the
+#      unit is forced through at the timeout, and the machine comes back up.
 #   3. Activation refuses where the timeout would do nothing, with a
 #      test-only runtime drop-in that turns the timeout off, and nothing of the
 #      entry is left.
 #   4. A `systemctl service-watchdogs no` on the decoy does not refuse the
 #      next activation: every reload of PID 1, the activation's own included,
 #      sets service watchdogs back to what the kernel command line says, and
-#      the hidden PID 1 then has them on. Only that command line could turn
-#      them off for good, which would take a node of its own. In that session,
-#      deactivate refuses with exit 4 while the hidden PID 1 has no timeout,
-#      has lost the drop-in, or has service watchdogs off (nothing reloads it
-#      before the way back), each time before it says that the session ends,
-#      and the session goes on each time. With watchdogs off it names
-#      `systemctl service-watchdogs yes` first, and once that turned
-#      them back on the way back goes on, as the positive control for the
-#      session's own switch: a test-only unit whose stop removes the drop-in
-#      and reloads PID 1 during the switch, after deactivate checked it, and
-#      a way back held up by the unit is forced through at the timeout into
-#      the decoy, which comes up with the session's files still in /run (its
-#      runtime directory and the transition's drop-in), as the way back's
-#      last step never ran. A cold boot clears them. The way in has no such
-#      control: the entry refuses unless PID 1 reports the drop-in's action.
+#      the hidden PID 1 then has them on. In that session deactivate asks
+#      about no guard: with the timeout off, the drop-in gone and service
+#      watchdogs off it powers the machine off at once, with no job running
+#      into a timeout, and the next cold boot is the plain decoy with the
+#      record inactive.
 #   5. Why the drop-in powers off by force: with a test-only runtime drop-in
 #      that sets a plain poweroff for the timeout, PID 1 skips that action
 #      while the switch's shutdown runs, and a switch held up for 90 seconds
 #      goes on only when the hold ends.
-#   6. A way back held up by the unit powers the machine off at the timeout,
-#      with no userspace coming up first, and the next cold boot is the plain
-#      decoy.
+#   6. A plain soft-reboot in the hidden session held up by the unit powers
+#      the machine off at the timeout, with no userspace coming up first, and
+#      the next cold boot is the plain decoy; the record still says active,
+#      and `recover` resets it.
 #   7. An entry held up the same way powers off too, without the hidden
 #      session ever coming up; the next cold boot is the plain decoy, the
 #      record still says active, and `recover` resets it.
-#   8. `deactivate --poweroff`, which every refusal of the way back names,
-#      asks about no guard: in a session whose PID 1 has service watchdogs
-#      off, where the way back is refused, it powers the machine off, and the
-#      next cold boot is the plain decoy with the record inactive.
 #
 # PID 1 says on the console what its job timeout does ("Forcibly powering off:
 # job timed out"). The test VMs name the serial port first and the screen last,
@@ -73,10 +62,9 @@ in
     "security"
     "session"
   ];
-  # 490 s on a hosted runner: five waits for the one-minute timeout (one in a
-  # 90-second hold), three power-offs and a crash with their cold boots, eight
-  # soft-reboots and the refused activation and deactivations, which a slower
-  # runner stretches.
+  # Four waits for the one-minute timeout (one in a 90-second hold), four
+  # power-offs with their cold boots, six soft-reboots and the refused
+  # activation, which a slower runner stretches.
   globalTimeout = 1200;
 
   nodes.machine =
@@ -108,8 +96,6 @@ in
     };
 
   testScript = _: ''
-    import json
-
     from nails_e2e import session
 
     ${testHelpers.writeHeadlessConfigFn}
@@ -128,13 +114,6 @@ in
     #: timeout at all.
     PLAIN = "/run/systemd/system/soft-reboot.target.d/90-plain-poweroff.conf"
     NO_TIMEOUT = "/run/systemd/system/soft-reboot.target.d/zzz-no-timeout.conf"
-    #: The guard's text, as the session writes it.
-    GUARD_TEXT = "[Unit]\\nJobTimeoutAction=poweroff-force\\n"
-    SW = "/run/current-system/sw/bin"
-    #: The session's plan in its runtime directory, and the transition's
-    #: drop-in: the way back's last step removes both.
-    PLAN = "/run/overlay-runtime/plan.json"
-    TRANSITION = "/run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf"
     #: What PID 1 logs when the switch's job times out, and when it skips a
     #: plain poweroff because a shutdown is under way.
     TIMED_OUT = "Job soft-reboot.target/start timed out."
@@ -142,14 +121,6 @@ in
     #: How long a follow may take: the timeout, the switch or the power-off,
     #: and room for a slow runner.
     DEADLINE_S = 60 + 240
-    #: The way back, what each of its refusals names instead, and what
-    #: deactivate says only once the way back may start.
-    DEACTIVATE = f"nails --config {CONFIG} deactivate -y"
-    ENDINGS = "deactivate --poweroff`, which powers off, or with `sudo "
-    ENDING = "Ending the hidden session"
-    #: What the way back's refusal names first where the session turned
-    #: service watchdogs off.
-    WATCHDOGS_BACK_ON = "Turn service watchdogs back on with `sudo systemctl service-watchdogs yes`"
 
 
     def unit(prop):
@@ -225,14 +196,6 @@ in
         machine.succeed(f"rm {NO_TIMEOUT} && systemctl daemon-reload")
 
 
-    def assert_session_goes_on(where):
-        """Still the hidden session, with nothing prepared for a way back."""
-        session.assert_hidden_root(machine)
-        machine.fail("mountpoint -q /run/nextroot")
-        plan = json.loads(machine.succeed(f"cat {PLAN}"))
-        assert plan.get("armed") is None, f"{where}: {plan.get('armed')}"
-
-
     def assert_cold_decoy(where):
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -249,11 +212,13 @@ in
     write_headless_config(CONFIG)
     assert_no_guard("the decoy before any session")
 
-    with subtest("the hidden PID 1 has the drop-in, and the way back removes it"):
+    with subtest("the hidden PID 1 keeps the drop-in, and deactivate powers off"):
         canonical_activate(CONFIG, "--overlay-only", "activate-plain")
         assert_guard("the hidden session")
+        machine.succeed("systemctl daemon-reload")
+        assert_guard("the hidden session after a reload")
         canonical_deactivate(CONFIG, "deactivate-plain")
-        assert_no_guard("the decoy after the way back")
+        assert_no_guard("the decoy's cold boot after deactivate")
 
     with subtest("without the drop-in the same hold forces a soft-reboot through"):
         hold_switch()
@@ -282,83 +247,30 @@ in
         session.assert_decoy_root(machine)
         machine.fail("test -e /run/overlay-runtime")
 
-    with subtest("deactivate refuses without the guard, and a guard gone after it is forced through"):
+    with subtest("deactivate asks about no guard: it powers off at once"):
         # The activation's reload undoes this, so it goes on, and the hidden
         # PID 1 has service watchdogs on.
         machine.succeed("systemctl service-watchdogs no")
         assert manager("ServiceWatchdogs") == "no"
-        canonical_activate(CONFIG, "--overlay-only", "activate-forced-back")
+        canonical_activate(CONFIG, "--overlay-only", "activate-unguarded")
         assert manager("ServiceWatchdogs") == "yes", "the entry's reload left them off"
-        assert_guard("the session whose way back the test unguards")
+        assert_guard("the session the test unguards")
+        # Test only: no timeout, the session's drop-in forgotten and service
+        # watchdogs off. None of it is the power-off's business.
         without_timeout()
-        assert_refused(
-            DEACTIVATE,
-            4,
-            "JobTimeoutUSec=infinity",
-            ENDINGS,
-            absent=(ENDING, WATCHDOGS_BACK_ON),
-        )
-        with_timeout_again()
-        assert_session_goes_on("without a timeout")
-        # Test only: the hidden PID 1 forgets the session's drop-in.
         machine.succeed(f"rm {GUARD} && systemctl daemon-reload")
         assert unit("JobTimeoutAction") == "soft-reboot-force", unit("JobTimeoutAction")
-        assert_refused(
-            DEACTIVATE,
-            4,
-            "JobTimeoutAction=soft-reboot-force",
-            "the decoy would start with the hidden session's files in /run",
-            ENDINGS,
-            absent=(ENDING, WATCHDOGS_BACK_ON),
-        )
-        assert_session_goes_on("without the drop-in")
-        machine.succeed(f"printf '{GUARD_TEXT}' > {GUARD} && systemctl daemon-reload")
-        assert_guard("the session with its drop-in back")
-        # Nothing reloads PID 1 from here to the switch: service watchdogs
-        # turned off in the session refuse the way back, and once they are
-        # turned back on as the refusal says, the way back goes on.
         machine.succeed("systemctl service-watchdogs no")
-        assert_refused(
-            DEACTIVATE,
-            4,
-            "ServiceWatchdogs=no",
-            f"{WATCHDOGS_BACK_ON} and deactivate again, or end the session with `sudo ",
-            ENDINGS,
-            absent=(ENDING,),
-        )
-        assert_session_goes_on("with service watchdogs off")
-        machine.succeed("systemctl service-watchdogs yes")
-        assert manager("ServiceWatchdogs") == "yes"
-        # Test only: once the switch has begun, and so after deactivate
-        # checked the drop-in, this unit's stop removes it and reloads PID 1,
-        # so the unit's own action holds when the switch's job times out.
-        machine.succeed(
-            "systemd-run --unit drop-timeout-guard -p Type=oneshot -p RemainAfterExit=yes "
-            f"-p ExecStop='/bin/sh -c \"{SW}/rm {GUARD} && {SW}/systemctl daemon-reload\"' "
-            f"{SW}/true"
-        )
-        machine.succeed("systemctl is-active drop-timeout-guard.service")
-        hold_switch()
         since = len(machine.full_console_log)
-        session.follow_soft_reboot(
-            machine,
-            f"{DEACTIVATE} > {session.SERIAL_CONSOLE} 2>&1",
-            "forced-back",
-            deadline_s=DEADLINE_S,
-        )
-        assert said(since, FORCED), f"PID 1 never said {FORCED!r}"
-        assert not said(since, POWERING_OFF), "the way back powered off"
-        # The decoy's root, with the session's files still in /run.
-        fstype = session.root_fstype(machine)
-        assert fstype != "overlay", f"/ is {fstype}: the switch stayed in the session"
-        machine.succeed(f"test -e {PLAN}")
-        machine.succeed(f"test -e {TRANSITION}")
-        machine.log(
-            "the forced way back left: "
-            + machine.succeed(f"ls -A /run/overlay-runtime $(dirname {TRANSITION})")
-        )
-        machine.crash()
-        assert_cold_decoy("after the forced way back")
+        canonical_deactivate(CONFIG, "deactivate-unguarded", boot=False)
+        # An ordinary power-off: no job of it ran into its timeout.
+        assert not said(since, "job timed out"), "the power-off waited for a job timeout"
+        assert_cold_decoy("after deactivate without the guard")
+        # Deactivate recorded the session's end before the power-off.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        data = read_status_json(CONFIG)
+        assert data["place"] == "decoy", data
+        assert data["attention"] is None, data
 
     with subtest("a plain poweroff at the timeout does nothing during a switch"):
         machine.succeed(
@@ -381,20 +293,27 @@ in
         machine.succeed(f"rm -r $(dirname {PLAIN}) && systemctl daemon-reload")
         assert_no_guard("the decoy after the plain poweroff's control")
 
-    with subtest("a way back held up until the timeout powers off"):
+    with subtest("a soft-reboot in the session held up until the timeout powers off"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        canonical_activate(CONFIG, "--overlay-only", "activate-hold-back")
-        assert_guard("the session whose way back hangs")
+        canonical_activate(CONFIG, "--overlay-only", "activate-hold-session")
+        assert_guard("the session whose soft-reboot hangs")
         hold_switch()
         since = len(machine.full_console_log)
         session.follow_power_off(
-            machine,
-            f"{DEACTIVATE} > {session.SERIAL_CONSOLE} 2>&1",
-            "hold-back",
-            deadline_s=DEADLINE_S,
+            machine, "systemctl soft-reboot", "hold-session", deadline_s=DEADLINE_S
         )
-        assert_powered_off_at_the_timeout(since, "the way back")
-        assert_cold_decoy("after the way back's power-off")
+        assert_powered_off_at_the_timeout(since, "the session's soft-reboot")
+        assert_cold_decoy("after the session's power-off at the timeout")
+        # Nothing ended the session on the record.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        rc, data = read_status_json_with_rc(CONFIG)
+        machine.log(f"status after the session's power-off: {rc} {data}")
+        assert data["place"] == "decoy", data
+        assert data["attention"] == "ended_abnormally", data
+        machine.succeed(f"nails --config {CONFIG} recover")
+        data = read_status_json(CONFIG)
+        assert data["attention"] is None, data
+        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
     with subtest("an entry held up until the timeout powers off"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -418,28 +337,6 @@ in
         assert data["place"] == "decoy", data
         assert data["attention"] == "ended_abnormally", data
         machine.succeed(f"nails --config {CONFIG} recover")
-        data = read_status_json(CONFIG)
-        assert data["place"] == "decoy", data
-        assert data["attention"] is None, data
-
-    with subtest("deactivate --poweroff ends a session whose way back is refused"):
-        canonical_activate(CONFIG, "--overlay-only", "activate-poweroff")
-        assert_guard("the session that powers off")
-        machine.succeed("systemctl service-watchdogs no")
-        assert_refused(DEACTIVATE, 4, "ServiceWatchdogs=no", absent=(ENDING,))
-        assert_session_goes_on("before the power-off")
-        since = len(machine.full_console_log)
-        session.follow_power_off(
-            machine,
-            f"{DEACTIVATE} --poweroff > {session.SERIAL_CONSOLE} 2>&1",
-            "poweroff-unguarded",
-            deadline_s=DEADLINE_S,
-        )
-        # An ordinary power-off: no job of it ran into its timeout.
-        assert not said(since, "job timed out"), "the power-off waited for a job timeout"
-        assert_cold_decoy("after deactivate --poweroff")
-        # The way back recorded the session's end before the power-off.
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         data = read_status_json(CONFIG)
         assert data["place"] == "decoy", data
         assert data["attention"] is None, data

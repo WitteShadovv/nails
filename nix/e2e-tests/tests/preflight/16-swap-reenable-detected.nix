@@ -63,7 +63,7 @@ in
         machine.succeed(f"swapoff {loop} && losetup -d {loop}")
         machine.succeed("rm -f /mnt/data/swap.img")
 
-    with subtest("the way back is clean once swap is removed"):
+    with subtest("deactivate powers off once swap is removed"):
         canonical_deactivate(config_path, "swap-reenable-deactivate")
   '';
 }

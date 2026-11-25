@@ -12,8 +12,9 @@
 #   hidden root; the unmasked control timer keeps firing there (so the hidden
 #   user manager does run timers), while the masked canary timer reports
 #   `masked` and logs no run during several of the control timer's periods.
-# - After deactivation the decoy canary unit is a regular file again, it fires
-#   again, and no hidden-session run reached the decoy's log.
+# - Deactivation powers the machine off; on the cold-booted decoy the canary
+#   unit is a regular file, it fires again, and no hidden-session run reached
+#   the decoy's log.
 
 { self, ... }:
 let
@@ -27,7 +28,7 @@ in
     "graphical"
   ];
 
-  # A graphical boot and two soft-reboots.
+  # A graphical boot, a soft-reboot in, a power-off and a graphical cold boot.
   globalTimeout = 1500;
 
   nodes.machine =
@@ -187,7 +188,7 @@ in
         )
         decoy_canary_runs = decoy_runs(canary)
 
-    with subtest("deactivate: the decoy timer is unmasked and fires again"):
+    with subtest("deactivate powers off: on the cold boot the decoy timer fires again"):
         canonical_deactivate(CONFIG, "deactivate")
         unit_kind = machine.succeed(
             f"stat -c %F {user_unit_dir}/{canary}.timer"

@@ -6,8 +6,8 @@
 # Every other smoke test puts `nails` on PATH and passes `--config`, so none of
 # them exercises that documented path. This one does: it copies the binary onto
 # the hidden root, runs `init`, `activate` (a soft-reboot into the whole-root
-# overlay, whose upper lands on that hidden root) and `emergency` (a soft-reboot
-# back to the plain decoy, closing the backend) as an unprivileged operator
+# overlay, whose upper lands on that hidden root) and `emergency` (a power-off;
+# the decoy then boots cold with the backend closed) as an unprivileged operator
 # through `su - testuser -c 'sudo /mnt/data/nails ...'`, and never passes
 # `--config`.
 
@@ -105,14 +105,14 @@ in
         )
         machine.succeed(f"grep -q 'schema_version' {report}")
 
-    with subtest("emergency by full path returns to the plain decoy and closes the backend"):
-        session.follow_soft_reboot(
+    with subtest("emergency by full path powers off; the decoy boots cold"):
+        session.follow_power_off(
             machine,
             "su - testuser -c " + f"'sudo {hidden_nails} emergency'",
             "quickstart-emergency",
         )
-        session.assert_decoy_root(machine)
-        # The hidden backend closed itself: no master key left in RAM.
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        # The plain decoy root with the hidden mapping closed: no master key
+        # in RAM.
+        session.boot_decoy(machine)
   '';
 }

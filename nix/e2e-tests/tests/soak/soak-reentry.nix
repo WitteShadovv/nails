@@ -1,13 +1,16 @@
-# The soft-reboot re-entry soak: one VM through many activate/deactivate cycles
-# in a single boot, beside neighbour VMs that cycle on their own, so the host
-# runs several soft-reboots at once. The re-entry hang was found only by paired,
+# The soft-reboot re-entry soak: one VM through many activate/deactivate
+# cycles, beside neighbour VMs that soft-reboot on their own, so the host runs
+# several soft-reboots at once. The re-entry hang was found only by paired,
 # repeated activations under that kind of host load, never by a one-shot test,
 # so this lane exists to keep it closed: it asserts that every re-entry reaches
 # the hidden root's backdoor within the deadline, and that every canary a
 # hidden session wrote stays in the upper and never reaches the decoy disk,
-# over hundreds of cycles.
+# over hundreds of cycles. A hidden session never goes back to the decoy, so
+# every cycle ends in deactivate's power-off and a cold boot of the decoy, and
+# each entry is the first soft-reboot of its boot.
 #
-# It is heavy (a cycle is ~10-15 s, so the soaker alone runs well over an hour)
+# It is heavy (a cycle is ~30-40 s with the cold boot, so the soaker alone runs
+# for hours)
 # and is not a gate: the `soak` tag keeps it out of `all`, the tag groups, the
 # CI shards and `--affected` (see default.nix), and its own workflow runs it on
 # a hosted runner weekly and before a release. Build (and so run) it by name:
@@ -29,9 +32,10 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
 
-  # The soaker's cycle count: at least 500 cycles in one boot fit a single
-  # hosted job (a cycle is 10 to 15 s, so about 1.4 to 2.1 hours).
-  cycles = 500;
+  # The soaker's cycle count: 300 cycles fit a single hosted job (a cycle,
+  # with the power-off and the cold boot, is 30 to 40 s, so about 2.5 to 3.3
+  # hours).
+  cycles = 300;
 
   # A re-entry that takes longer than this is the hang, not a slow host: the
   # lifecycle's generous backdoor deadline, which the stall report fires before.
@@ -46,10 +50,13 @@ let
     environment.systemPackages = [ nailsPackage ];
   };
 
-  # A neighbour node: a decoy that, once the test arms it, performs one
-  # transition on every boot. The soft-reboot that a transition enqueues ends
-  # this oneshot with userspace, and the next boot runs it again, so the
-  # neighbour churns on its own without the driver steering it. It is a
+  # A neighbour node: a decoy that, once the test arms it, enters a hidden
+  # session and then soft-reboots inside it on every start of its userspace.
+  # The soft-reboot ends this oneshot with userspace, and the next start runs
+  # it again, so the neighbour churns on its own without the driver steering
+  # it. Deactivate would power the neighbour off, so it never leaves: a plain
+  # soft-reboot in the hidden root, with nothing armed and no next root,
+  # starts the hidden userspace again (the transition step allows it). It is a
   # best-effort load source: every step ignores its own failure, and the test
   # asserts nothing about the neighbours, so a neighbour that falls behind only
   # lightens the host load and never fails the run.
@@ -57,14 +64,15 @@ let
     imports = [ ./../../lib/vm-config.nix ];
     environment.systemPackages = [ nailsPackage ];
     systemd.services.nails-soak = {
-      description = "Activate/deactivate churn beside the soak, for host contention";
+      description = "Soft-reboot churn beside the soak, for host contention";
       # Runs on every boot, including after each soft-reboot, so one transition
       # follows another once the test arms it.
       wantedBy = [ "multi-user.target" ];
       after = [ "multi-user.target" ];
       serviceConfig = {
         Type = "oneshot";
-        # nails returns only once PID 1 holds the soft-reboot, and the switch
+        # nails and systemctl return only once PID 1 holds the soft-reboot, and
+        # the switch
         # then stops this unit too, usually while its script still runs: the
         # stop's SIGTERM ends the script, which a oneshot counts as a failure
         # ('signal'). That is this unit's normal end, so it counts as success.
@@ -86,8 +94,8 @@ let
         [ -e /var/lib/nails-soak-armed ] || exit 0
         config=/mnt/data/config/nails.toml
         if findmnt -no FSTYPE / | grep -qx overlay; then
-          # In the hidden root: go back to the decoy.
-          nails --config "$config" deactivate -y
+          # In the hidden root: start its userspace again.
+          systemctl soft-reboot
         else
           # On the decoy: reopen the hidden volume and enter.
           if [ ! -e /dev/mapper/data ]; then
@@ -103,7 +111,7 @@ let
   };
 
   # The soaker and the neighbour VMs that cycle beside it (one or two). Each
-  # neighbour self-drives a plain activate/deactivate churn so the host carries
+  # neighbour self-drives a plain soft-reboot churn so the host carries
   # several soft-reboots at once, the condition under which the hang appeared.
   # The nodes are named in the literal, so ci/tests/test_e2e_run.py holds each
   # name to the 11 bytes a node name may take in the drivers' socket paths.
@@ -140,8 +148,9 @@ in
     PEEK = "/run/decoy-peek"
     CYCLES = ${toString cycles}
     DEADLINE_S = ${toString deadlineSeconds}.0
-    # The decoy-clean check remounts the decoy root read-only, which is too slow
-    # to do every cycle; run it this often, and always on the last cycle.
+    # The decoy-clean check mounts the decoy root a second time, read-only,
+    # which is too slow to do every cycle; run it this often, and always on
+    # the last cycle.
     DEEP_CHECK_EVERY = 25
 
     neighbours = [${neighbourList}]
@@ -178,9 +187,9 @@ in
     def decoy_is_clean(node, canaries):
         """Fail if any hidden canary reached the decoy root filesystem.
 
-        The decoy superblock is the overlay's lower and stays mounted
-        read-write, so a plain read-only mount would fail with EBUSY: mount it,
-        then make this mount read-only, exactly as the lifecycle test peeks."""
+        After the cold boot the decoy superblock is mounted read-write as /,
+        so a plain read-only mount would fail with EBUSY: mount it, then make
+        this mount read-only, exactly as the lifecycle test peeks."""
         decoy_dev = node.succeed("findmnt -no SOURCE /").strip()
         node.succeed(
             f"mkdir -p {PEEK} && mount {decoy_dev} {PEEK} && mount -o remount,bind,ro {PEEK}"

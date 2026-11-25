@@ -5,7 +5,7 @@
 # then waits at its logout confirmation. A second `nails activate -y` meanwhile
 # fails fast, naming the live holder's PID, and prepares nothing: no next root,
 # still the plain decoy. Confirming the first one then enters the hidden root
-# as usual, and the session ends normally.
+# as usual, and the session ends normally: deactivate powers the machine off.
 
 { self, ... }:
 let
