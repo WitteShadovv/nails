@@ -24,16 +24,9 @@
 # network identifiers" in docs/operator-guide.md); in the hidden session the
 # change lands only in the hidden upper.
 #
-# The way back to the decoy undoes what this changes on the running system: it
-# sets each device's MAC address back to the decoy's, taking the device down for
-# the change when its driver refuses it while the device is up, and sets the
-# hostname back. When a device's address still cannot be set back, the way back
-# powers off instead of returning (a device keeps its current MAC address when
-# the decoy's profile sets none), and nothing on the screen says why. A device
-# plugged in during the session is a new link and keeps the random address,
-# and nothing tells you so. When the random address must never reach the
-# decoy, end a session that used this module with
-# `nails deactivate --poweroff` (or `nails emergency --poweroff`).
+# Every hidden session ends in a power-off, so what this changes on the running
+# system (the random MAC addresses and the hostname) never reaches the decoy:
+# it boots afresh with each device's own address and its own hostname.
 
 { config, lib, ... }:
 {
