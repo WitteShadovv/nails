@@ -515,7 +515,7 @@ distroVm.buildVmTest {
         prepare_boot()
 
     with subtest("check names the test driver's /nix alone on the stock decoy"):
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         row = nix_trace_row("on the stock decoy")
         assert row["status"] == "warn", row

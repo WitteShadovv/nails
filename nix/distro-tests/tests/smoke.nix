@@ -1226,7 +1226,7 @@ distroVm.buildVmTest {
     with subtest("decoy-persistence preflight refuses a persistent journal"):
         # Prepare everything else first, so the only finding left is the decoy
         # posture: the check gates on a mounted hidden root and reads the config.
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         # The stock images keep a persistent journal (Storage=auto with an
         # on-disk /var/log/journal); create the directory in case an image ever
         # stops shipping it, so the refusal path is always exercised.
@@ -1573,7 +1573,7 @@ distroVm.buildVmTest {
             vm.succeed(f"printf %s {shlex.quote(noauto)} > /etc/fstab && systemctl daemon-reload")
             print(f"the decoy's fstab for the second session:\n{noauto}")
         assert_no_disk_swap("the decoy before the second hidden root")
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         boot_mounts: list[str] = []
         if blk_availability:
             # The first session carried /boot and the ESP below the hidden

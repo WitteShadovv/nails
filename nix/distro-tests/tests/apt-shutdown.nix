@@ -475,7 +475,7 @@ distroVm.buildVmTest {
         vm.succeed(
             "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
         )
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
 
 
     vm.wait_for_unit("multi-user.target")
@@ -496,7 +496,7 @@ distroVm.buildVmTest {
             # apt's configuration after that leaves NAILS unable to tell,
             # until the helper reads it afresh.
             vm.succeed("systemctl restart unattended-upgrades.service")
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
         assert not apt_reads_setting(), "the stock decoy installs at shutdown"
@@ -553,7 +553,7 @@ distroVm.buildVmTest {
         vm.succeed(
             "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
         )
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         assert row("unattended-upgrade-run")["status"] == "pass"
 
     with subtest("apt-daily.service refuses check and activation before its download takes the lock"):
@@ -619,7 +619,7 @@ distroVm.buildVmTest {
             assert count(helper_log, POLLING) > polling_before, tail(helper_log)
 
     with subtest("a helper stopped but enabled only warns, and logs its shutdown-mode run at the way back"):
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         vm.succeed("systemctl stop unattended-upgrades.service")
         vm.succeed("systemctl is-enabled unattended-upgrades.service")
         warning = row("decoy-persistence")
@@ -654,7 +654,7 @@ distroVm.buildVmTest {
         mode_before = count(helper_log, SHUTDOWN_MODE)
 
     with subtest("positive control: the helper runs in shutdown mode at the switch with the line deleted"):
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         follow(
             f"{nails_cmd} activate -y --allow-persistent-decoy > /mnt/data/activate-3.log 2>&1",
             "activate-3",
@@ -671,7 +671,7 @@ distroVm.buildVmTest {
         vm.succeed(
             "if ! mountpoint -q /mnt/data && [ -e /dev/mapper/data ]; then cryptsetup close data; fi"
         )
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         # The setting on again, read by a helper started afresh: but for the
         # file below, it would run its install at the switch.
         vm.succeed(f"printf %s {shlex.quote(setting_on)} > {setting_file}")

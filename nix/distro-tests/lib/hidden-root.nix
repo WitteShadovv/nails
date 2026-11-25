@@ -90,58 +90,62 @@ let
     fi
   '';
 in
-{
+rec {
   # The mark unit alone, for the oracle's own control at the end of a test
   # (nails_e2e.blockwrites, `mark_setup`).
   inherit installMark;
+
+  # setupHiddenRoot with the mark unit installed first, for the tests that run
+  # the block-write oracle. The others keep the decoy as it was: the real-image
+  # oracle images it, and would find the unit as residue.
+  setupHiddenRootMarked = installMark + "\n" + setupHiddenRoot;
   # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
   # the root is still mounted it is reused as is, never re-formatted; after a
   # session it is gone and a fresh one is made.
   setupHiddenRoot = ''
-        set -eu
+    set -eu
 
-    ${installMark}
-        mountpoint=/mnt/data
-        store=/run/blk
-        backing="$store/data.img"
+    mountpoint=/mnt/data
+    store=/run/blk
+    backing="$store/data.img"
 
-        if mountpoint -q "$mountpoint"; then
-          echo "Hidden root already mounted at $mountpoint"
-        else
-          # A RAM-backed home for the backing file. The cap only bounds growth: the
-          # 1 GiB image is sparse, so only what is written consumes memory.
-          mkdir -p "$store"
-          if ! mountpoint -q "$store"; then
-            mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
-          fi
-          truncate -s 1G "$backing"
-          loop=$(losetup --show -f "$backing")
-          printf '%s\n' "$loop" > /run/blk.dev
+    if mountpoint -q "$mountpoint"; then
+      echo "Hidden root already mounted at $mountpoint"
+    else
+      # A RAM-backed home for the backing file. The cap only bounds growth: the
+      # 1 GiB image is sparse, so only what is written consumes memory.
+      mkdir -p "$store"
+      if ! mountpoint -q "$store"; then
+        mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
+      fi
+      truncate -s 1G "$backing"
+      loop=$(losetup --show -f "$backing")
+      printf '%s\n' "$loop" > /run/blk.dev
 
-          if command -v cryptsetup >/dev/null 2>&1; then
-            echo 'cryptsetup present: backing the hidden root with LUKS'
-            # PBKDF2 with --iter-time 1 keeps formatting fast and avoids Argon2's
-            # memory cost in a small VM; acceptable for a test passphrase.
-            echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
-              --pbkdf pbkdf2 --iter-time 1 "$loop" -
-            echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
-            mkfs.ext4 -q /dev/mapper/data
-            mkdir -p "$mountpoint"
-            mount /dev/mapper/data "$mountpoint"
-          else
-            echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
-            mkfs.ext4 -q "$loop"
-            mkdir -p "$mountpoint"
-            mount "$loop" "$mountpoint"
-          fi
-        fi
+      if command -v cryptsetup >/dev/null 2>&1; then
+        echo 'cryptsetup present: backing the hidden root with LUKS'
+        # PBKDF2 with --iter-time 1 keeps formatting fast and avoids Argon2's
+        # memory cost in a small VM; acceptable for a test passphrase.
+        echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
+          --pbkdf pbkdf2 --iter-time 1 "$loop" -
+        echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
+        mkfs.ext4 -q /dev/mapper/data
+        mkdir -p "$mountpoint"
+        mount /dev/mapper/data "$mountpoint"
+      else
+        echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
+        mkfs.ext4 -q "$loop"
+        mkdir -p "$mountpoint"
+        mount "$loop" "$mountpoint"
+      fi
+    fi
 
-        # The whole-root layout: the root overlay's work directory (its upper is
-        # created at activation with the decoy root's mode and owner) and the
-        # configuration directory.
-        mkdir -p "$mountpoint"/root/work "$mountpoint"/config
+    # The whole-root layout: the root overlay's work directory (its upper is
+    # created at activation with the decoy root's mode and owner) and the
+    # configuration directory.
+    mkdir -p "$mountpoint"/root/work "$mountpoint"/config
 
-        echo 'Hidden root ready at '"$mountpoint"
+    echo 'Hidden root ready at '"$mountpoint"
   '';
 
   # Open and mount the hidden root of the last setupHiddenRoot again, on the

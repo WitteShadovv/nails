@@ -390,7 +390,7 @@ distroVm.buildVmTest {
             )
 
     with subtest("a NAILS session past five minutes of uptime, then the way back"):
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        vm.succeed("""${hiddenRoot.setupHiddenRootMarked}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         session.assert_hidden_root(vm)

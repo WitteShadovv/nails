@@ -341,7 +341,9 @@ reach it; it records every write, write-zeroes and discard.
   trigger, after a guest `sync`: it covers the activation, the decoy's own
   shutdown and the switch. A switch that does not land in the hidden root (no
   overlay at `/`) drops it. The decoy's `blkstat-mark` unit (`lib/vm-config.nix`;
-  `setupHiddenRoot` installs it on a distribution VM) prints `blkstat-mark hold`
+  `setupHiddenRootMarked` installs it on a distribution VM in the tests that
+  run the oracle; plain `setupHiddenRoot` leaves the decoy as it was, as the
+  real-image oracle images it) prints `blkstat-mark hold`
   on the serial console at every start of the service manager after 8 s of
   uptime, before the units that write early in a start, again each second (a
   kernel line can cut one in two), and waits, at most 15 s, for the line
