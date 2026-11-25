@@ -3126,20 +3126,21 @@ of this changelog for that version becomes the release notes word for word, and
 ### Known issues
 
 - A hidden session still writes to the decoy disk, as the block-write oracle of the VM tests
-  measures it on NixOS, Debian 13 and Ubuntu 24.04 and 26.04 (none of these is fixed yet): (1) a
-  power-off from inside the session (the way back powering off, the sleep guard's `teardown`, an
-  emergency or the window's power-off, the switch-timeout guard) writes the
-  decoy root's ext4 superblock and a journal block, as the final shutdown unmounts the decoy root
-  that stays mounted read-write below the overlay, which dates the session's end; (2) what the
-  decoy wrote just before the switch (its persistent journal, the ext4 journal) reaches the disk
-  after it, as the switch does not flush the decoy root; (3) in one test, `session-decoy-mount-table`,
-  the first sector of the ESP, most likely vfat's clean mark in its boot sector as the last
-  read-write mount of the ESP, kept by the session's read-only bind, ends during the way back (the
-  cause is not confirmed). Besides, the switch itself writes what the decoy's own stop jobs write
-  at a plain soft-reboot (`random-seed`, `wtmp`), stamped with the activation's time; dhcpcd's lease
-  and `/etc/resolv.conf` where it binds a lease then; and an activation with a hidden NixOS
-  configuration (`--nixos-flake`) writes the decoy's `/nix/var/nix` (its store database's
-  `db.sqlite-shm`, `temproots`).
+  measures it on NixOS, Debian 13, Ubuntu 24.04 and 26.04 and Arch (none of these is fixed yet):
+  (1) a power-off from inside the session (the way back powering off, the sleep guard's
+  `teardown`, an emergency or the window's power-off, the switch-timeout guard) writes the decoy
+  root's ext4 superblock and a journal block, as the final shutdown unmounts the decoy root that
+  stays mounted read-write below the overlay, which dates the session's end; (2) the first sector
+  of the ESP, in `session-decoy-mount-table` (NixOS) and on Arch, most likely vfat's clean mark in
+  its boot sector as the last read-write mount of the ESP ends (the cause is not confirmed); (3) on
+  Arch's btrfs root, blocks the oracle cannot attribute, in the smoke and records scenarios. A disk
+  the session mounts and writes itself takes those writes too. What looked like the decoy's writes
+  reaching the disk after the switch was the decoy's own journald at the way back, which started
+  before the oracle's cut; the cut now comes before it. Besides, the switch itself writes what the
+  decoy's own stop jobs write at a plain soft-reboot (`random-seed`, `wtmp`), stamped with the
+  activation's time; dhcpcd's lease and `/etc/resolv.conf` where it binds a lease then; and an
+  activation with a hidden NixOS configuration (`--nixos-flake`) writes the decoy's `/nix/var/nix`
+  (its store database's `db.sqlite-shm`, `temproots`).
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in

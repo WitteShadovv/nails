@@ -400,9 +400,11 @@ window or a control by chance; and, for an activation with a hidden NixOS
 configuration (`--nixos-flake`), the activation's own writes to the decoy's
 `/nix/var/nix` (its store database's `db.sqlite-shm`, `temproots`). In the
 session phase: the decoy root's ext4 superblock and a journal block at a
-power-off from the session; what the decoy wrote just before the switch,
-where it reaches the disk after it; and, in `session-decoy-mount-table`, the
-first sector of the ESP.
+power-off from the session; the first sector of the ESP in
+`session-decoy-mount-table` and on Arch; blocks of Arch's btrfs root the oracle
+does not attribute; and what the tests that mount a disk in the session
+(`session-disk-mounts`, `session-emergency`, `session-alert-delivery`) write
+there.
 
 **Limits, to fix before a verdict turns strict.**
 
