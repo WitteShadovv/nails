@@ -148,8 +148,8 @@
       "kind": "mirror",
       "family": "arch-install",
       "release": "rolling",
-      "asset": null,
-      "sha256": null
+      "asset": "arch-install-2026.11.01-20261125-45604987470.qcow2",
+      "sha256": "sha256-3CGFbdliAbfexsaY8XRETYrubAVMfH4dfnWL9aUmwLI="
     }
   }
 }
