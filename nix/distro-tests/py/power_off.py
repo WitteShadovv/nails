@@ -12,7 +12,8 @@ oracle images do: the guest powers off as a real machine does, with the
 kernel's ``reboot: Power down`` on the console, its disk stays as the
 power-off left it, :func:`image_paused_disk` can copy that disk whole, and
 :func:`boot_again` boots it cold (``system_reset`` and ``cont``: a fresh
-kernel, an empty ``/run``, every mount and the 9p share gone).
+kernel, an empty ``/run``, every mount and the 9p share gone). From the first
+power-off on, QEMU pauses at every guest power-off for the rest of the run.
 
 :func:`follow_power_off` fails at once when a new userspace's backdoor
 announces itself instead (the machine switched or rebooted), when a userspace
@@ -220,15 +221,14 @@ def _alarm(_signum: int, _frame: object) -> None:
     raise _ConnectTimeout()
 
 
-def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
-    """Boot the powered-off machine cold from the disk the power-off left, as
-    its owner switching it on again does, and reconnect to the new backdoor.
-    QEMU exits again on a later power-off."""
-    console_index = len(vm.full_console_log)
-    # The driver starts QEMU with -no-reboot, which turns a reset into
-    # another shutdown: let this one reset, then put both actions back, so a
-    # later reboot or power-off of the guest ends QEMU as before.
-    qmp(vm, "set-action", {"reboot": "reset"})
+def _reset(vm: Machine, label: str) -> None:
+    """Reset the stopped machine and let it run. The driver starts QEMU with
+    -no-reboot, which turns a reset into another shutdown, so this one reset
+    is let through and the reboot action is put back afterwards. The
+    shutdown action stays ``pause``: a guest power-off, or a shutdown request
+    QEMU still holds from the last one, pauses QEMU again instead of ending
+    it, and the disk with it."""
+    qmp(vm, "set-action", {"reboot": "reset", "shutdown": "pause"})
     try:
         qmp(vm, "system_reset")
         reset_deadline = time.monotonic() + 60
@@ -238,8 +238,21 @@ def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
             )
             time.sleep(0.5)
     finally:
-        qmp(vm, "set-action", {"reboot": "shutdown", "shutdown": "poweroff"})
+        qmp(vm, "set-action", {"reboot": "shutdown", "shutdown": "pause"})
     qmp(vm, "cont")
+
+
+#: How often a cold boot that QEMU stops again at once is reset again.
+RESETS = 3
+
+
+def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
+    """Boot the powered-off machine cold from the disk the power-off left, as
+    its owner switching it on again does, and reconnect to the new backdoor.
+    A later power-off of the guest pauses QEMU again (see :func:`_reset`)."""
+    console_index = len(vm.full_console_log)
+    _reset(vm, label)
+    resets = 1
     deadline = time.monotonic() + deadline_s
     while True:
         lines = vm.full_console_log[console_index:]
@@ -251,6 +264,15 @@ def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
             raise AssertionError(f"{label}: the cold boot is stuck: {stuck[0]}")
         if vm.process is not None and vm.process.poll() is not None:
             raise AssertionError(f"{label}: QEMU exited during the cold boot")
+        if qmp(vm, "query-status")["status"] == "shutdown":
+            # A shutdown request QEMU still held stopped it again before the
+            # guest got anywhere: reset once more.
+            assert resets < RESETS, (
+                f"{label}: QEMU stopped the cold boot {resets} times"
+            )
+            vm.log(f"{label}: QEMU stopped the cold boot; resetting again")
+            _reset(vm, label)
+            resets += 1
         if time.monotonic() > deadline:
             vm.log(f"{label}: last console lines:\n{_tail(lines)}")
             raise AssertionError(

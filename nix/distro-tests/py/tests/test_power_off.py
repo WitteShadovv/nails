@@ -170,14 +170,39 @@ class BootAgainTest(unittest.TestCase):
         sent = vm.qmp_client.sent
         commands = [command for command, _ in sent]
         # -no-reboot would turn the reset into a shutdown: the reset is let
-        # through for this once, and both actions are put back before cont.
-        self.assertEqual(sent[0], ("set-action", {"reboot": "reset"}))
+        # through for this once, and the reboot action is put back before
+        # cont. A power-off keeps pausing QEMU: no action ends it.
+        self.assertEqual(
+            sent[0], ("set-action", {"reboot": "reset", "shutdown": "pause"})
+        )
         self.assertEqual(commands[1], "system_reset")
-        restored = ("set-action", {"reboot": "shutdown", "shutdown": "poweroff"})
+        restored = ("set-action", {"reboot": "shutdown", "shutdown": "pause"})
         self.assertIn(restored, sent)
         self.assertLess(sent.index(restored), commands.index("cont"))
+        self.assertNotIn(
+            "poweroff", [args.get("shutdown") for command, args in sent]
+        )
         self.assertEqual(vm.connects, 1)
         self.assertEqual(vm.units, ["multi-user.target"])
+
+    def test_a_boot_qemu_stops_again_at_once_is_reset_again(self) -> None:
+        # A shutdown request QEMU still held stops the first boot at once.
+        vm = FakeVm([], ["shutdown", "prelaunch", "shutdown", "prelaunch"])
+        conts = []
+
+        def held(command: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            if command == "cont":
+                conts.append(command)
+                if len(conts) == 2:
+                    vm.full_console_log.append("backdoor: connecting to host...")
+            return FakeQmp.send(vm.qmp_client, command, arguments)
+
+        vm.qmp_client.send = held
+        with mock.patch.object(po, "time", NoSleep):
+            po.boot_again(vm, "cold boot")
+        commands = [command for command, _ in vm.qmp_client.sent]
+        self.assertEqual(commands.count("system_reset"), 2)
+        self.assertEqual(vm.connects, 1)
 
     def test_a_stuck_boot_fails_at_once(self) -> None:
         vm = FakeVm([], ["prelaunch"])
