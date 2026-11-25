@@ -25,7 +25,9 @@ pub(super) enum Pattern {
     /// A path, or the name of a systemd unit made from one. It must begin a
     /// path and end at the end of a path component (the byte after it cannot
     /// continue a file name), and each `/` after its first byte may be
-    /// written as several, as the kernel reads a path. A path begins where
+    /// written as several or with `.` parts after it, as the kernel reads a
+    /// path, as may its leading `/` with `.` and `..` parts, which name the
+    /// root there (`/./mnt/data`, `/../mnt/data`). A path begins where
     /// the byte before it, past the slashes in front of it, cannot continue
     /// a file name (`file:///mnt/data`, `//mnt/data`), or after the prefixes
     /// systemd allows before a path where they start a value
@@ -376,7 +378,10 @@ fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
 
 /// Where `path`, read in `line` from `start`, ends: each `/` after its first
 /// byte stands for a run of slashes and `.` parts, as the kernel reads a
-/// path (`/mnt//data` and `/mnt/./data` are `/mnt/data`). `path` holds no
+/// path (`/mnt//data` and `/mnt/./data` are `/mnt/data`), and so does its
+/// first byte where `.` or `..` parts follow it, which at the root name the
+/// root (`/./mnt/data` and `/../mnt/data` are `/mnt/data`). A run of slashes
+/// alone in front of the path is left to [`begins_path`]. `path` holds no
 /// run and no `.` part of its own. `None` when `path` is not there.
 fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
     let mut at = start;
@@ -385,20 +390,31 @@ fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
             return None;
         }
         at += 1;
-        if index > 0 && byte == b'/' {
-            loop {
-                let rest = &line[at..];
-                if rest.first() == Some(&b'/') {
-                    at += 1;
-                } else if rest.starts_with(b"./") {
-                    at += 2;
-                } else {
-                    break;
-                }
-            }
+        if byte == b'/' {
+            at = past_empty_parts(line, at, index == 0);
         }
     }
     (!path.is_empty()).then_some(at)
+}
+
+/// Where the parts that add nothing to a path end, from `at`, right after a
+/// `/` of it: runs of slashes and `.` parts, and at the `root`, the path's
+/// leading slash, `..` parts too, but there a run of slashes only after one
+/// of them.
+fn past_empty_parts(line: &[u8], mut at: usize, root: bool) -> usize {
+    let from = at;
+    loop {
+        let rest = &line[at..];
+        if rest.starts_with(b"./") {
+            at += 2;
+        } else if root && rest.starts_with(b"../") {
+            at += 3;
+        } else if rest.first() == Some(&b'/') && (!root || at > from) {
+            at += 1;
+        } else {
+            return at;
+        }
+    }
 }
 
 /// The prefixes systemd allows before a path in a setting: `-` for a file

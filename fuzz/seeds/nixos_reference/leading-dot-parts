@@ -1,0 +1,1 @@
+{ x = "/./mnt/data"; y = /../dev/mapper/data; z = /.//./mnt//data/app.env; }

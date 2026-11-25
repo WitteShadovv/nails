@@ -694,6 +694,31 @@ fn a_path_with_doubled_slashes_is_refused() {
     }
 }
 
+/// A path with a `.` or `..` part right after its leading slash is the path
+/// without it, as the kernel reads it and as Nix reads a path literal, and
+/// is refused as the plain path is.
+#[test]
+fn a_path_with_a_dot_part_after_its_leading_slash_is_refused() {
+    use ReferenceKind::{Device, MountPoint};
+    for (content, expected) in [
+        ("{ x = \"/./mnt/data\"; }", (1, "/./mnt/data", MountPoint)),
+        ("{ x = /./mnt/data; }", (1, "/./mnt/data", MountPoint)),
+        (
+            "{ imports = [ /../mnt/data/extra.nix ]; }",
+            (1, "/../mnt/data", MountPoint),
+        ),
+        (
+            "{ fileSystems.\"/srv\".device = \"/./dev/mapper/data\"; }",
+            (1, "/./dev/mapper/data", Device),
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+    let scan = scan_configuration("{ x = \"/.../mnt/data\"; }");
+    assert!(scan.is_clean(), "{scan:#?}");
+}
+
 /// A unit's setting that names a file on the hidden volume behind one of
 /// systemd's prefixes (`-` for a file that may be missing) names the mount
 /// point, and is refused as the bare path is.

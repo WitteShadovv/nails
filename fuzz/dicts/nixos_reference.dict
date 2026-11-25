@@ -49,6 +49,8 @@
 "/dev/block/8:18"
 "KERNEL==\""
 "//"
+"/./"
+"/../"
 "/mnt/data"
 "mnt-data.mount"
 "dev-mapper-data.device"
