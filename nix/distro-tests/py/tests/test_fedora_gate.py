@@ -8,8 +8,12 @@ import contextlib
 import gzip
 import hashlib
 import io
+import os
+import shutil
+import subprocess
 import tempfile
 import unittest
+import zlib
 from typing import Any
 
 import fedora_gate as fg
@@ -523,6 +527,50 @@ class DecoyDiskTest(unittest.TestCase):
             run.vm = vm
             self.assertIsNone(run.disk_names("after-1"))
 
+    def test_a_name_another_state_s_control_took_away_still_counts(self) -> None:
+        disk = {"control-1": {"/var"}, "control-2": {"/var"}, "way-back-1": {"/var"}}
+        states = {
+            "control-1": "/etc pending; /var pending",
+            "control-2": CURRENT,
+            "way-back-1": CURRENT,
+        }
+        names: dict[str, tuple[set[str] | None, set[str] | None]] = {
+            "control-1": ({"/var", "/var/a"}, {"/var"}),
+            "control-2": ({"/var"}, {"/var"}),
+            "way-back-1": ({"/var", "/var/a"}, {"/var"}),
+        }
+        run = self.judged(disk, states, names)
+        self.assertFalse(run.checks[0]["passed"])
+        self.assertIn("/var/a", run.checks[0]["detail"])
+
+    def test_a_corrupt_payload_is_read_again(self) -> None:
+        good = gzip.compress(b"/\n/etc\n")
+        corrupt = None
+        for at in range(10, len(good) - 8):
+            data = bytearray(good)
+            data[at] ^= 0xFF
+            try:
+                gzip.decompress(bytes(data))
+            except zlib.error:
+                corrupt = bytes(data)
+                break
+            except Exception:  # noqa: BLE001 - only a zlib.error is wanted
+                continue
+        assert corrupt is not None
+        outs = [base64.b64encode(corrupt).decode(), base64.b64encode(good).decode()]
+
+        class Vm:
+            def execute(self, cmd: str, timeout: int = 900) -> tuple[int, str]:
+                return 0, outs.pop(0)
+
+            def succeed(self, cmd: str) -> str:
+                return "/ btrfs\n"
+
+        run = gate()
+        run.vm = Vm()
+        self.assertEqual(run.disk_names("before-1"), {"/", "/etc"})
+        self.assertIn("error", str(run.facts["disk-names-before-1"]["failed reads"]))
+
     def test_names_gone(self) -> None:
         self.assertEqual(
             fg.gone_names({"/a", "/b", "/c"}, {"/a"}, [({"/b"}, set())]), ["/c"]
@@ -910,10 +958,18 @@ class StreamTest(unittest.TestCase):
             "control-1": (set(), {f"{streams}/10:1"}),
             "way-back-1": (set(), {f"{streams}/10:2", f"{streams}/10:3"}),
         }
-        run.streams = {1: {f"{streams}/10:3": "it names no unit"}}
+        listed = {f"{streams}/10:2", f"{streams}/10:3"}
+        run.streams = {
+            1: {"listed": listed, "problems": {f"{streams}/10:3": "it names no unit"}}
+        }
         quiet(run.judge_run)
         self.assertFalse(run.checks[0]["passed"])
         self.assertEqual(run.facts["run-residue-way-back-1"], [f"{streams}/10:3"])
+        # A stream file the reading did not list is left too.
+        run.checks = []
+        run.streams = {1: {"listed": {f"{streams}/10:3"}, "problems": {}}}
+        quiet(run.judge_run)
+        self.assertEqual(run.facts["run-residue-way-back-1"], [f"{streams}/10:2"])
         # Streams the gate could not read are all left.
         run.checks = []
         run.streams = {1: None}
@@ -921,6 +977,242 @@ class StreamTest(unittest.TestCase):
         self.assertEqual(
             run.facts["run-residue-way-back-1"], [f"{streams}/10:2", f"{streams}/10:3"]
         )
+
+
+# The bash the stubs run with: the build sandbox has no /usr/bin/env.
+BASH = shutil.which("bash") or "/bin/sh"
+
+
+def guest(script: str, stubs: dict[str, str], tmp: str) -> str:
+    """What ``script`` prints under bash with the commands of ``stubs`` (name:
+    the body of a bash script) put first on the PATH: a guest command of the
+    gate run against a stand-in of the guest."""
+    bin_dir = os.path.join(tmp, "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    for name, body in stubs.items():
+        path = os.path.join(bin_dir, name)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(f"#!{BASH}\n{body}\n")
+        os.chmod(path, 0o755)
+    env = {**os.environ, "PATH": bin_dir + os.pathsep + os.environ["PATH"]}
+    done = subprocess.run(
+        [BASH, "-c", script], capture_output=True, text=True, env=env, timeout=60
+    )
+    return done.stdout
+
+
+class GuestCommandTest(unittest.TestCase):
+    """The guest commands of the way back's new reads, run against stubs of
+    the tools they call, so that a change in what they print shows here."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.mkdtemp(prefix="gate-guest-")
+
+    def test_needs_update_reads_systemd_s_verdict(self) -> None:
+        verdict = (
+            'case "$2" in *=/etc) echo "Conditions succeeded." >&2 ;; '
+            '*=/var) echo "Conditions failed." >&2 ;; esac'
+        )
+        out = guest(fg.NEEDS_UPDATE, {"systemd-analyze": verdict}, self.tmp)
+        self.assertEqual(fg.update_state(out), "/etc pending; /var current")
+        swapped = verdict.replace("/etc)", "/x)").replace("/var)", "/etc)")
+        out = guest(fg.NEEDS_UPDATE, {"systemd-analyze": swapped}, self.tmp)
+        self.assertEqual(fg.update_state(out), "/etc current; /var unknown")
+        out = guest(fg.NEEDS_UPDATE, {"systemd-analyze": "echo oops >&2"}, self.tmp)
+        self.assertEqual(fg.update_state(out), "/etc unknown; /var unknown")
+
+    def test_partitions_reads_the_bytes_of_one_nothing_mounts(self) -> None:
+        parts = [os.path.join(self.tmp, f"vda{i}") for i in (1, 2, 3)]
+        for i, part in enumerate(parts):
+            with open(part, "wb") as handle:
+                handle.write(bytes([i]) * 4096)
+        root = parts[2]
+        findmnt = (
+            f'if [ "$1" = -nvo ]; then echo {root}; exit 0; fi; '
+            f'if [ "$2" = -S ]; then [ "$3" = {root} ]; exit; fi'
+        )
+        lsblk = (
+            'case "$1" in -nro) if [ "$2" = PKNAME ]; then echo vda; '
+            f'elif [ "$3" = {root} ]; then echo /; fi ;; '
+            f'-nrpo) printf "%s part\\n" {" ".join(parts)}; echo /dev/vda disk ;; esac'
+        )
+        out = guest(fg.PARTITIONS, {"findmnt": findmnt, "lsblk": lsblk}, self.tmp)
+        expected = {
+            part: hashlib.sha256(open(part, "rb").read()).hexdigest()
+            for part in parts[:2]
+        }
+        self.assertEqual(fg.partition_hashes(out), {**expected, root: "mounted"})
+
+    def test_journal_streams_lists_each_stream_with_its_unit(self) -> None:
+        streams = os.path.join(self.tmp, "streams")
+        fds = os.path.join(self.tmp, "fd")
+        os.makedirs(streams)
+        os.makedirs(fds)
+        os.symlink("socket:[18406]", os.path.join(fds, "3"))
+        os.symlink("/dev/null", os.path.join(fds, "4"))
+        with open(os.path.join(streams, "10:18406"), "w", encoding="utf-8") as f:
+            f.write("PRIORITY=6\nUNIT=systemd-logind.service\n")
+        with open(os.path.join(streams, "10:999"), "w", encoding="utf-8") as f:
+            f.write("PRIORITY=6\n")
+        script = fg.JOURNAL_STREAMS.replace(fg.STREAMS_DIR, streams).replace(
+            "/proc/$pid/fd", fds
+        )
+        systemctl = 'case "$3" in MainPID) echo 77 ;; ActiveState) echo active ;; esac'
+        out = guest(script, {"systemctl": systemctl}, self.tmp)
+        entry = f"f {fg.STREAMS_DIR}/10:18406"
+        other = f"f {fg.STREAMS_DIR}/10:999"
+        self.assertEqual(fg.stream_listed(out), {entry, other})
+        self.assertEqual(
+            fg.stream_problems(out),
+            {other: "the decoy's journald holds no such stream"},
+        )
+
+    def disk_tree(self) -> tuple[str, dict[str, str]]:
+        """A disk mount with a nested folder and another filesystem mounted
+        below it, and the stubs of findmnt that list them."""
+        top = os.path.join(self.tmp, "root")
+        os.makedirs(os.path.join(top, "var/lib/machines/deep"))
+        os.makedirs(os.path.join(top, "other"))
+        for path in ("var/lib/machines/deep/file", "other/not-mine"):
+            open(os.path.join(top, path), "w").close()
+        other = os.path.join(top, "other")
+        findmnt = (
+            f'if [ "$4" = TARGET ]; then printf "%s\\n" {top} {other}; '
+            f'else echo "{top} btrfs"; echo "{other} tmpfs"; fi'
+        )
+        return top, {"findmnt": findmnt}
+
+    def test_the_names_reach_every_depth_and_no_other_filesystem(self) -> None:
+        top, stubs = self.disk_tree()
+        out = guest(fg.names_command(), stubs, self.tmp)
+        names = gzip.decompress(base64.b64decode(out.strip())).decode().split("\n")
+        self.assertIn(f"{top}/var/lib/machines/deep/file", names)
+        self.assertIn(top, names)
+        self.assertFalse([n for n in names if n.startswith(f"{top}/other")], names)
+
+    def test_the_changes_reach_every_depth_and_no_other_filesystem(self) -> None:
+        top, stubs = self.disk_tree()
+        out = guest(fg.disk_listing("1"), stubs, self.tmp)
+        self.assertIn(f"{top}/var/lib/machines/deep/file", out.splitlines())
+        self.assertNotIn(f"{top}/other/not-mine", out)
+
+    def test_fat_files_hashes_every_file(self) -> None:
+        top = os.path.join(self.tmp, "efi")
+        os.makedirs(os.path.join(top, "EFI/BOOT"))
+        with open(os.path.join(top, "EFI/BOOT/BOOTX64.EFI"), "wb") as handle:
+            handle.write(b"loader")
+        findmnt = f'echo "{top} vfat"; echo "/ btrfs"'
+        found = fg.fat_files(guest(fg.FAT_FILES, {"findmnt": findmnt}, self.tmp))
+        self.assertEqual(
+            found,
+            {
+                top: {
+                    top: "dir",
+                    f"{top}/EFI": "dir",
+                    f"{top}/EFI/BOOT": "dir",
+                    f"{top}/EFI/BOOT/BOOTX64.EFI": hashlib.sha256(
+                        b"loader"
+                    ).hexdigest(),
+                }
+            },
+        )
+
+    def test_record_sizes_reads_each_file(self) -> None:
+        script = fg.RECORD_SIZES
+        for path in fg.RECORD_PATHS:
+            script = script.replace(path + " ", self.tmp + path + " ", 1).replace(
+                path + ";", self.tmp + path + ";", 1
+            )
+        os.makedirs(self.tmp + "/var/log")
+        os.makedirs(self.tmp + "/var/lib/lastlog")
+        with open(self.tmp + "/var/log/wtmp", "wb") as handle:
+            handle.write(b"x" * 384)
+        with open(self.tmp + "/var/lib/lastlog/lastlog2.db", "wb") as handle:
+            handle.write(b"x" * 10)
+        self.assertEqual(
+            fg.record_sizes(guest(script, {}, self.tmp)),
+            {
+                self.tmp + "/var/log/wtmp": 384,
+                self.tmp + "/var/lib/lastlog/lastlog2.db": 10,
+            },
+        )
+
+
+class FatAndRecordsTest(unittest.TestCase):
+    def test_a_fat_file_changed_came_or_went(self) -> None:
+        before = {"/efi": {"/efi": "dir", "/efi/a": "1", "/efi/b": "2"}}
+        self.assertEqual(fg.fat_problems(before, before), [])
+        after = {"/efi": {"/efi": "dir", "/efi/a": "9", "/efi/c": "3"}}
+        self.assertEqual(
+            fg.fat_problems(before, after),
+            [
+                "/efi/a holds other bytes than before the entry",
+                "/efi/b is gone",
+                "/efi/c is new",
+            ],
+        )
+        # A mount on one side alone is left to the partitions' bytes.
+        self.assertEqual(fg.fat_problems(before, {}), [])
+
+    def test_a_record_file_only_grows(self) -> None:
+        before = {"/var/log/btmp": 768, "/var/lib/wtmpdb/wtmp.db-journal": 512}
+        self.assertEqual(fg.record_problems(before, {"/var/log/btmp": 1152}), [])
+        self.assertEqual(
+            fg.record_problems(before, {"/var/log/btmp": 0}),
+            ["/var/log/btmp shrank from 768 to 0 bytes"],
+        )
+        self.assertEqual(fg.record_problems(before, {}), ["/var/log/btmp is gone"])
+
+
+class WayBackDiskTest(unittest.TestCase):
+    def run_way_back(
+        self, partitions_before: dict[str, str], partitions_after: str
+    ) -> fg.Gate:
+        run = gate()
+        read: list[str] = []
+        run.disk_changes = lambda label, since: set()  # type: ignore[method-assign]
+
+        def disk_names(label: str) -> set[str]:
+            read.append(label)
+            return {f"/{label}"}
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            if cmd == fg.PARTITIONS:
+                return partitions_after
+            if cmd == fg.RECORD_SIZES:
+                return "384 /var/log/wtmp"
+            return ""
+
+        run.disk_names = disk_names  # type: ignore[method-assign]
+        run.fact = fact  # type: ignore[method-assign]
+        state = {
+            "since": "1",
+            "names": {"/before-1"},
+            "partitions": partitions_before,
+            "fat": {},
+            "records-sizes": {"/var/log/wtmp": 384},
+        }
+        quiet(run.way_back_disk, 1, state)
+        self.assertEqual(read, ["after-1"])
+        return run
+
+    def test_the_names_after_are_read_after(self) -> None:
+        run = self.run_way_back({"/dev/vda1": "d1"}, "/dev/vda1 d1")
+        self.assertEqual(run.names["way-back-1"], ({"/before-1"}, {"/after-1"}))
+        self.assertTrue(all(c["passed"] for c in run.checks), run.checks)
+
+    def test_a_partition_must_be_read_byte_for_byte(self) -> None:
+        name = "way back 1: the partitions of the decoy's disk"
+        for before, after in (
+            ({}, ""),
+            ({"/dev/vda1": "mounted"}, "/dev/vda1 mounted"),
+            ({"/dev/vda1": "d1"}, "/dev/vda1 d2"),
+        ):
+            run = self.run_way_back(before, after)
+            judged = [c for c in run.checks if c["name"].startswith(name)]
+            self.assertEqual([c["passed"] for c in judged], [False], (before, after))
 
 
 class AdvisoryTest(unittest.TestCase):

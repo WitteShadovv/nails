@@ -39,13 +39,20 @@ with a plain soft-reboot. What differs is what Arch is:
   /etc and /var out of date with /usr after each transaction, which the next
   start of PID 1 brings up to date (``ConditionNeedsUpdate=``): the first
   version is installed before the reference boot, and the gate runs that
-  update by hand after the third, so that every plain soft-reboot and every
-  entry starts with none pending, and no control's changes of a pending
-  update excuse a way back's (:func:`fedora_gate.same_state`);
+  update by hand after the third. The state reads out of date right after
+  the first and the third install, the positive control
+  (:meth:`ArchGate.left_pending`), and up to date after the reference boot
+  and the run by hand; no control's changes of a pending update excuse a way
+  back's (:func:`fedora_gate.same_state`);
 - zram: arch-boxes sets up no zram device and has no zram-generator. The
   cold boot decides (:func:`zram_applies`): where it set zram up, every zram
   check of the Fedora gate runs; where not, none does and the run records
-  why. An archinstall image with its default zram swap would run them;
+  why. An archinstall image with its default zram swap would run them. Each
+  session must run no swap on a disk;
+- NAILS's processes in a session run as root from its copy in RAM
+  (``/proc/<pid>/exe``, :func:`processes_from_ram`), and each session writes
+  a file on ``/efi`` (:data:`EFI_PROBE`) that must not be on the decoy after
+  the way back;
 - the guest runs the driver's own Python (``python`` of the settings) from
   the Nix store the harness mounts, for the reading of the kernel log, the
   failed console logins and the rehearsal's state, so the gate does not
@@ -162,8 +169,15 @@ UPDATE_UNITS = (
     "2>/dev/null | xargs -rn1 basename | sort -u"
 )
 # The update state of a decoy whose /etc and /var follow /usr
-# (:func:`fedora_gate.update_state`).
+# (:func:`fedora_gate.update_state`), and the one pacman's hook leaves after a
+# transaction, the positive control of that reading.
 UP_TO_DATE = "/etc current; /var current"
+PENDING = "/etc pending; /var pending"
+# A file each session tries to write on the ESP (``/efi``), which the hidden
+# session masks and binds read-only: whatever the write does, the file must
+# not be on the decoy's ESP after the way back, whose files the way back's
+# comparison of the FAT filesystems also holds to their bytes.
+EFI_PROBE = "/efi/gate-efi"
 # What check gives on the stock arch-boxes image before the decoy is prepared:
 # each row, its verdict, the words its message and fix name, and the
 # assertion. The swap row is arch-boxes's swap file; an image with another
@@ -298,6 +312,19 @@ def fstab_notes(message: str) -> str | None:
     return notes.strip()
 
 
+def processes_from_ram(lines: Sequence[str], exes: str) -> bool:
+    """Whether NAILS's processes (``lines`` of ``ps -o user=,pid=,...``) run
+    as root, each from its copy in RAM (:data:`fedora_gate.RAM`) as
+    ``exes`` (``<pid> <readlink of /proc/<pid>/exe>`` lines) gives them."""
+    read = dict(
+        line.split(None, 1) for line in exes.splitlines() if len(line.split()) == 2
+    )
+    return bool(lines) and all(
+        line.split()[0] == "root" and read.get(line.split()[1]) == fg.RAM
+        for line in lines
+    )
+
+
 def zram_applies(cold: str, generator: bool) -> bool:
     """Whether the zram checks apply: the cold boot (:data:`fedora_gate.ZRAM_STATE`)
     set up a zram device or a swap on one, or the image ships zram-generator."""
@@ -320,6 +347,11 @@ class ArchGate(fg.Gate):
     shares: Sequence[tuple[str, str]] = SHARES
     hidden_root: str = HIDDEN_ROOT
     harness_warnings: Mapping[str, str] = HARNESS_WARNINGS
+    session_files: Sequence[str] = (
+        *fg.SESSION_FILES,
+        f"{EFI_PROBE}-1",
+        f"{EFI_PROBE}-2",
+    )
     security_state_name = (
         "the kernel's security modules, lockdown mode and Yama ptrace scope"
     )
@@ -397,6 +429,15 @@ class ArchGate(fg.Gate):
             upper.splitlines() == ["# gate", f"{fg.UPPER}/etc/gate-new"],
             upper,
         )
+        swaps = self.fact(f"swaps-session-{n}", "cat /proc/swaps", again=True)
+        self.check(
+            f"session {n}: no swap is on a disk",
+            "Filename" in swaps and not distro_checks.disk_swaps(swaps),
+            swaps,
+        )
+        self.facts[f"efi-probe-{n}"] = self.fact(
+            f"efi-probe-{n}", f"touch {EFI_PROBE}-{n} 2>&1; echo rc=$?"
+        )
         if user != "root":
             home = self.fact(
                 f"fresh-home-{n}",
@@ -410,18 +451,23 @@ class ArchGate(fg.Gate):
             )
 
     def nails_processes(self, n: int) -> None:
-        """NAILS's processes in the session run from its copy in RAM, as
-        root."""
+        """NAILS's processes in the session run from its copy in RAM
+        (``/proc/<pid>/exe``), as root."""
         processes = self.fact(
             f"processes-{n}",
             "ps -e -o user=,pid=,comm=,args= | grep -E 'overlay-runtime|control' | "
             "grep -v grep; true",
         )
         lines = [line for line in processes.splitlines() if "overlay-runtime" in line]
+        pids = [line.split()[1] for line in lines if len(line.split()) > 1]
+        exes = self.fact(
+            f"processes-exe-{n}",
+            "".join(f"echo {pid} $(readlink /proc/{pid}/exe); " for pid in pids),
+        )
         self.check(
             f"session {n}: NAILS's processes run from its copy in RAM, as root",
-            bool(lines) and all(line.split()[0] == "root" for line in lines),
-            processes,
+            processes_from_ram(lines, exes),
+            {"processes": processes, "exe": exes},
         )
 
     def volume_label(self, n: int) -> None:
@@ -460,23 +506,42 @@ class ArchGate(fg.Gate):
         """The decoy's disk swap off, at every boot: every swap line of the
         fstab made noauto, as the requirements ask, and each disk swap
         turned off."""
-        fstab = self.vm.succeed("cat /etc/fstab")
-        if distro_checks.fstab_swaps(fstab):
-            noauto = distro_checks.with_swaps_noauto(fstab)
+        fstab = self.whole_file("fstab", "/etc/fstab")
+        noauto = distro_checks.with_swaps_noauto(fstab) if fstab is not None else None
+        if noauto is not None and noauto != fstab:
             self.vm.succeed(
                 f"printf %s {shlex.quote(noauto)} > /etc/fstab && "
                 "systemctl daemon-reload"
             )
-        for name in distro_checks.disk_swaps(self.vm.succeed("cat /proc/swaps")):
+        for name in distro_checks.disk_swaps(
+            self.fact("swaps-before-swapoff", "cat /proc/swaps", again=True)
+        ):
             self.vm.succeed(f"swapoff {shlex.quote(name)}")
-        swaps = self.fact("swaps-prepared", "cat /proc/swaps; grep -w swap /etc/fstab")
-        lines = distro_checks.fstab_swaps(self.vm.succeed("cat /etc/fstab"))
+        swaps = self.fact("swaps-prepared", "cat /proc/swaps", again=True)
+        now = self.whole_file("fstab-prepared", "/etc/fstab")
+        lines = distro_checks.fstab_swaps(now or "")
         self.check(
             "the decoy's disk swap is off, and every swap line of its fstab noauto",
-            not distro_checks.disk_swaps(self.vm.succeed("cat /proc/swaps"))
+            fstab is not None
+            and now is not None
+            and "Filename" in swaps
+            and not distro_checks.disk_swaps(swaps)
             and all("noauto" in options for _, options in lines),
-            swaps,
+            {"swaps": swaps, "fstab": now if now is not None else "not read whole"},
         )
+
+    def whole_file(self, label: str, path: str) -> str | None:
+        """The text of ``path``, read twice through the gate's check of whole
+        output, or None where either read came torn or the two differ: the
+        gate writes back nothing it may have read garbled."""
+        reads = []
+        for i in (1, 2):
+            torn = len(self.torn)
+            _, out = self.sh(f"{label}-{i}", f"cat {shlex.quote(path)}", again=True)
+            if len(self.torn) != torn:
+                return None
+            reads.append(out)
+        return reads[0] if reads[0] == reads[1] else None
 
     def decoy(self) -> None:
         """Everything on the decoy before the first entry, with a hidden root
@@ -642,6 +707,18 @@ class ArchGate(fg.Gate):
             "pacman installs the drift control's package on the decoy",
             "rc=0" in out and installed_version(out) == "1-1",
             out[-1500:],
+        )
+        self.left_pending("1")
+
+    def left_pending(self, version: str) -> None:
+        """The positive control of the update state's reading: right after
+        pacman changed /usr, /etc and /var read out of date with it."""
+        state = self.needs_update(f"after-drift-{version}")
+        self.check(
+            f"pacman's install of version {version} leaves /etc and /var out of "
+            "date with /usr, as the next start of PID 1 reads them",
+            state == PENDING,
+            state,
         )
 
     def up_to_date(self, label: str, entry: str) -> None:
@@ -811,6 +888,7 @@ class ArchGate(fg.Gate):
             "rc=0" in out and installed_version(out) == "3-1",
             out[-1500:],
         )
+        self.left_pending("3")
         self.up_to_date("drift", "second")
         self.sh("hidden-root-2", self.hidden_root)
         _, rows = self.check_rows("check-drift")

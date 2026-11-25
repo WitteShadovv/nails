@@ -250,35 +250,109 @@ class FakeVm:
 class SwapTest(unittest.TestCase):
     NAME = "the decoy's disk swap is off, and every swap line of its fstab noauto"
     OFF = "Filename Type Size Used Priority\n"
+    LINE = "/swap/swapfile none swap defaults 0 0\n"
 
-    def judged(self, fstab: str, swaps: str) -> bool:
+    def judged(
+        self, fstab: str, swaps: str, torn: int = 0, garble: bool = False
+    ) -> tuple[bool, list[str]]:
+        """swap_off against a guest whose /etc/fstab holds ``fstab`` and
+        /proc/swaps ``swaps``; the first ``torn`` reads of the fstab come torn,
+        flagged torn though their text looks whole, and with ``garble`` its
+        second read differs from its first. What the
+        check said, and every text written to the fstab."""
         g = gate()
-        g.vm = FakeVm({"cat /etc/fstab": fstab, "cat /proc/swaps": swaps})
-        g.fact = lambda label, cmd, timeout=300, again=False: ""  # type: ignore[method-assign]
-        quiet(g.swap_off)
-        return {c["name"]: c["passed"] for c in g.checks}[self.NAME]
+        guest: dict[str, Any] = {"fstab": fstab, "reads": 0, "torn": torn}
+        written: list[str] = []
 
-    def test_holds_the_fstab_too(self) -> None:
-        noauto = "/swap/swapfile none swap defaults,noauto 0 0\n"
-        self.assertTrue(self.judged(noauto, self.OFF))
-        # A line the gate could not make noauto fails, though no swap runs.
-        g = gate()
-        g.vm = FakeVm(
-            {
-                "printf": "",
-                "cat /etc/fstab": "/swap/swapfile none swap defaults 0 0\n",
-                "cat /proc/swaps": self.OFF,
-            }
-        )
-        g.fact = lambda label, cmd, timeout=300, again=False: ""  # type: ignore[method-assign]
+        def sh(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> tuple[int, str]:
+            if cmd == "cat /etc/fstab":
+                guest["reads"] += 1
+                if guest["torn"]:
+                    guest["torn"] -= 1
+                    g.torn.append(label)
+                    return 0, guest["fstab"]
+                if garble and guest["reads"] == 2:
+                    return 0, guest["fstab"] + "x"
+                return 0, guest["fstab"]
+            if cmd == "cat /proc/swaps":
+                return 0, swaps
+            return 0, ""
+
+        class Vm:
+            def succeed(self, cmd: str) -> str:
+                words = shlex.split(cmd)
+                if words[:2] == ["printf", "%s"]:
+                    written.append(words[2])
+                    guest["fstab"] = words[2]
+                return ""
+
+        g.vm = Vm()
+        g.sh = sh  # type: ignore[method-assign]
         quiet(g.swap_off)
-        self.assertFalse(g.checks[0]["passed"])
+        return {c["name"]: c["passed"] for c in g.checks}[self.NAME], written
+
+    def test_makes_every_swap_line_noauto(self) -> None:
+        noauto = self.LINE.replace("defaults", "defaults,noauto")
+        self.assertEqual(self.judged(noauto, self.OFF), (True, []))
+        self.assertEqual(self.judged(self.LINE, self.OFF), (True, [noauto]))
+        # A swap that still runs fails, though every line is noauto.
+        running = self.OFF + "/swap/swapfile file 4G 0 -2\n"
+        self.assertEqual(self.judged(noauto, running)[0], False)
+
+    def test_writes_back_nothing_read_garbled(self) -> None:
+        self.assertEqual(self.judged(self.LINE, self.OFF, torn=1), (False, []))
+        self.assertEqual(self.judged(self.LINE, self.OFF, garble=True), (False, []))
+
+
+class ProcessesTest(unittest.TestCase):
+    LINES = ["root 1602 control /run/overlay-runtime/control watch"]
+
+    def test_each_runs_from_the_copy_in_ram(self) -> None:
+        self.assertTrue(ag.processes_from_ram(self.LINES, f"1602 {fg.RAM}\n"))
+        self.assertFalse(ag.processes_from_ram(self.LINES, "1602 /mnt/data/nails\n"))
         self.assertFalse(
-            self.judged(
-                "/swap/swapfile none swap defaults,noauto 0 0\n",
-                self.OFF + "/swap/swapfile file 4G 0 -2\n",
-            )
+            ag.processes_from_ram(self.LINES, f"1602 {fg.RAM} (deleted)\n")
         )
+        self.assertFalse(ag.processes_from_ram(self.LINES, ""))
+        self.assertFalse(ag.processes_from_ram([], ""))
+        user = ["gate 1602 control /run/overlay-runtime/control watch"]
+        self.assertFalse(ag.processes_from_ram(user, f"1602 {fg.RAM}\n"))
+
+
+class SessionTest(unittest.TestCase):
+    def test_no_disk_swap_in_the_session_and_the_esp_probe(self) -> None:
+        for swaps, passed in (
+            ("Filename Type Size Used Priority\n/dev/zram0 partition 1G 0 100", True),
+            ("Filename Type Size Used Priority\n/swap/swapfile file 4G 0 -2", False),
+            ("", False),
+        ):
+            g = gate()
+            ran: list[str] = []
+
+            def fact(
+                label: str,
+                cmd: str,
+                timeout: int = 300,
+                again: bool = False,
+                swaps: str = swaps,
+                ran: list[str] = ran,
+            ) -> str:
+                ran.append(cmd)
+                if cmd == "cat /proc/swaps":
+                    return swaps
+                if cmd.startswith("tail -n1"):
+                    return f"# gate\n{fg.UPPER}/etc/gate-new"
+                return "rc=1"
+
+            g.fact = fact  # type: ignore[method-assign]
+            quiet(g.session_security, 1, "root")
+            found = {c["name"]: c["passed"] for c in g.checks}
+            self.assertEqual(found["session 1: no swap is on a disk"], passed, swaps)
+            self.assertIn(f"touch {ag.EFI_PROBE}-1 2>&1; echo rc=$?", ran)
+        self.assertIn(f"{ag.EFI_PROBE}-2", ag.ArchGate.session_files)
+        self.assertTrue(set(fg.SESSION_FILES) <= set(ag.ArchGate.session_files))
 
 
 class UpdateStateTest(unittest.TestCase):
@@ -322,10 +396,10 @@ class UpdateStateTest(unittest.TestCase):
         quiet(g.up_to_date, "drift", "second")
         self.assertFalse(g.checks[0]["passed"])
 
-    def test_the_first_control_starts_from_an_update_brought_in(self) -> None:
-        # pacman installs the drift control's first version before the
-        # reference boot, whose start brings /etc and /var up to date, and so
-        # before the first plain soft-reboot.
+    def first_steps(self, reference: str) -> tuple[ag.ArchGate, list[str]]:
+        """The run's steps up to the first plain soft-reboot, with
+        :data:`fedora_gate.NEEDS_UPDATE` printing ``reference`` after the
+        reference boot: the gate and the order its steps ran in."""
         g = gate()
         order: list[str] = []
 
@@ -352,6 +426,8 @@ class UpdateStateTest(unittest.TestCase):
             order.append(label)
             if label == "cmdline":
                 return "init_on_free=1"
+            if label == "needs-update-reference":
+                return reference
             return "/etc current\n/var current"
 
         def control(label: str) -> None:
@@ -365,11 +441,39 @@ class UpdateStateTest(unittest.TestCase):
         g.control = control  # type: ignore[method-assign]
         with self.assertRaises(Stop):
             quiet(g.flows)
+        return g, order
+
+    def test_the_first_control_starts_from_an_update_brought_in(self) -> None:
+        # pacman installs the drift control's first version before the
+        # reference boot, whose start brings /etc and /var up to date, and so
+        # before the first plain soft-reboot.
+        g, order = self.first_steps("/etc current\n/var current")
         reference = order.index("power-cycle reference")
         self.assertLess(order.index("drift_install"), reference)
         self.assertLess(reference, order.index("decoy"))
         self.assertEqual(order[-1], "control-1")
         self.assertTrue(all(c["passed"] for c in g.checks), g.checks)
+
+    def test_a_reference_boot_that_left_the_update_pending_fails(self) -> None:
+        g, _ = self.first_steps("/etc pending\n/var current")
+        found = {c["name"]: c["passed"] for c in g.checks}
+        self.assertFalse(
+            found[
+                "/etc and /var are up to date with /usr after the reference boot, "
+                "which ran the units of the update pacman left pending"
+            ]
+        )
+
+    def test_pacman_leaves_the_update_pending(self) -> None:
+        for read, passed in (
+            ("/etc pending\n/var pending", True),
+            ("/etc current\n/var pending", False),
+            ("/etc current\n/var current", False),
+        ):
+            g = gate()
+            g.fact = lambda label, cmd, timeout=300, again=False, read=read: read  # type: ignore[method-assign,misc]
+            quiet(g.left_pending, "3")
+            self.assertEqual([c["passed"] for c in g.checks], [passed], read)
 
 
 class DriftTest(unittest.TestCase):

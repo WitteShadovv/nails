@@ -1282,8 +1282,9 @@ journald's socket units as they were at the cold boot; `/run` at every depth,
 udev's device database aside, held against `/run` right before the entry and
 the shapes of what the plain soft-reboots from the same update state added
 there (a new session or unit file of the decoy's own start, its numbers left
-out), a new journal stream file only where the decoy's journald holds that
-stream open for a unit of the decoy's that runs and is not NAILS's, and the
+out), a new journal stream file only where the gate's reading of the streams
+lists it and the decoy's journald holds that stream open for a unit of the
+decoy's that runs and is not NAILS's, and the
 link PID 1 keeps for a unit's run where it leads to the run the decoy's PID 1
 runs now, that run started a second or more after the switch's last step
 ended, as PID 1 gives it to the second, and the unit is none of NAILS's and
@@ -1309,7 +1310,9 @@ wrote in wtmp, numbered below what the session pushed the counter to and in
 the power-of-two range the cold boot gave each. After the first way back the
 rehearsal's scan must find nothing and name the btrfs root, which compresses,
 as not checked. Across each way back the decoy's disk mounts must change only
-where a plain soft-reboot changes them: every file and folder whose contents
+where a plain soft-reboot changes them, read at every depth, a btrfs
+subvolume nested in a mount without a mount of its own included, and no
+other filesystem mounted below them: every file and folder whose contents
 or inode, its labels among its extended attributes, changed since right
 before the entry, held against those that changed across either plain
 soft-reboot, the login record files aside, and a unit's private temporary
@@ -1340,11 +1343,18 @@ up at the next start of PID 1, is the positive control: its write after the
 first way back must count as its run's. A change of a run the hidden root's
 PID 1 started before the switch, contents the session changed that a later
 run only touched, and every change of a way back whose switch's time the
-gate could not read are not explained and still fail the check. The partitions of the decoy's disk that no filesystem is mounted
-from, no swap is on and nothing holds (a BIOS boot partition, an ESP left
-behind its automount point) must hold the same bytes after each way back as
-right before its entry. The gate reads the names three times before it counts
-them as not read, which fails the comparison. In this driver, once auditd is off, the gate masks
+gate could not read are not explained and still fail the check. The
+partitions of the decoy's disk that no filesystem is mounted from, no swap is
+on and nothing holds (a BIOS boot partition, an ESP left behind its automount
+point) must hold the same bytes after each way back as right before its
+entry, and at least one must be read so: every image of the gate has a BIOS
+boot partition. Every file of a FAT filesystem mounted from the decoy's disk
+(an ESP) must hold the same bytes, and no file or folder of it may come or
+go, as FAT keeps a file's time to two seconds and no inode change time. And
+no login or boot record file may shrink or go, as such a file only grows; the
+records checks judge what is in it. The gate reads the names three times
+before it counts them as not read, which fails the comparison. In this
+driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
 them one that keeps every process from being audited, and has the kernel
 record every program run from below `/run`, with the domain it runs in, and
@@ -1486,21 +1496,35 @@ Arch:
   date with `/usr` after each transaction, and the next start of PID 1 runs
   the units that bring them up to date: the reference boot runs them for the
   first version, and the gate runs them by hand after the third, before the
-  second entry, so every plain soft-reboot and every entry starts with no
-  update pending;
+  second entry. The gate reads the state as systemd judges it: out of date
+  right after the first and the third install, the positive control of that
+  reading, and up to date after the reference boot and after the run by hand.
+  Each plain soft-reboot and each entry records its own state, and a plain
+  soft-reboot counts for a way back only where the two match;
 - the zram checks run only where the cold boot set up zram or the image
   ships zram-generator. arch-boxes does neither, so they do not run there;
+  each session must run no swap on a disk instead;
+- NAILS's processes in each session must run as root from its copy in RAM,
+  as `/proc/<pid>/exe` shows; each session writes a file on `/efi`, which
+  the hidden session masks and binds read-only, and after the way back that
+  file must not be on the decoy;
 - the guest runs the driver's Python from the Nix store the harness mounts,
   to read the kernel log and to drive the failed console logins, so the gate
   does not depend on a Python in the image (the run records whether the
   image has one).
 
-It writes `<image>-gate.json` and `<image>-gate.kmsg.txt`, and fails at its
-end when an assertion does not hold. The decoy disk it compares is what is
-mounted from it, read file by file, and its partitions that nothing mounts,
-read byte for byte. On arch-boxes the first are the btrfs root and the ESP,
-which the run finds mounted at `/efi` through its automount point whenever it
-compares, and the second the BIOS boot partition.
+It writes `<image>-gate.json`, `<image>-gate.raw.json` and
+`<image>-gate.kmsg.txt`, and fails at its end when an assertion does not hold.
+Of the decoy disk it compares what is mounted from it by the names, times and
+inodes of its files and folders, with the btrfs subvolumes nested in the root
+without a mount of their own (`/var/lib/portables`, `/var/lib/machines` and
+`/swap` on arch-boxes), the files of its FAT filesystems by their contents
+too, and its partitions that nothing mounts byte for byte. On arch-boxes the
+first are the btrfs root and the ESP, mounted at `/efi` whenever the gate
+compares only because dbus-broker's start looks it up and so triggers
+`efi.automount`, and the last the BIOS boot partition. Of the mounted ESP no
+comparison reads the FAT tables, the FSInfo sector, the entries of deleted
+files, or the times of `/efi` itself, which a FAT root does not keep.
 
 `<image>-btrfs` runs the btrfs scan controls of the Fedora gate on the stock
 image, for an image whose root is btrfs. On arch-boxes the controls' folder is
@@ -1525,6 +1549,14 @@ What the gate leaves to the admission:
   image.
 - no desktop session runs in the gate, as arch-boxes is a console image, and
   the tests with one (`lib/graphical-vm-config.nix`) boot NixOS alone.
+- fstab-policy masks `/var/lib/machines` in the hidden session, so no session
+  of the gate uses it.
+- the comparison of the decoy disk, the Fedora gate's too, excuses a path
+  that a plain soft-reboot changes whatever its new contents: the journal's
+  `system.journal`, the random seed, the clock file of timesyncd, the
+  keystore of tpm2-tss and `/var/tmp`. And it leaves the login and boot
+  record files to the records checks, which read the records in them, while
+  the comparison only holds each such file to growing.
 
 ### Running and CI
 

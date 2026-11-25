@@ -75,12 +75,15 @@ QEMU process:
    up at the first way back, is the positive control of that reading. A
    control counts only where it started in the update state of the way
    back's entry (whether /etc and /var follow /usr, ``ConditionNeedsUpdate=``);
-   on the disk no name may be gone that no such control took away, and every
-   partition of the decoy's disk that no filesystem is mounted from must hold
-   the bytes it held before the entry; in ``/run`` a journal stream file
-   counts only where the decoy's journald holds its stream open for a unit of
-   the decoy's that runs. And a login on the decoy, the positive control of
-   the login records.
+   on the disk, read at every depth with the btrfs subvolumes nested in a
+   mount and no other filesystem, no name may be gone that no such control
+   took away, every partition of the decoy's disk that no filesystem is
+   mounted from must hold the bytes it held before the entry (at least one is
+   read so), every file of a mounted FAT filesystem its contents, and no
+   record file may shrink; in ``/run`` a journal stream file counts only
+   where the reading of the streams lists it and the decoy's journald holds
+   its stream open for a unit of the decoy's that runs. And a login on the
+   decoy, the positive control of the login records.
 
 In the variant with the policy's dontaudit rules on, the kernel also records
 every program run from below ``/run`` with its domain, and every program run
@@ -115,6 +118,7 @@ import shlex
 import tempfile
 import traceback
 import uuid
+import zlib
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
@@ -535,6 +539,8 @@ lsblk -nrpo NAME,TYPE "/dev/$disk" | while read -r name type; do
   echo "$name $(sha256sum < "$name" | cut -d' ' -f1)"
 done
 """
+# What :data:`PARTITIONS` prints in place of a digest.
+PARTITION_STATES = ("mounted", "swap", "held")
 # journald's stream files in /run and what the gate holds each to after a way
 # back: the socket inodes the decoy's journald holds open, and for each
 # stream file the unit it names (``-`` for none) with that unit's state.
@@ -559,6 +565,31 @@ NAMES_TRIES = 3
 # Where journald keeps a file of each stream it reads, named
 # ``<device>:<inode>`` after the stream's socket.
 STREAMS_DIR = "/run/systemd/journal/streams"
+# Every file on the decoy's FAT filesystems that are mounted (an ESP), with
+# the SHA-256 of its contents, and every folder, by the mount: FAT keeps a
+# file's change time to the two seconds and no inode change time at all, so
+# its times alone would miss a write that keeps a file's size and time.
+FAT_FILES = r"""
+findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do
+  test "$fstype" = vfat || continue
+  echo "mount $target"
+  find "$target" -xdev -type d -printf 'dir %p\n'
+  find "$target" -xdev -type f -exec sha256sum {} + | sed 's/^/file /'
+done
+"""
+# The size of each login and boot record file (:data:`RECORD_PATHS`, and the
+# files in its folders), which the comparison of the decoy disk leaves to the
+# records checks: whatever a way back does to them, none may shrink or go,
+# as a login record file only grows.
+RECORD_SIZES = (
+    "for p in "
+    + " ".join(RECORD_PATHS)
+    + '; do if test -d "$p"; then find "$p" -xdev -type f -printf \'%s %p\\n\'; '
+    'elif test -f "$p"; then stat -c \'%s %n\' "$p"; fi; done'
+)
+# The files beside the record files that SQLite makes and removes as it
+# writes, which may go.
+RECORD_SCRATCH = ("-journal", "-wal", "-shm")
 # The blind spot the rehearsal's scan must name for a btrfs root mounted to
 # compress, and its exit status when it names one and finds nothing.
 COMPRESSED_BLIND_SPOT = "compresses file contents"
@@ -863,24 +894,34 @@ def disk_listing(since: str) -> str:
     mounts whose contents or inode (its labels among the extended attributes)
     changed since the wall clock ``since`` (a number, or a shell expansion
     of one), the hidden volume and the gate's bind left out."""
-    return (
-        "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
-        f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
-        f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
-        f'find "$target" -xdev \\( -newerct @{since} -o -newermt @{since} \\) '
-        "-print; done | sort -u"
-    )
+    return disk_find(f"\\( -newerct @{since} -o -newermt @{since} \\) -print")
 
 
 def disk_find(tests: str) -> str:
     """The guest command that runs ``find`` with ``tests`` on each of the
     decoy's disk mounts, the hidden volume and the gate's bind left out, and
-    sorts what it prints."""
+    sorts what it prints. find does not stop at another device, as ``-xdev``
+    would at each btrfs subvolume nested in the mount without a mount of its
+    own (arch-boxes's ``/var/lib/portables``, ``/var/lib/machines`` and
+    ``/swap``): it leaves out every other mount point instead, so no other
+    filesystem is read."""
     return (
+        "mounts=$(findmnt -rn -o TARGET); "
         "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
         f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
         f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
-        f'find "$target" -xdev {tests}; done | sort -u'
+        "set --; for m in $mounts; do "
+        '[ "$m" = "$target" ] || set -- "$@" -path "$m" -prune -o; done; '
+        f'find "$target" "$@" \\( {tests} \\); done | sort -u'
+    )
+
+
+def names_command() -> str:
+    """The guest command that sends every name on the decoy's disk mounts
+    (:func:`disk_find`) packed, find's complaints and status left out."""
+    return (
+        "( set +o pipefail; "
+        f"( {disk_find('-print')} ) 2>/dev/null | gzip -1 | base64 -w0 )"
     )
 
 
@@ -943,7 +984,7 @@ def partition_hashes(text: str) -> dict[str, str]:
     found = {}
     for line in text.splitlines():
         words = line.split()
-        if len(words) == 2 and words[0].startswith("/dev/"):
+        if len(words) == 2 and words[0].startswith("/"):
             found[words[0]] = words[1]
     return found
 
@@ -956,16 +997,111 @@ def partition_problems(
     mounted since, or one gone."""
     problems = []
     for name, digest in sorted(before.items()):
-        if digest in ("mounted", "swap", "held"):
+        if digest in PARTITION_STATES:
             continue
         now = after.get(name)
         if now is None:
             problems.append(f"{name} is gone")
-        elif now in ("mounted", "swap", "held"):
+        elif now in PARTITION_STATES:
             problems.append(f"{name} was not mounted before the entry and is {now} now")
         elif now != digest:
             problems.append(f"{name} holds other bytes than before the entry")
     return problems
+
+
+def fat_files(text: str) -> dict[str, dict[str, str]]:
+    """What :data:`FAT_FILES` printed, by the mount: each path with its
+    digest, or ``dir`` for a folder."""
+    found: dict[str, dict[str, str]] = {}
+    current: dict[str, str] | None = None
+    for line in text.splitlines():
+        kind, _, rest = line.partition(" ")
+        if kind == "mount" and rest:
+            current = found.setdefault(rest, {})
+        elif current is None:
+            continue
+        elif kind == "dir" and rest:
+            current[rest] = "dir"
+        elif kind == "file":
+            digest, _, path = rest.partition("  ")
+            if digest and path:
+                current[path] = digest
+    return found
+
+
+def fat_problems(
+    before: Mapping[str, Mapping[str, str]], after: Mapping[str, Mapping[str, str]]
+) -> list[str]:
+    """What changed on a FAT filesystem mounted both before an entry and after
+    its way back (:func:`fat_files`): a file whose contents differ, and a file
+    or folder that came or went. One mounted on one side alone is judged by
+    its partition's bytes (:func:`partition_problems`)."""
+    problems = []
+    for mount in sorted(set(before) & set(after)):
+        was, now = before[mount], after[mount]
+        for path in sorted(set(was) | set(now)):
+            if path not in now:
+                problems.append(f"{path} is gone")
+            elif path not in was:
+                problems.append(f"{path} is new")
+            elif was[path] != now[path]:
+                problems.append(f"{path} holds other bytes than before the entry")
+    return problems
+
+
+def record_sizes(text: str) -> dict[str, int]:
+    """Each record file :data:`RECORD_SIZES` printed, with its size."""
+    found = {}
+    for line in text.splitlines():
+        size, _, path = line.partition(" ")
+        if size.isdigit() and path.startswith("/"):
+            found[path] = int(size)
+    return found
+
+
+def record_problems(before: Mapping[str, int], after: Mapping[str, int]) -> list[str]:
+    """The record files that shrank or went since before an entry
+    (:func:`record_sizes`), SQLite's scratch files aside
+    (:data:`RECORD_SCRATCH`)."""
+    problems = []
+    for path, size in sorted(before.items()):
+        if path.endswith(RECORD_SCRATCH):
+            continue
+        if path not in after:
+            problems.append(f"{path} is gone")
+        elif after[path] < size:
+            problems.append(f"{path} shrank from {size} to {after[path]} bytes")
+    return problems
+
+
+def stream_listed(text: str) -> set[str]:
+    """The stream files :data:`JOURNAL_STREAMS` listed, each as its ``f
+    <path>`` entry of /run."""
+    return {
+        f"f {STREAMS_DIR}/{words[1]}"
+        for words in (line.split() for line in text.splitlines())
+        if len(words) >= 2 and words[0] == "file"
+    }
+
+
+def stream_residue(
+    added: Iterable[str], streams: Mapping[str, Any] | None
+) -> list[str]:
+    """The stream files among ``added`` (entries of /run a way back added)
+    that are not the decoy's: every one where the gate read no streams
+    (``streams`` None), and otherwise each that the reading did not list or
+    found a problem with (``streams``: ``listed`` and ``problems``)."""
+    found = []
+    for entry in sorted(added):
+        if not entry.startswith(f"f {STREAMS_DIR}/"):
+            continue
+        if (
+            streams is None
+            or entry not in streams["listed"]
+            or entry in streams["problems"]
+        ):
+            found.append(entry)
+    return found
 
 
 def stream_problems(text: str, own_prefixes: Iterable[str] = ()) -> dict[str, str]:
@@ -1483,6 +1619,9 @@ class Gate:
     hidden_root: str = HIDDEN_ROOT
     harness_warnings: Mapping[str, str] = HARNESS_WARNINGS
     security_state_name = "the decoy's SELinux booleans"
+    # The files each session writes that must not be on the decoy after its
+    # way back.
+    session_files: Sequence[str] = SESSION_FILES
     # What the warnings on the prepared decoy may come from, as the clean
     # check's name says it.
     warning_sources = "the harness, the VM and an untested release"
@@ -1531,7 +1670,7 @@ class Gate:
         self.update_states: dict[str, str] = {}
         # The journal stream files after each way back that are not the
         # decoy's (:func:`stream_problems`), None where they were not read.
-        self.streams: dict[int, dict[str, str] | None] = {}
+        self.streams: dict[int, dict[str, Any] | None] = {}
         # /run before and after each switch, by its label, and the reconcile
         # step's pieces that stayed after each way back.
         self.runs: dict[str, tuple[set[str], set[str]]] = {}
@@ -2154,11 +2293,7 @@ class Gate:
         failures: list[str] = []
         for _ in range(NAMES_TRIES):
             try:
-                status, out = self.vm.execute(
-                    "( set +o pipefail; "
-                    f"( {disk_find('-print')} ) 2>/dev/null | gzip -1 | base64 -w0 )",
-                    timeout=600,
-                )
+                status, out = self.vm.execute(names_command(), timeout=600)
             except Exception as error:  # noqa: BLE001 - a dead guest is a result
                 failures.append(f"{type(error).__name__}: {error}")
                 continue
@@ -2167,7 +2302,7 @@ class Gate:
                 names = changed_paths(
                     text.decode("utf-8", "replace"), self.other_mounts()
                 )
-            except (ValueError, OSError, EOFError) as error:
+            except (ValueError, OSError, EOFError, zlib.error) as error:
                 failures.append(
                     f"exit {status}, {len(out)} characters: "
                     f"{type(error).__name__}: {error}"
@@ -2184,6 +2319,53 @@ class Gate:
             return names
         self.facts[f"disk-names-{label}"] = {"not read": failures}
         return None
+
+    def way_back_disk(self, n: int, state: Mapping[str, Any]) -> None:
+        """What way back ``n`` left on the decoy disk, read right after it as
+        before its entry (``state``): its changes since the entry, its names,
+        the bytes of its partitions that no filesystem is mounted from, the
+        files of its FAT filesystems and the sizes of its record files."""
+        self.disk_changes(f"way-back-{n}", state["since"])
+        self.names[f"way-back-{n}"] = (state["names"], self.disk_names(f"after-{n}"))
+        partitions = partition_hashes(
+            self.fact(f"partitions-after-{n}", PARTITIONS, 600, again=True)
+        )
+        self.judge_partitions(n, state["partitions"], partitions)
+        fat = fat_files(self.fact(f"fat-after-{n}", FAT_FILES, 600, again=True))
+        problems = fat_problems(state["fat"], fat)
+        self.check(
+            f"way back {n}: every file of the decoy's FAT filesystems holds the "
+            "bytes it held before the entry, and none came or went",
+            not problems,
+            {"mounts": sorted(set(state["fat"]) & set(fat)), "problems": problems},
+        )
+        sizes = record_sizes(
+            self.fact(f"record-sizes-after-{n}", RECORD_SIZES, again=True)
+        )
+        problems = record_problems(state["records-sizes"], sizes)
+        self.check(
+            f"way back {n}: no login or boot record file shrank or went",
+            bool(state["records-sizes"]) and not problems,
+            {"before": state["records-sizes"], "after": sizes, "problems": problems},
+        )
+
+    def judge_partitions(
+        self, n: int, before: Mapping[str, str], after: Mapping[str, str]
+    ) -> None:
+        """The partitions of way back ``n`` (:func:`partition_problems`): at
+        least one of them read byte for byte before the entry, as every image
+        of the gate has a BIOS boot partition that nothing mounts, and none
+        changed."""
+        problems = partition_problems(before, after)
+        digests = [
+            name for name, digest in before.items() if digest not in PARTITION_STATES
+        ]
+        self.check(
+            f"way back {n}: the partitions of the decoy's disk that no filesystem "
+            "is mounted from hold the bytes they held before the entry",
+            bool(digests) and not problems,
+            {"before": dict(before), "after": dict(after), "problems": problems},
+        )
 
     def needs_update(self, label: str) -> str:
         """The update state right before a switch (:data:`NEEDS_UPDATE`),
@@ -2594,6 +2776,12 @@ class Gate:
         state["names"] = self.disk_names(f"before-{n}")
         state["partitions"] = partition_hashes(
             self.fact(f"partitions-before-{n}", PARTITIONS, 600, again=True)
+        )
+        state["fat"] = fat_files(
+            self.fact(f"fat-before-{n}", FAT_FILES, 600, again=True)
+        )
+        state["records-sizes"] = record_sizes(
+            self.fact(f"record-sizes-before-{n}", RECORD_SIZES, again=True)
         )
         state["run"] = self.run_listing(f"before-{n}")
         state["since"] = self.wall()
@@ -3225,23 +3413,15 @@ class Gate:
             )
         streams = self.fact(f"journal-streams-{n}", JOURNAL_STREAMS, again=True)
         self.streams[n] = (
-            stream_problems(streams, (NAILS_UNITS,))
+            {
+                "listed": stream_listed(streams),
+                "problems": stream_problems(streams, (NAILS_UNITS,)),
+            }
             if re.search(r"^held \d+$", streams, re.M)
             else None
         )
         after = self.records_capture(f"after-{n}")
-        self.disk_changes(f"way-back-{n}", state["since"])
-        self.names[f"way-back-{n}"] = (state["names"], self.disk_names(f"after-{n}"))
-        partitions = partition_hashes(
-            self.fact(f"partitions-after-{n}", PARTITIONS, 600, again=True)
-        )
-        problems = partition_problems(state["partitions"], partitions)
-        self.check(
-            f"way back {n}: the partitions of the decoy's disk that no filesystem "
-            "is mounted from hold the bytes they held before the entry",
-            bool(state["partitions"]) and not problems,
-            {"before": state["partitions"], "after": partitions, "problems": problems},
-        )
+        self.way_back_disk(n, state)
         self.decoy_timers(
             f"way-back-{n}", float(self.facts[f"leave-wall-{n}"]), state["since"]
         )
@@ -3413,7 +3593,7 @@ class Gate:
         on_decoy = self.fact(
             f"session-files-{n}",
             "for p in "
-            + " ".join(shlex.quote(p) for p in (*files, *SESSION_FILES))
+            + " ".join(shlex.quote(p) for p in (*files, *self.session_files))
             + '; do test -e "$p" -o -L "$p" && echo "$p"; done; '
             "grep -nx '# gate' /etc/protocols; true",
         )
@@ -3760,14 +3940,13 @@ class Gate:
             # excuses none: it must be one the decoy's journald holds open,
             # of a unit of the decoy's that runs now (:func:`stream_problems`).
             streams = self.streams.get(n)
-            for entry in sorted(after - before):
-                if not entry.startswith(f"f {STREAMS_DIR}/"):
-                    continue
-                if streams is None or entry in streams:
-                    residue.append(entry)
-            residue = sorted(set(residue))
+            residue = sorted(
+                set(residue) | set(stream_residue(after - before, streams))
+            )
             self.facts[f"stream-problems-{label}"] = (
-                streams if streams is not None else "not read"
+                {"listed": sorted(streams["listed"]), "problems": streams["problems"]}
+                if streams is not None
+                else "not read"
             )
             self.facts[f"run-residue-{label}"] = residue
             self.facts[f"run-own-{label}"] = {
