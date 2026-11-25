@@ -110,7 +110,7 @@ command line would land in the decoy's journal.
 - While a hidden session runs, while an activation is entering one and
   while an interrupted entry is left behind, `hidden_volume_root` and
   `state_file_path` point only where the session recorded them when it began
-  (exit 4): the way back to the decoy and `recover` read the session's state
+  (exit 4): `deactivate`, `status` and `recover` read the session's state
   there. A change that points them back there is written, so a file changed
   by hand can be put right. Make any other such change on another machine,
   with the hidden volume mounted there. The session's backend watcher and
@@ -422,9 +422,10 @@ read-only into the hidden root, as an fstab line for `/efi` would be.
 zram-generator does not run in the hidden session: the entry masks it there,
 as it masks the GPT auto-generator, so the hidden session runs without
 zram-generator's swap, whatever the hidden root's copy of its configuration
-names. The decoy's own units turn its zram swap off as the switch stops them,
-and its start after the way back sets it up again; NAILS does not check that
-the swap went off. Any other zram swap unit the hidden systemd would start is
+names. The decoy's own units turn its zram swap off as the switch stops them.
+NAILS does not check that the swap went off. The session ends in a power-off,
+so the decoy sets its zram swap up again at its next cold boot. Any other zram
+swap unit the hidden systemd would start is
 left to it as RAM-only swap while its zram device keeps its pages in RAM: the
 device is there and `/sys/block/zramN/backing_dev` reads `none`, or the
 kernel gives zram no backing device at all. A zram device with a backing
@@ -432,16 +433,6 @@ device, or one that is not there at activation, gets the decision of disk
 swap: kept off. A zram swap that a service turns on itself, not through a
 swap unit, is not decided. The `swap` check refuses a zram swap with a
 backing device only while it is active.
-
-A stop can fail to reset its zram device and leave it set up, which the next
-start of the service manager then cannot set up again. So once the hidden
-units have stopped, the way back resets every zram device that holds a swap
-area no swap uses, before the decoy starts, so the decoy's start can set it up
-as its cold boot did. That includes a device the decoy itself set up and left
-with its swap off, which the way back leaves reset. A device in use, one never
-set up and one that holds anything but a swap area are left alone. The reset
-logs the device's change of size in the kernel's ring buffer, before the way
-back takes the kernel log's cursor.
 
 NAILS lists the decoy's unit directories and reads its unit files with
 `O_NOATIME`, which the kernel grants to root, and activation always runs as
@@ -505,8 +496,8 @@ mounted over it; it runs before `init`, `activate` and `check` write or probe
 anything. `--allow-decoy-storage` turns the refusal of the decoy's storage, and
 of an `nbd` or `ublk` device, into a warning; a folder is always refused (see
 [the attach gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
-filesystem that can be mounted again by its device for the way back (the
-`decoy-root` check refuses a tmpfs, ZFS or overlay root).
+filesystem on a block device (the `decoy-root` check refuses a tmpfs, ZFS or
+overlay root).
 
 ## Persona modes
 
@@ -745,8 +736,8 @@ The watcher is **alert-only by default**: a transient I/O stall must never be ab
 to end a live session on its own. The automatic emergency is strictly opt-in —
 set `backend_watch.auto_emergency = true` — and even then it fires only after the
 failure has persisted for `backend_watch.debounce_secs`, so a brief hiccup that
-recovers is reported but never acted on. The automatic emergency returns to the
-decoy like `nails emergency`.
+recovers is reported but never acted on. The automatic emergency powers the
+machine off like `nails emergency`.
 
 The watcher reads what to watch from the session plan and its settings from
 their copies in `/run`. Where it cannot read the copy of the settings, it takes
@@ -755,12 +746,10 @@ the hidden volume's own `config/nails.toml` at the hidden root the plan names.
 Where it cannot read the plan, it watches the hidden root the settings name.
 The read-only guard of `session_mounts.read_only` needs the plan too, both
 its udev rule and the watcher's sweep, so a disk that appears then stays
-writable, while the disks set read-only before stay so. A return to the
-decoy needs the plan, and without it does nothing at all, so
-there the automatic emergency the settings ask for powers the machine off
-instead, after the same debounce, and one alert tells you so ("Storage monitor
-in power-off mode"). An automatic emergency that finds no plan when it fires
-powers off the same way. Where it can read no settings at all, it watches
+writable, while the disks set read-only before stay so. Without the plan the
+automatic emergency the settings ask for still powers off after the same
+debounce, and one alert tells you so ("Storage monitor in power-off mode").
+Where it can read no settings at all, it watches
 alert-only, whatever `backend_watch.auto_emergency` says, and tells you so in
 one alert; where it can read neither the plan nor the settings, one alert says
 that mounted volumes are not watched, and it watches nothing.
@@ -791,7 +780,7 @@ writes.
   shows its subvolume's own device number, only while that path leads to the
   image), and every mount below
   `<hidden_volume_root>/root`, told by its path: there NAILS keeps its layers
-  and carries the decoy filesystems the way back needs. A mount outside
+  and the decoy filesystems it carries. A mount outside
   the hidden root alerts even when it shows the hidden volume. A mount made
   inside another mount namespace (a service with private mounts) is not in the
   watcher's table. A disk mounted over the hidden root itself, or over one of
@@ -813,17 +802,11 @@ writes.
   and everything it sits on, the ESP and the decoy filesystems the session
   carries stay writable, as do virtual devices (loop, device mapper, zram); a
   disk mounted below the hidden root does not, unless it lies below
-  `<hidden_volume_root>/root` (see the limits below). The way back,
-  `deactivate` and `emergency` alike, makes exactly the disks the session set
-  read-only writable again before the switch, so the decoy finds them as it
-  left them.
-- **The way back.** `nails deactivate` unmounts every disk mounted during the
-  session before it soft-reboots (a busy one is detached; the soft-reboot ends
-  its users), so the decoy can mount it again normally. That includes a disk
-  mounted below the hidden root, but not the session's own storage there. A
-  disk mounted over the hidden root itself is not unmounted: `deactivate`
-  refuses while one covers the root, so unmount it first. After an emergency,
-  the soft-reboot's own shutdown unmounts them.
+  `<hidden_volume_root>/root` (see the limits below). The flag lives in the
+  running kernel, so it ends with the power-off that ends the session.
+- **At the end.** The power-off that ends the session unmounts every disk
+  mounted during it, as any shutdown does. A disk mounted over the hidden root
+  itself makes `deactivate` refuse, so unmount it first.
 
 **Limits.** A root user in the hidden session can always mount a disk: setting
 it writable again (`blockdev --setrw`) and mounting it is a deliberate act, and
@@ -834,8 +817,8 @@ why it is the first line. A disk that is part of the session (the one the hidden
 volume or the decoy root lives on) stays writable as a whole device. Below
 `<hidden_volume_root>/root`, where NAILS keeps its layers, every mount counts as
 the session's own, told by its path: a disk mounted there by hand raises no
-alert, the watcher does not set it read-only again once it is mounted there,
-and the way back leaves it mounted. Mount nothing there.
+alert, and the watcher does not set it read-only again once it is mounted
+there. Mount nothing there.
 
 ## Sleep policy
 
@@ -876,7 +859,7 @@ watcher) and holds logind inhibitors for the life of the session:
   (a drop-in that is no regular file, or a file it cannot read): the guard then
   takes the lid switch too. A laptop kept running with the lid shut can
   overheat, so still set the lid switch to `lock`. Both inhibitors are released
-  together at the way back.
+  together when the session ends.
 - `teardown` — hold a sleep **delay** inhibitor and, on the host's
   `PrepareForSleep` signal, power the machine off within logind's
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the
@@ -900,17 +883,16 @@ hold, or Enter twice) and asks nothing at that moment, so how it ends is
 chosen in advance with `window.emergency`, on the window's Settings page or
 with `nails config set window.emergency poweroff`:
 
-- `return` (default): back to the decoy's own login screen, as a plain
-  `nails emergency` does. To an observer this looks like a logout, but the
-  memory the session used stays powered (see
-  [Cold-boot and running-memory attacks](operator-guide.md#cold-boot-and-running-memory-attacks)).
-  Where the way back cannot undo what the session changed in the network, it
-  powers off instead, as after a deactivate and a plain `nails emergency`
-  ([How it works](operator-guide.md#how-it-works)).
-- `poweroff`: power off, as `nails emergency --poweroff` does. RAM decays,
-  the strongest answer to a seizure, though a machine that goes dark is seen.
+- `poweroff` (default): power off, as a plain `nails emergency` does. RAM
+  decays, the strongest answer to a seizure, though a machine that goes dark
+  is seen.
 - `reboot`: a full reboot through the firmware, as `nails emergency --reboot`
-  does. A warm reboot does not clear RAM.
+  does. The decoy boots afresh, but a warm reboot does not clear RAM (see
+  [Cold-boot and running-memory attacks](operator-guide.md#cold-boot-and-running-memory-attacks)).
+
+A hidden session never goes back to the decoy, so there is no return to
+choose. A file that still says `return`, the default of older releases, loads
+as `poweroff` and is written back so.
 
 The window reads the setting with `config show` once the first status of a
 hidden session came in, and again with every read of its Settings page, so a
@@ -921,8 +903,8 @@ when its Settings page opens. The hidden session's page names what the
 control does ("What Emergency does"), and the control's description, which a
 screen reader reads, says it on every page.
 
-The control powers off instead where the window cannot be sure the session
-ends as the setting says, and the page then names that and why:
+The control powers off instead of restarting where the window cannot be sure
+the restart happens, and the page then names that and why:
 
 - once the window cannot reach NAILS;
 - while Verify or Rehearsal waits for NAILS (a step, or the read of where
@@ -930,31 +912,16 @@ ends as the setting says, and the page then names that and why:
   window does not wait that long (below);
 - until the window has read the setting, and where the settings cannot be
   read or hold a value the window does not know;
-- for a return or a restart while a deactivation powers the computer off,
-  and for a restart while a deactivation returns to the decoy (below);
-- for a return in a session without a way back, and for a return while the
-  question of a deactivation says that the return powers off instead,
-  whatever happens before it runs.
-
-Where NAILS is gone because the switch of a deactivation took it with the
-session, as that switch does, the deactivation's page names this only once
-the session is still there a minute later, when the page points to the
-control as a way out.
+- while a deactivation powers the computer off: the emergency never turns
+  that into a weaker ending.
 
 The window's own way out is a power-off too: where there is no helper, the
 request cannot be written within 3 seconds, or the window still runs 3
 seconds after it, it asks logind for the power-off itself (`systemctl
-poweroff`), since it has no way back to the decoy of its own. The engine's
-emergency ends the window with the session's other programs, so the window
-still runs then only where NAILS did not act on the request in time: it was
-busy with another request, or the steps of a return or a restart had not
-ended the session yet. While a deactivation returns to the decoy, a
-power-off from the control does not wait those 3 seconds: NAILS takes the
-request only after it has started that return, and the switch that follows
-ends the window and NAILS with the session, so neither might act on it. The
-window then asks logind for the power-off right after the request. A return
-that logind already holds may still come first. Holding the power button
-always powers off.
+poweroff`). The engine's emergency ends the window with the session's other
+programs, so the window still runs then only where NAILS did not act on the
+request in time: it was busy with another request, or the steps of a restart
+had not ended the session yet. Holding the power button always powers off.
 
 `nails emergency` does not read this setting: its hot path acts before any
 configuration is read, so neither a failed hidden volume nor a file it
@@ -964,14 +931,8 @@ unit or a key binding fixes them in advance
 
 ## Closing the backend
 
-There is nothing to configure. `deactivate` and `emergency` always mark the
-hidden backend's device-mapper stack for deferred removal before the
-soft-reboot; the switch back releases the last reference (the overlay that held
-the hidden volume), and the kernel removes the mapping and wipes the master key
-then. A loop device set up with autoclear detaches with it. A backend that is not
-device-mapper based is unmounted by the switch but not closed; close it yourself
-from the decoy, or power off.
-
-Device-removal kernel messages reach the ring buffer and, on a persistent
-journal, the decoy journal. Powering off is still the only way to clear all
-kernel and RAM residue.
+There is nothing to configure. Every session ends in a power-off. Its shutdown
+unmounts every filesystem and removes the device-mapper devices, the hidden
+backend's among them, and the power-off ends the kernel that held the master
+key. RAM keeps data for a while after that: leave the machine off for a few
+minutes before you hand it over.
