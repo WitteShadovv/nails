@@ -13,32 +13,68 @@
 //! removes what it put in `/run` so far.
 
 use crate::error::{NailsError, Result};
+use nails_base::RealFilesystem;
+use nails_base::blockdev;
 use nails_teardown::mountinfo::{MountEntry, top_mount_at};
-use nails_teardown::whole_root::disk_guard::{self, DevNum, Sysfs};
+use nails_teardown::whole_root::disk_guard::{DevNum, Sysfs};
 use nails_teardown::whole_root::write_counters::{self, Layout};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// The devices of the decoy's mounts: every mount with a block device that
-/// lies outside `hidden_root`, and `decoy_root`, the decoy root's device.
+/// What tells the devices a mounted filesystem keeps its data on: `None`
+/// for a mount on no block device, `Err` naming a place that is there but
+/// could not be read.
+pub(super) type DevicesOf<'a> =
+    dyn Fn(&MountEntry) -> std::result::Result<Option<Vec<DevNum>>, PathBuf> + 'a;
+
+/// The devices of `mount`'s filesystem as the pre-flight checks read them
+/// ([`blockdev::filesystem_devices`]): every device of a btrfs or bcachefs
+/// filesystem of several, the one device of any other.
+pub(super) fn devices_of(mount: &MountEntry) -> std::result::Result<Option<Vec<DevNum>>, PathBuf> {
+    let Some(dirs) = blockdev::filesystem_devices(&RealFilesystem, mount)? else {
+        return Ok(None);
+    };
+    dirs.iter()
+        .map(|dir| {
+            std::fs::read_to_string(dir.join("dev"))
+                .ok()
+                .and_then(|text| DevNum::parse(&text))
+                .ok_or_else(|| dir.join("dev"))
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map(Some)
+}
+
+/// The devices of the decoy's filesystems: every device of every mount
+/// outside `hidden_root`, and `decoy_root`, the decoy root's device.
 pub(super) fn decoy_devices(
     mounts: &[MountEntry],
     hidden_root: &Path,
     decoy_root: Option<DevNum>,
-) -> Vec<DevNum> {
-    let mut devices: Vec<DevNum> = mounts
+    devices_of: &DevicesOf<'_>,
+) -> std::result::Result<Vec<DevNum>, PathBuf> {
+    let mut devices = Vec::new();
+    for mount in mounts
         .iter()
         .filter(|m| !m.mount_point.starts_with(hidden_root))
-        .filter_map(disk_guard::mount_device)
-        .collect();
+    {
+        devices.extend(devices_of(mount)?.unwrap_or_default());
+    }
     devices.extend(decoy_root);
     devices.sort();
     devices.dedup();
-    devices
+    Ok(devices)
 }
 
-/// The device of the mount a lookup of `hidden_root` reaches.
-pub(super) fn hidden_mount_device(mounts: &[MountEntry], hidden_root: &Path) -> Option<DevNum> {
-    top_mount_at(mounts, hidden_root).and_then(disk_guard::mount_device)
+/// The devices of the mount a lookup of `hidden_root` reaches.
+pub(super) fn hidden_mount_devices(
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    devices_of: &DevicesOf<'_>,
+) -> std::result::Result<Vec<DevNum>, PathBuf> {
+    match top_mount_at(mounts, hidden_root) {
+        Some(mount) => Ok(devices_of(mount)?.unwrap_or_default()),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// The tripwire's layout for an entry with `inputs`, `None` where the
@@ -56,6 +92,7 @@ pub(super) fn for_entry(
         &inputs.backend,
         &inputs.decoy_root.source,
         &Sysfs::system(),
+        &devices_of,
     )
     .map(Some)
 }
@@ -67,14 +104,23 @@ pub(super) fn layout(
     backend: &[String],
     decoy_root: &Path,
     sys: &Sysfs,
+    devices_of: &DevicesOf<'_>,
 ) -> Result<Layout> {
     let root = std::fs::canonicalize(hidden_root).unwrap_or_else(|_| hidden_root.to_path_buf());
-    let hidden = write_counters::hidden_devices(hidden_mount_device(mounts, &root), backend);
+    let unread = |path: PathBuf| {
+        NailsError::InvalidState(format!(
+            "the write tripwire cannot tell the devices of the decoy's filesystems: {} cannot \
+             be read. Set write_tripwire = false in [session_mounts] to activate without it",
+            path.display()
+        ))
+    };
+    let mut hidden = hidden_mount_devices(mounts, &root, devices_of).map_err(unread)?;
+    hidden.extend(write_counters::hidden_devices(None, backend));
     let decoy_root = std::fs::metadata(decoy_root)
         .ok()
         .filter(|m| std::os::unix::fs::FileTypeExt::is_block_device(&m.file_type()))
         .map(|m| DevNum::from_raw(std::os::unix::fs::MetadataExt::rdev(&m)));
-    let decoy = decoy_devices(mounts, &root, decoy_root);
+    let decoy = decoy_devices(mounts, &root, decoy_root, devices_of).map_err(unread)?;
     write_counters::layout(&hidden, &decoy, sys).map_err(refusal)
 }
 

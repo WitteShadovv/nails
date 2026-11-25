@@ -3,9 +3,10 @@
 
 //! From the names a configuration file uses to the devices they mean.
 
-use super::walk::{dev_node_dir_noting, names};
+use super::walk::{dev_node_dir_noting, device_of_mount_or_unread, names};
 use super::{Attribute, SYS_FS_BTRFS};
 use crate::Filesystem;
+use crate::filesystem::mountinfo::MountEntry;
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 
@@ -79,4 +80,59 @@ pub fn btrfs_filesystems<F: Filesystem>(fs: &F) -> Result<Vec<Vec<String>>, Path
         }
     }
     Ok(members)
+}
+
+/// The block devices the filesystem mounted as `mount` keeps its data on, as
+/// sysfs directories: each device of a btrfs or bcachefs filesystem, the one
+/// device of any other. `None` when a device of it is not there or none
+/// shows at all, as for an overlay, FUSE, a network filesystem or a tmpfs.
+/// The error names the first place that is there but could not be read,
+/// for another reason than that it is not there, where it may have shown a
+/// device of it: a device node, a `dev` attribute, or a listing of
+/// `/sys/block` or `/sys/fs/btrfs`.
+pub fn filesystem_devices<F: Filesystem>(
+    fs: &F,
+    mount: &MountEntry,
+) -> Result<Option<Vec<PathBuf>>, PathBuf> {
+    let source = mount.source.to_string_lossy();
+    let each = |devices: Vec<String>| -> Result<Option<Vec<PathBuf>>, PathBuf> {
+        let mut dirs = Vec::new();
+        for device in devices {
+            match resolve_spec_or_unread(fs, &device)? {
+                Some(dir) => dirs.push(dir),
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(dirs))
+    };
+    if mount.fstype == "bcachefs" && source.contains(':') {
+        // bcachefs names every device of a filesystem of several in its
+        // source, `/dev/sdb:/dev/sdc`; its device number is the first one's.
+        return each(source.split(':').map(str::to_string).collect());
+    }
+    let Some(device) = device_of_mount_or_unread(fs, mount)? else {
+        return Ok(None);
+    };
+    // Only a btrfs filesystem lies on devices its mount does not name.
+    let members = if mount.fstype == "btrfs" {
+        btrfs_members(fs, &file_name_of(&device))?
+    } else {
+        Vec::new()
+    };
+    if members.len() < 2 {
+        return Ok(Some(vec![device]));
+    }
+    each(
+        members
+            .iter()
+            .map(|member| format!("/dev/{member}"))
+            .collect(),
+    )
+}
+
+/// The last component of `dir`, as text.
+fn file_name_of(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }

@@ -87,6 +87,10 @@ pub enum Imprecise {
     File(PathBuf),
     /// A decoy disk's or partition's counters cannot be read.
     Unreadable(String),
+    /// The kernel does not count a decoy disk's I/O (`queue/iostats` is 0).
+    NotCounted(String),
+    /// No decoy filesystem lies on a disk the counters can watch.
+    NothingToWatch,
 }
 
 impl std::fmt::Display for Imprecise {
@@ -107,6 +111,14 @@ impl std::fmt::Display for Imprecise {
             Imprecise::Unreadable(dev) => {
                 write!(f, "the kernel's write counters of {dev} cannot be read")
             }
+            Imprecise::NotCounted(dev) => write!(
+                f,
+                "the kernel does not count the I/O of {dev} (its queue/iostats is 0)"
+            ),
+            Imprecise::NothingToWatch => write!(
+                f,
+                "no decoy filesystem lies on a disk whose write counters can be watched"
+            ),
         }
     }
 }
@@ -216,6 +228,11 @@ fn layout_with(
                 return Err(Imprecise::Unreadable(d));
             }
         }
+        match counted(sys, &dev.text()) {
+            Some(true) => {}
+            Some(false) => return Err(Imprecise::NotCounted(dev.text())),
+            None => return Err(Imprecise::Unreadable(dev.text())),
+        }
         let allowed = partitions
             .iter()
             .filter(|p| DevNum::parse(&p.dev).is_some_and(|d| owned.contains(&d)))
@@ -229,7 +246,23 @@ fn layout_with(
         });
     }
     disks.sort_by(|a, b| a.dev.cmp(&b.dev));
+    if disks.is_empty() {
+        return Err(Imprecise::NothingToWatch);
+    }
     Ok(Layout { disks })
+}
+
+/// Whether the kernel counts the I/O of the disk `dev` (`major:minor`):
+/// `queue/iostats` is 1. A queue whose counting is off shows every counter
+/// standing still. `None` where it cannot be read.
+pub fn counted(sys: &Sysfs, dev: &str) -> Option<bool> {
+    let text =
+        std::fs::read_to_string(sys.root.join("dev/block").join(dev).join("queue/iostats")).ok()?;
+    match text.trim() {
+        "1" => Some(true),
+        "0" => Some(false),
+        _ => None,
+    }
 }
 
 /// The devices of the hidden volume for [`layout`]: the device of the mount
@@ -272,8 +305,17 @@ impl Baseline {
     /// cannot be read.
     pub fn take(layout: &Layout, sys: &Sysfs) -> Result<Self, String> {
         let mut sectors_by_dev = BTreeMap::new();
+        // Each disk's partitions before the disk, the reverse of [`check`]:
+        // a write to a partition that completes between the two reads can
+        // then only raise the disk's baseline, never leave a residual that
+        // is not there.
         for disk in &layout.disks {
-            for dev in std::iter::once(&disk.dev).chain(disk.partitions.iter().map(|p| &p.dev)) {
+            for dev in disk
+                .partitions
+                .iter()
+                .map(|p| &p.dev)
+                .chain(std::iter::once(&disk.dev))
+            {
                 let count = sectors(sys, dev).ok_or_else(|| dev.clone())?;
                 sectors_by_dev.insert(dev.clone(), count);
             }
@@ -324,6 +366,12 @@ pub fn check(layout: &Layout, base: &Baseline, sys: &Sysfs) -> Vec<String> {
             }
             Some(now - was)
         };
+        if counted(sys, &disk.dev) != Some(true) {
+            found.push(format!(
+                "the kernel no longer counts the I/O of {} ({})",
+                disk.name, disk.dev
+            ));
+        }
         let Some(whole) = growth(&disk.dev, &disk.name, &mut found) else {
             continue;
         };

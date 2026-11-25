@@ -41,7 +41,9 @@ mod tests;
 
 pub use dev_path::{OutOfDev, follow_in_dev};
 pub use driver::{PROC_DEVICES, SHARED_RANGE, block_majors, major_of, parse_block_majors};
-pub use spec::{btrfs_filesystems, btrfs_members, resolve_spec, resolve_spec_or_unread};
+pub use spec::{
+    btrfs_filesystems, btrfs_members, filesystem_devices, resolve_spec, resolve_spec_or_unread,
+};
 pub use walk::{
     classify_dm, device_numbered, device_of_mount, device_of_mount_or_unread, stack, walk,
 };

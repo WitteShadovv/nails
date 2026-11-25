@@ -20,6 +20,8 @@ fn set(root: &Path, written: u64) {
     let disk = root.join("devices/pci0/vda");
     std::fs::create_dir_all(disk.join("device")).unwrap();
     std::fs::write(disk.join("dev"), "252:0\n").unwrap();
+    std::fs::create_dir_all(disk.join("queue")).unwrap();
+    std::fs::write(disk.join("queue/iostats"), "1\n").unwrap();
     std::fs::write(
         disk.join("stat"),
         format!("1 0 8 0 1 0 {written} 0 0 0 0 0 0 0 0 0 0\n"),

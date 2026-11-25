@@ -65,7 +65,11 @@ of this changelog for that version becomes the release notes word for word, and
   partitions included. It counts what reached the disk, whatever program wrote it. Activation
   refuses a hidden volume the counters cannot tell apart from the decoy: one that shares a
   partition with it (a logical volume beside the decoy's, a folder or subvolume accepted with
-  `--allow-decoy-storage`), a container file on a disk, and a hidden root without a block device.
+  `--allow-decoy-storage`), a container file on a disk, a hidden root without a block device, a
+  disk whose I/O the kernel does not count (`queue/iostats` 0), and a decoy on no disk it can
+  watch. It watches every device of every decoy filesystem, runs wherever the session plan
+  records it, and alerts where the settings ask for it and it cannot run. A watcher that crashes
+  does not start again.
   It is a tripwire, not a fence: the write is on the disk when the watcher sees it, up to one poll
   later, and the power-off is a clean shutdown. It does not see SCSI or NVMe passthrough, what a
   device writes on its own, EFI variables or a TPM, nor a disk that holds no decoy filesystem at

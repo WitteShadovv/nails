@@ -177,7 +177,8 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
         ),
         "session_mounts.write_tripwire" => (
             "Power off at a write to the decoy disks",
-            "Turn the computer off as soon as the decoy's disks show a write outside the hidden              volume's own partition or disk. It sees the write once it is on the disk.",
+            "Turn the computer off as soon as the decoy's disks show a write outside the hidden \
+             volume's own partition or disk. It sees the write once it is on the disk.",
         ),
         "sleep_policy.mode" => (
             "When the computer would sleep",

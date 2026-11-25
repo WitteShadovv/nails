@@ -50,6 +50,8 @@ impl Fake {
         let d = self.root().join("devices").join(path);
         std::fs::create_dir_all(d.join("holders")).unwrap();
         std::fs::create_dir_all(d.join("slaves")).unwrap();
+        std::fs::create_dir_all(d.join("queue")).unwrap();
+        std::fs::write(d.join("queue/iostats"), "1\n").unwrap();
         std::fs::write(d.join("dev"), format!("{dev}\n")).unwrap();
         if hardware {
             std::fs::create_dir_all(d.join("device")).unwrap();
@@ -167,9 +169,11 @@ fn a_hidden_volume_on_a_partition_the_decoy_also_uses_is_imprecise() {
         layout_with(&[dev("253:1")], &[dev("253:0")], &fake.sys, &no_file),
         Err(Imprecise::Shared("252:2".into()))
     );
-    // A folder of the decoy root (--allow-decoy-storage).
+    // A folder or subvolume of the decoy root (--allow-decoy-storage), on a
+    // partition nothing is stacked on: only the decoy's own use of it tells.
+    let plain = Fake::new();
     assert_eq!(
-        layout_with(&[dev("252:2")], &[dev("252:2")], &fake.sys, &no_file),
+        layout_with(&[dev("252:2")], &[dev("252:2")], &plain.sys, &no_file),
         Err(Imprecise::Shared("252:2".into()))
     );
     // A partition another mapping outside the hidden stack holds.
@@ -211,6 +215,8 @@ fn no_hidden_device_and_an_unreadable_counter_are_imprecise() {
         Err(Imprecise::Unreadable("252:3".into()))
     );
     for why in [
+        Imprecise::NotCounted("252:0".into()),
+        Imprecise::NothingToWatch,
         Imprecise::NoDevice,
         Imprecise::Shared("252:2".into()),
         Imprecise::File("/f".into()),
@@ -329,4 +335,39 @@ fn the_baseline_reads_back_and_a_missing_one_is_none() {
 fn the_hidden_devices_are_the_mount_and_the_backend() {
     assert_eq!(hidden_devices(Some(dev("253:0")), &[]), [dev("253:0")]);
     assert!(hidden_devices(None, &["no-such-mapping-here".into()]).is_empty());
+}
+
+/// Set the kernel's I/O counting of the disk `dev` on or off.
+fn count_io(fake: &Fake, dev: &str, on: bool) {
+    let dir = std::fs::canonicalize(fake.root().join("dev/block").join(dev)).unwrap();
+    std::fs::write(dir.join("queue/iostats"), if on { "1\n" } else { "0\n" }).unwrap();
+}
+
+#[test]
+fn a_disk_whose_io_the_kernel_does_not_count_is_refused_and_turning_it_off_is_a_violation() {
+    let fake = Fake::new();
+    fake.dm("dm-0", "253:0", &["8:17"]);
+    count_io(&fake, "252:0", false);
+    assert_eq!(
+        layout_with(&[dev("253:0")], &[dev("252:2")], &fake.sys, &no_file),
+        Err(Imprecise::NotCounted("252:0".into()))
+    );
+    let (fake, layout, base) = watched();
+    count_io(&fake, "252:0", false);
+    assert_eq!(
+        check(&layout, &base, &fake.sys),
+        ["the kernel no longer counts the I/O of vda (252:0)"]
+    );
+}
+
+#[test]
+fn a_decoy_on_no_watchable_disk_is_refused() {
+    // The decoy mounts only a filesystem on no disk with hardware below it.
+    let fake = Fake::new();
+    fake.dm("dm-0", "253:0", &["8:17"]);
+    fake.loop_dev("loop1", "7:1", "/run/x.img");
+    assert_eq!(
+        layout_with(&[dev("253:0")], &[dev("7:1")], &fake.sys, &no_file),
+        Err(Imprecise::NothingToWatch)
+    );
 }

@@ -142,12 +142,15 @@ fn start(
         }
         (Some(manifest), None) => {
             tracing::warn!("No copy of the settings can be read; watching alert-only");
+            // The write tripwire runs by the plan, which records it, not by
+            // the settings: alert-only drops none, and says it keeps it.
+            let tripwire = plan.as_ref().is_some_and(|p| p.write_tripwire.is_some());
             Start::Watch {
                 manifest,
                 plan: plan.map(Box::new),
                 config: Box::new(alert_only()),
                 finish: Finish::Return,
-                notice: Some(alert_only_notice()),
+                notice: Some(alert_only_notice(tripwire)),
             }
         }
         (None, None) => Start::Without(unwatched_notice()),
@@ -278,7 +281,8 @@ pub fn execute(
 
     let watch_config = config.backend_watch.clone();
     let mounts_config = config.session_mounts.clone();
-    if !watch_config.enabled && !mounts_config.needs_watcher() {
+    let tripwire_recorded = plan.as_ref().is_some_and(|p| p.write_tripwire.is_some());
+    if !watch_config.enabled && !mounts_config.needs_watcher() && !tripwire_recorded {
         tracing::debug!("Nothing to watch in config; watcher exiting");
         return ExitStatus::Ok;
     }
@@ -300,12 +304,13 @@ pub fn execute(
     let sysfs = disk_guard::Sysfs::system();
     // The write tripwire: the decoy disks' write counters against the
     // baseline the entry's last step took.
-    let write_watch = write_watch(
+    let (write_watch, tripwire_notice) = write_watch(
         mounts_config.write_tripwire,
         plan.as_deref(),
         &sysfs,
         Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
     );
+    let tripwire_notice = tripwire_notice.map(Once::new);
     let mut tripped = false;
     // The mount table names the root with its symlinks resolved.
     let hidden_root = watcher::resolved_root(&filesystem, &manifest);
@@ -338,6 +343,10 @@ pub fn execute(
                     trip_on_writes(watch, &sysfs, tripped, super::emergency::run_hot_path_with);
             }
             if let Some(notice) = &notice {
+                let env = env.clone();
+                notice.try_deliver(move |alert| send_immediate(alert, &env));
+            }
+            if let Some(notice) = &tripwire_notice {
                 let env = env.clone();
                 notice.try_deliver(move |alert| send_immediate(alert, &env));
             }
@@ -397,29 +406,31 @@ fn auto_emergency(finish: Finish, mut run: impl FnMut(Finish) -> HotReport) -> b
     acted
 }
 
-/// The write tripwire's watch, where `enabled` (`[session_mounts]
-/// write_tripwire`) and the session `plan` records the disks to watch: held
+/// The write tripwire's watch, wherever the session `plan` records the disks
+/// to watch (the activation recorded them because the settings asked), held
 /// to the entry's baseline in `runtime_dir`, or to the counters at the
-/// watcher's start where the entry left none. Says so in the log where the
-/// setting asks for the tripwire and nothing can be watched.
+/// watcher's start where the entry left none; whatever the settings copy
+/// says now. Where the settings ask for the tripwire (`asked`) and no plan
+/// names the disks, the plan could not be read or the activation did not
+/// record them, the tripwire cannot run: the alert to deliver says so.
 fn write_watch(
-    enabled: bool,
+    asked: bool,
     plan: Option<&Plan>,
     sysfs: &disk_guard::Sysfs,
     runtime_dir: &Path,
-) -> Option<watcher::WriteWatch> {
-    if !enabled {
-        return None;
-    }
+) -> (Option<watcher::WriteWatch>, Option<Notification>) {
     let Some(layout) = plan.and_then(|plan| plan.write_tripwire.clone()) else {
-        tracing::warn!("The write tripwire is set, but the session plan names no disk to watch");
-        return None;
+        if asked {
+            tracing::warn!("The write tripwire is set, but no session plan names a disk to watch");
+            return (None, Some(tripwire_missing_notice()));
+        }
+        return (None, None);
     };
     let watch = watcher::WriteWatch::start(layout, sysfs, runtime_dir);
     if watch.since() == watcher::Since::WatcherStart {
         tracing::warn!("No write counters from the switch; counting from the watcher's start");
     }
-    Some(watch)
+    (Some(watch), None)
 }
 
 /// One round of the write tripwire: the first write the decoy disks' counters
@@ -588,12 +599,33 @@ fn cover_alert(cover: &MountEntry) -> Notification {
 }
 
 /// The neutral desktop alert of a watcher that could not read its settings:
-/// it still warns, but takes no action on its own.
-fn alert_only_notice() -> Notification {
+/// it still warns, and takes no action on its own but for a write tripwire
+/// the session plan records (`tripwire`), which it keeps.
+fn alert_only_notice(tripwire: bool) -> Notification {
+    let body = if tripwire {
+        "The storage monitor could not read its settings. It still warns you when a mounted \
+         volume stops responding, and still turns the computer off at a write to the system \
+         disk, but takes no other action on its own."
+    } else {
+        "The storage monitor could not read its settings. It still warns you when a mounted \
+         volume stops responding, but takes no action on its own."
+    };
     Notification {
         title: "Storage monitor in alert-only mode".to_string(),
-        body: "The storage monitor could not read its settings. It still warns you when a \
-               mounted volume stops responding, but takes no action on its own."
+        body: body.to_string(),
+        urgency: "critical".to_string(),
+        icon: Some("drive-harddisk".to_string()),
+        created_at: nails_core::time::Timestamp::now().to_rfc3339(),
+    }
+}
+
+/// The neutral desktop alert of a watcher whose settings ask for the write
+/// tripwire where no session plan names the disks to watch.
+fn tripwire_missing_notice() -> Notification {
+    Notification {
+        title: "Disk write monitor not running".to_string(),
+        body: "The disk write monitor that was turned on could not start, so writes to the \
+               system disk are not watched in this session."
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),

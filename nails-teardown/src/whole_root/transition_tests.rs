@@ -2164,6 +2164,8 @@ fn the_entry_takes_the_write_tripwire_s_baseline_last() {
     let disk = sysfs_root.join("devices/pci0/vda");
     fs::create_dir_all(disk.join("device")).unwrap();
     fs::write(disk.join("dev"), "252:0\n").unwrap();
+    fs::create_dir_all(disk.join("queue")).unwrap();
+    fs::write(disk.join("queue/iostats"), "1\n").unwrap();
     fs::write(disk.join("stat"), "1 0 8 0 1 0 77 0 0 0 0 0 0 3 0 0 0\n").unwrap();
     fs::create_dir_all(sysfs_root.join("dev/block")).unwrap();
     std::os::unix::fs::symlink(&disk, sysfs_root.join("dev/block/252:0")).unwrap();

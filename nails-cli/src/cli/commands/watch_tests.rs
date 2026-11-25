@@ -487,7 +487,7 @@ fn a_power_off_nothing_could_ask_for_leaves_the_watcher_watching() {
 /// never again after that.
 #[test]
 fn the_one_alert_is_tried_until_it_is_delivered_once() {
-    let once = Once::new(alert_only_notice());
+    let once = Once::new(alert_only_notice(false));
     let tries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let wait = std::time::Duration::from_secs(10);
     for attempt in 0..3 {
@@ -535,7 +535,7 @@ fn a_watcher_that_cannot_watch_delivers_its_alert_and_stops() {
             plan: Some(Box::new(plan())),
             config: Box::new(alert_only()),
             finish: Finish::Return,
-            notice: Some(alert_only_notice()),
+            notice: Some(alert_only_notice(false)),
         },
         |_| panic!("delivered while it watches"),
     );
@@ -621,6 +621,8 @@ fn decoy_disk(
     let disk = root.join("devices/pci0/vda");
     std::fs::create_dir_all(disk.join("device")).unwrap();
     std::fs::write(disk.join("dev"), "252:0\n").unwrap();
+    std::fs::create_dir_all(disk.join("queue")).unwrap();
+    std::fs::write(disk.join("queue/iostats"), "1\n").unwrap();
     std::fs::write(
         disk.join("stat"),
         format!("1 0 8 0 1 0 {written} 0 0 0 0 0 0 0 0 0 0\n"),
@@ -641,9 +643,11 @@ fn decoy_disk(
     }
 }
 
-/// The tripwire watches only where the setting asks and the plan names the
-/// disks; then the first write powers off through the hot path, never a
-/// return, whatever the backend watch's settings, and only once.
+/// The tripwire watches wherever the plan names the disks, whatever the
+/// settings copy says now; where the settings ask for it and no plan names
+/// them it cannot run, and the watcher alerts. Then the first write powers
+/// off through the hot path, never a return, whatever the backend watch's
+/// settings, and only once.
 #[test]
 fn the_write_tripwire_powers_off_at_the_first_write_to_a_watched_disk() {
     let dir = tempfile::tempdir().unwrap();
@@ -653,10 +657,25 @@ fn the_write_tripwire_powers_off_at_the_first_write_to_a_watched_disk() {
     let layout = decoy_disk(dir.path(), 100);
     let mut with_layout = plan();
     with_layout.write_tripwire = Some(layout);
-    assert!(write_watch(false, Some(&with_layout), &sysfs, dir.path()).is_none());
-    assert!(write_watch(true, Some(&plan()), &sysfs, dir.path()).is_none());
-    assert!(write_watch(true, None, &sysfs, dir.path()).is_none());
-    let watch = write_watch(true, Some(&with_layout), &sysfs, dir.path()).unwrap();
+    let (watch, notice) = write_watch(false, Some(&with_layout), &sysfs, dir.path());
+    assert!(
+        watch.is_some() && notice.is_none(),
+        "the plan's tripwire runs"
+    );
+    let (watch, notice) = write_watch(false, Some(&plan()), &sysfs, dir.path());
+    assert!(
+        watch.is_none() && notice.is_none(),
+        "nothing asked, nothing run"
+    );
+    for missing in [Some(plan()), None] {
+        let (watch, notice) = write_watch(true, missing.as_ref(), &sysfs, dir.path());
+        assert!(watch.is_none());
+        let notice = notice.expect("an asked-for tripwire that cannot run alerts");
+        assert_neutral(&notice);
+        assert!(notice.body.contains("not watched"), "{}", notice.body);
+    }
+    let (watch, _) = write_watch(true, Some(&with_layout), &sysfs, dir.path());
+    let watch = watch.unwrap();
     assert_eq!(watch.since(), watcher::Since::WatcherStart);
 
     let mut finishes = Vec::new();
@@ -669,4 +688,34 @@ fn the_write_tripwire_powers_off_at_the_first_write_to_a_watched_disk() {
     assert!(trip_on_writes(&watch, &sysfs, false, &mut run));
     assert!(trip_on_writes(&watch, &sysfs, true, &mut run));
     assert_eq!(finishes, [Finish::Poweroff]);
+}
+
+/// A watcher that cannot read its settings keeps the tripwire the plan
+/// records, and its alert says so instead of saying it takes no action.
+#[test]
+fn alert_only_says_it_keeps_the_plan_s_tripwire() {
+    let mut with_layout = plan();
+    with_layout.write_tripwire =
+        Some(nails_teardown::whole_root::write_counters::Layout { disks: Vec::new() });
+    let started = start(
+        Ok(Some(with_layout)),
+        Ok(None),
+        || None,
+        |_| Err(unreadable("/x")),
+    );
+    let Start::Watch { notice, .. } = started else {
+        panic!("the watcher watches");
+    };
+    let notice = notice.expect("alert-only says so");
+    assert_neutral(&notice);
+    assert!(
+        notice.body.contains("turns the computer off"),
+        "{}",
+        notice.body
+    );
+    assert!(
+        !alert_only_notice(false)
+            .body
+            .contains("turns the computer off")
+    );
 }

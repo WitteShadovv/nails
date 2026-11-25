@@ -352,8 +352,10 @@ defines without an id, does not, so its discards are not counted).
   (`empty<N>.qcow2`) count as the hidden volume's; where the oracle cannot tell
   the hidden volume's drives (a disk with no serial, a loop device without its
   file), that stays so and is an oracle error. The hidden volume's own drives
-  are reported, never judged. No allowed extent is set, so the writes of a
-  hidden volume beside decoy data are findings.
+  are reported, never judged. No test sets an allowed extent but
+  `session-write-tripwire`, which allows the one decoy sector it rewrites
+  itself, from then on to the end of the test, so the writes of a hidden
+  volume beside decoy data are findings.
 - **The window** opens in `session.follow_soft_reboot`, just before the
   trigger, after a guest `sync`: it covers the activation, the decoy's own
   shutdown and the switch. A switch that does not land in the hidden root (no

@@ -351,53 +351,7 @@ pub(super) fn widen_claims<F: Filesystem>(
     widened
 }
 
-/// The block devices the filesystem mounted as `mount` keeps its data on, as
-/// sysfs directories: each device of a btrfs or bcachefs filesystem, the one
-/// device of any other. `None` when a device of it is not there or none
-/// shows at all, as for an overlay, FUSE, a network filesystem or a tmpfs.
-/// The error names the first place that is there but could not be read,
-/// for another reason than that it is not there, where it may have shown a
-/// device of it: a device node, a `dev` attribute, or a listing of
-/// `/sys/block` or `/sys/fs/btrfs`.
-pub(super) fn filesystem_devices<F: Filesystem>(
-    fs: &F,
-    mount: &MountEntry,
-) -> Result<Option<Vec<PathBuf>>, PathBuf> {
-    let source = mount.source.to_string_lossy();
-    let each = |devices: Vec<String>| -> Result<Option<Vec<PathBuf>>, PathBuf> {
-        let mut dirs = Vec::new();
-        for device in devices {
-            match blockdev::resolve_spec_or_unread(fs, &device)? {
-                Some(dir) => dirs.push(dir),
-                None => return Ok(None),
-            }
-        }
-        Ok(Some(dirs))
-    };
-    if mount.fstype == "bcachefs" && source.contains(':') {
-        // bcachefs names every device of a filesystem of several in its
-        // source, `/dev/sdb:/dev/sdc`; its device number is the first one's.
-        return each(source.split(':').map(str::to_string).collect());
-    }
-    let Some(device) = blockdev::device_of_mount_or_unread(fs, mount)? else {
-        return Ok(None);
-    };
-    // Only a btrfs filesystem lies on devices its mount does not name.
-    let members = if mount.fstype == "btrfs" {
-        blockdev::btrfs_members(fs, &dir_name(&device))?
-    } else {
-        Vec::new()
-    };
-    if members.len() < 2 {
-        return Ok(Some(vec![device]));
-    }
-    each(
-        members
-            .iter()
-            .map(|member| format!("/dev/{member}"))
-            .collect(),
-    )
-}
+pub(super) use crate::blockdev::filesystem_devices;
 
 /// Why a check cannot tell, where sysfs shows the devices `what` is on
 /// (`its filesystem`, say), but NAILS cannot read a place that shows them;

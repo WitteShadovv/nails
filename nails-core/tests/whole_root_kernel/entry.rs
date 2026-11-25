@@ -1961,3 +1961,38 @@ fn a_launcher_that_cannot_be_written_never_fails_the_entry() {
 
 #[path = "entry_labels.rs"]
 mod labels;
+
+/// With the write tripwire asked for, an entry whose hidden root lies on no
+/// block device (here a tmpfs) is refused before it mounts anything or arms
+/// the switch, and the runtime pieces it wrote are rolled back: the write
+/// counters could not tell its writes from the decoy's. Without the
+/// tripwire the same entry goes through.
+#[test]
+fn the_write_tripwire_refuses_an_entry_the_counters_cannot_watch() {
+    let _ = Rerun::new(test_path!(
+        the_write_tripwire_refuses_an_entry_the_counters_cannot_watch
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        let mut inputs = world.inputs();
+        inputs.write_tripwire = true;
+        let refused = entry::prepare(&paths, &inputs, &FakeHost::default())
+            .expect_err("the tripwire cannot watch a hidden root on a tmpfs");
+        let text = refused.to_string();
+        assert!(text.contains("write tripwire"), "{text}");
+        assert!(text.contains("no block device"), "{text}");
+        assert!(!paths.plan().exists(), "a refused entry left its plan");
+        assert_ne!(
+            fstype_at(&paths.nextroot()).as_deref(),
+            Some("overlay"),
+            "a refused entry mounted the next root"
+        );
+
+        inputs.write_tripwire = false;
+        let entry = entry::prepare(&paths, &inputs, &FakeHost::default()).expect("the entry");
+        assert!(entry.plan.write_tripwire.is_none());
+        entry::rollback(&paths);
+    });
+}

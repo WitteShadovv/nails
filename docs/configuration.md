@@ -837,7 +837,13 @@ writes.
   decoy's, a folder or subvolume accepted with `--allow-decoy-storage`), one
   that is a file on a disk (a container opened through a loop device; its
   writes also write the file's inode and the journal), a hidden root without
-  a block device, and a disk whose counters cannot be read. Keep the hidden
+  a block device, a disk whose counters cannot be read or whose I/O the kernel
+  does not count (`queue/iostats` 0), a decoy filesystem whose devices cannot
+  be read, and a decoy none of whose filesystems lies on a disk the counters
+  can watch. The disks are those of every device of every decoy filesystem, as
+  the pre-flight checks read them (each device of a btrfs filesystem of
+  several). A disk whose I/O counting is turned off during the session powers
+  the machine off as a write does. Keep the hidden
   volume on a disk or partition of its own, or leave the tripwire off.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
@@ -874,6 +880,18 @@ off, though what was written since the switch counts at its first poll. Where
 the last step before the switch could not take the counters, the watcher takes
 its own when it starts, and what was written before that does not count. A root
 user in the hidden session can stop the watcher.
+
+The watcher runs the tripwire wherever the session plan records its disks,
+whatever its copy of the settings says, and alerts ("Disk write monitor not
+running") where the settings ask for it and no plan records them. It does not
+start again: a watcher that crashes leaves the session without the tripwire
+for the rest of it, and its output goes nowhere, so nothing says so. The last
+step before the switch runs a `sync` of every filesystem, so a network
+filesystem that does not answer holds the switch up, until the switch's
+timeout guard powers the machine off. A btrfs decoy mounted with
+`discard=async` discards freed blocks some time after it freed them: a discard
+the decoy's own last writes left queued can reach the disk after the switch
+and power the machine off.
 
 ## Sleep policy
 
