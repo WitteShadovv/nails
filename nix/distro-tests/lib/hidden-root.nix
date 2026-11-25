@@ -71,7 +71,7 @@ let
     [Unit]
     Description=Boot marker
     DefaultDependencies=no
-    Before=sysinit.target local-fs-pre.target systemd-fsck-root.service systemd-remount-fs.service systemd-random-seed.service systemd-tmpfiles-setup.service systemd-journal-flush.service systemd-update-utmp.service
+    Before=sysinit.target systemd-journald.service local-fs-pre.target systemd-fsck-root.service systemd-remount-fs.service systemd-random-seed.service systemd-tmpfiles-setup.service systemd-journal-flush.service systemd-update-utmp.service
 
     [Service]
     Type=oneshot

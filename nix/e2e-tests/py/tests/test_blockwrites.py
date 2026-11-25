@@ -33,6 +33,8 @@ class FakeQmp:
         self.counts: dict[tuple[str, str], int] = {}
         self.bitmaps: dict[str, list[str]] = {"#block100": [], "#block200": []}
         self.status = "running"
+        self.serials: dict[str, str] = {}
+        self.fail_transactions = False
 
     def send(self, command: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         args = args or {}
@@ -50,6 +52,8 @@ class FakeQmp:
                     ]
                 out.append(block)
             return {"return": out}
+        if command == "transaction" and self.fail_transactions:
+            raise RuntimeError("QMP said no")
         if command == "transaction":
             for action in args["actions"]:
                 data = action["data"]
@@ -59,6 +63,8 @@ class FakeQmp:
             self.bitmaps[args["node"]].remove(args["name"])
         if command == "query-status":
             return {"return": {"status": self.status}}
+        if command == "qom-get":
+            return {"return": self.serials.get(args["path"], "")}
         return {"return": {}}
 
     def commands(self) -> list[str]:
@@ -84,9 +90,12 @@ class FakeMachine:
         self.crashed = 0
         self.monitor: list[str] = []
         self.typed: list[str] = []
+        self.hidden_serials = ""
 
     def succeed(self, *commands: str, timeout: int | None = None) -> str:
         self.ran.extend(commands)
+        if "lsblk" in commands[0]:
+            return self.hidden_serials
         return ""
 
     def log(self, msg: str) -> None:
@@ -308,6 +317,77 @@ class Verdicts(unittest.TestCase):
         self.assertFalse(blockwrites.needs_control(oracle))
         oracle.findings.append(self.finding(blockwrites.SWITCH, WRITERS[:1]))
         self.assertTrue(blockwrites.needs_control(oracle))
+
+
+class HiddenDrives(unittest.TestCase):
+    def blocks(self) -> list[dict[str, Any]]:
+        root = json.loads(json.dumps(ROOT))
+        data = json.loads(json.dumps(DATA))
+        extra = {
+            "device": "drive4",
+            "qdev": "/dev/extra",
+            "inserted": {"node-name": "#block400", "file": "/x/empty1.qcow2"},
+        }
+        data["qdev"] = "/dev/data"
+        return [root, data, extra]
+
+    def test_the_hidden_volume_s_serials_leave_every_other_drive_a_decoy_drive(
+        self,
+    ) -> None:
+        serials = {"drive2": "data", "drive4": "extra"}
+        decoy, other = blockwrites.drives(self.blocks(), serials, {"data"})
+        self.assertEqual([d.device for d in decoy], ["drive1", "drive4"])
+        self.assertEqual([d.device for d in other], ["drive2"])
+        # Without them, the extra disks are not judged.
+        decoy, other = blockwrites.drives(self.blocks(), serials, None)
+        self.assertEqual([d.device for d in decoy], ["drive1"])
+
+    def test_the_hidden_start_tells_the_hidden_drives_and_needs_its_hold_line(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        machine.hidden_serials = "data\n"
+        blockwrites.before_switch(machine, "activate")
+        assert oracle.window is not None
+        oracle.window.other[0] = blockwrites.Drive("drive2", "#block200", "f", "data")
+        oracle.window.decoy[0] = blockwrites.Drive("drive1", "#block100", "f", "root")
+        blockwrites.after_switch(machine, "activate", True, None, None, hidden=True)
+        self.assertEqual(oracle.hidden, {"data"})
+        self.assertEqual([d.device for d in oracle.window.other], ["drive2"])
+        self.assertIn("without the mark unit's hold line", oracle.errors[0])
+
+    def test_a_plain_soft_reboot_that_lands_hidden_drops_its_window(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "soft-reboot", control=True)
+        blockwrites.after_switch(machine, "soft-reboot", True, 5, None, hidden=True)
+        self.assertFalse(blockwrites.watching(machine))
+        self.assertIn("landed in the hidden root", oracle.errors[0])
+
+    def test_a_failed_cut_is_an_oracle_error_not_a_failure(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        machine.qmp_client.fail_transactions = True
+        blockwrites.at_hold(machine, opened_here=True)
+        self.assertIn("the cut failed", oracle.errors[0])
+        oracle.raise_on_findings()  # report mode
+
+    def test_an_older_hold_and_release_keep_no_answer_back(self) -> None:
+        machine, oracle = installed()
+        machine.full_console_log += ["blkstat-mark hold", "blkstat-mark release"]
+        since = len(machine.full_console_log)
+        machine.full_console_log.append("blkstat-mark hold")
+        blockwrites.at_hold(machine, opened_here=True, since=since)
+        self.assertEqual(machine.typed, [blockwrites.GO])
+
+    def test_a_test_can_ask_for_no_control(self) -> None:
+        machine, oracle = installed()
+        oracle.findings.append(
+            blockwrites.Finding("a", blockwrites.SWITCH, "drive1", True, [(0, 1)], [])
+        )
+        self.assertTrue(blockwrites.needs_control(oracle))
+        blockwrites.skip_control(machine, "its fstab state breaks a soft-reboot")
+        self.assertFalse(blockwrites.needs_control(oracle))
+        self.assertIn("fstab state", oracle.verdict()[0][0])
 
 
 class Threads(unittest.TestCase):

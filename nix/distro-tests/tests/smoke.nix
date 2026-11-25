@@ -173,9 +173,10 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import journal_tail, session  # noqa: E402
 
-    # The block-write oracle: QEMU counts every write to the decoy disk from
+    # The block-write oracle: QEMU counts the writes to the decoy disk from
     # the trigger of a switch into the hidden root until the session ends
-    # (nails_e2e.blockwrites); the end of the script fails for each one.
+    # (nails_e2e.blockwrites); the end of the script reports them with its
+    # verdicts (report mode: it fails no test).
     from nails_e2e import blockwrites  # noqa: E402
 
     blockwrites.install(

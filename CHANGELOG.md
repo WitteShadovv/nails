@@ -58,17 +58,19 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
-- The NixOS VM tests and the distribution smoke, records, apt-shutdown and Nix tests count every
-  write to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
+- The NixOS VM tests and the distribution smoke, records, apt-shutdown and Nix tests count the
+  writes to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
   the trigger of the switch into the hidden root until the session ends at the way back (cut by
   a marker unit at the decoy's start) or at a power-off (which QEMU holds until the bitmaps are
-  read), and print each one with its sector ranges and, on ext4, the file or metadata area it
-  holds. Two verdicts judge them: the switch phase must write no file and no kind of ext4
-  metadata that a plain soft-reboot of the decoy in the same test does not (the control, run at
-  the end of the test where it has none), and the session phase must write nothing at all. Both
-  report and fail no test for now; the session phase becomes strict with the decoy disk's
-  read-only fence. A session entered without `follow_soft_reboot` or the fault tests' way out,
-  the access-time scenarios, the Fedora gate and the oracle images do not run it (see
+  read), and report each one with its sector ranges and, on ext4, the file or metadata area it
+  holds. Discards count on the NixOS root disk, not on the distribution images' drive. Two
+  verdicts judge them: the switch phase must write no file and no kind of ext4 metadata that a
+  plain soft-reboot of the decoy in the same test does not (the control, run at the end of the
+  test where it has none), and the session phase must write nothing at all. Both only report and
+  fail no test; they compare files and kinds of metadata rather than blocks, and a write near a
+  cut can count in the phase beside it (the limits are listed with the oracle). A session entered
+  without `follow_soft_reboot` or the fault tests' way out, the distribution access-time scenarios,
+  the Fedora gate and the distribution oracle images do not run it (see
   [The block-write oracle](nix/e2e-tests/README.md#the-block-write-oracle)).
 
 - `decoy-persistence` judges tuned, tuned-ppd, firewalld and ABRT by how their units start them, the
@@ -3134,8 +3136,10 @@ of this changelog for that version becomes the release notes word for word, and
   the first sector of the ESP, most likely vfat's clean mark in its boot sector as the last
   read-write mount of the ESP, kept by the session's read-only bind, ends during the way back (the
   cause is not confirmed). Besides, the switch itself writes what the decoy's own stop jobs write
-  at a plain soft-reboot (`random-seed`, `wtmp`, DHCP leases and the like), stamped with the
-  activation's time.
+  at a plain soft-reboot (`random-seed`, `wtmp`), stamped with the activation's time; dhcpcd's lease
+  and `/etc/resolv.conf` where it binds a lease then; and an activation with a hidden NixOS
+  configuration (`--nixos-flake`) writes the decoy's `/nix/var/nix` (its store database's
+  `db.sqlite-shm`, `temproots`).
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in

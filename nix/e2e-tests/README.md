@@ -326,43 +326,51 @@ packaged in nixpkgs, so there is none. The bodyfiles feed `mactime` directly.
 
 ### The block-write oracle
 
-`py/nails_e2e/blockwrites.py` proves, per session, that nothing wrote to the
-decoy disk, without knowing which program might. QEMU keeps a dirty bitmap
-(512-byte granularity) of every decoy drive on the host, where the guest cannot
-reach it; it records every write, write-zeroes and discard.
+`py/nails_e2e/blockwrites.py` counts the writes to the decoy disk during each
+session from the host, without knowing which program might write, and reports
+them. QEMU keeps a dirty bitmap (512-byte granularity) of every drive on the
+host, where the guest cannot reach it; it records every write and write-zeroes,
+and every discard a drive with `discard=unmap` passes on (the NixOS root disk
+has it; the distribution image's IDE drive, which nix-vm-test defines without
+an id, does not, so its discards are not counted).
 
-- **Decoy drives**: every writable drive but the extra disks of
-  `emptyDiskImages` (`empty<N>.qcow2`: the hidden `data` disk, external disks),
-  whose writes are reported, never asserted. On NixOS that is the root disk and
-  the writable UEFI variable store where the VM has one; on a distribution VM
-  the image's one drive. No allowed extent is set: every fixture keeps the
-  hidden volume on another disk or in RAM.
+- **Decoy drives**: every writable drive but the ones the hidden volume lies
+  on. The oracle reads those from the session plan's hidden root at the hidden
+  root's start (`hidden_serials`: the serials of the devices below it) and
+  takes every other drive as a decoy drive: the root disk, a disk with a decoy
+  filesystem (`/srv/data` of `session-decoy-mount-table`, the disks of
+  `session-fstab-policy` and `preflight-decoy-filesystem`), the UEFI variable
+  store, and a disk the session mounts itself. Until a session has started, and
+  where the hidden volume lies on no drive with a serial, it falls back to the
+  extra disks of `emptyDiskImages` (`empty<N>.qcow2`) as the hidden volume's.
+  The hidden volume's drives are reported, never judged. No allowed extent is
+  set: every fixture keeps the hidden volume on another disk or in RAM.
 - **The window** opens in `session.follow_soft_reboot`, just before the
   trigger, after a guest `sync`: it covers the activation, the decoy's own
   shutdown and the switch. A switch that does not land in the hidden root (no
   overlay at `/`) drops it. The decoy's `blkstat-mark` unit (`lib/vm-config.nix`;
   `setupHiddenRootMarked` installs it on a distribution VM in the tests that
   run the oracle; plain `setupHiddenRoot` leaves the decoy as it was, as the
-  real-image oracle images it) prints `blkstat-mark hold`
-  on the serial console at every start of the service manager after 8 s of
-  uptime, before the units that write early in a start, again each second (a
-  kernel line can cut one in two), and waits, at most 15 s, for the line
-  `blkstat-go`. The host cuts the bitmaps at the first hold line it reads and
-  then types `blkstat-go` on the serial console (`send_console`): the driver's
-  console reader can fall seconds behind the guest in the burst of lines a
-  switch prints, so a wait of fixed length would not do. The test fails when the
-  `release` line came before the cut, and when a way back brings no hold line.
-  At the hidden root's start the cut splits the window into the phases `switch`
-  and `session`. On the way back it ends the window, so the decoy's own start
-  does not count. While a window is open QEMU pauses at a guest power-off
-  (`set-action shutdown=pause`) until the host has read the bitmaps, then quits;
-  `machine.crash()` and the end of the script read an open window live.
-- **The findings** are printed per window, drive and phase: the sector
-  ranges written and, on ext4, what each holds (the superblock, a group
-  descriptor, a bitmap, the inode-table slots with the paths of the inodes in
-  use, the journal, or a file's data block), from a raw copy of the drive and
-  host `sfdisk` and `debugfs`. btrfs and other filesystems get the sector
-  ranges only.
+  real-image oracle images it) prints `blkstat-mark hold` on the serial console
+  at every start of the service manager after 8 s of uptime, before journald
+  and the units that write early in a start, again each second (a kernel line
+  can cut one in two), and waits, at most 15 s, for the line `blkstat-go`. The
+  host cuts the bitmaps at the first hold line it reads and then types
+  `blkstat-go` on the serial console (`send_console`): the driver's console
+  reader can fall seconds behind the guest in the burst of lines a switch
+  prints, so a wait of fixed length would not do. At the hidden root's start
+  the cut splits the window into the phases `switch` and `session`; on the way
+  back it ends the window. While a window is open QEMU pauses at a guest
+  power-off (`set-action shutdown=pause`) until the host has read the bitmaps,
+  then quits; `machine.crash()` and the end of the script read an open window
+  live.
+- **The findings** are printed per window, drive and phase: the sector ranges
+  written and, on ext4, what each holds (the superblock, a group descriptor, a
+  bitmap, the inode-table slots with the paths of the inodes in use, the
+  journal, or a file's data block), from a raw copy of the drive and host
+  `sfdisk` and `debugfs`. btrfs and other filesystems get the sector ranges
+  only. Every test's report is kept as `<test>.block-writes.txt` in the
+  `e2e-logs-shard-N` artifact, a passing test's too.
 - **The verdicts** come at the end of the test script (the closing step of
   every NixOS test, `blockwrites.finish([vm])` in the distribution tests). The
   switch phase holds when every file and every kind of ext4 metadata it wrote
@@ -371,29 +379,53 @@ reach it; it records every write, write-zeroes and discard.
   soft-reboots and runs no `nails` command is measured as the control, and
   where the test ran none the oracle runs one when the script ends (starting
   the machine first when the test left it off, and installing the mark unit on
-  a distribution VM that came up from its pristine image). At a control's hold
-  line the host first types `blkstat-sync`, and the unit flushes the page cache
-  and says `blkstat-mark synced` before the cut, so the control holds what the
-  decoy's stop jobs wrote even where it reaches the disk late; a session's
-  switch gets no such flush, and its late writes count in its session phase.
-  A test's per-test report (`<test>.block-writes.txt`, beside the failure logs
-  in the `e2e-logs-shard-N` artifact) is kept for passing tests too. The session phase holds when nothing was written at all.
-  `SWITCH_VERDICT` and `SESSION_VERDICT` in `blockwrites.py` are `report` now:
-  the verdicts and findings are printed and no test fails. `strict` fails the
-  test, and an oracle error fails it too where a verdict is strict; the session
-  phase turns strict once the decoy disk is read-only for the session.
-- **What next writes** (named in the CHANGELOG's known issues): in the switch
-  phase the decoy's own stop jobs; in the session phase the decoy root's ext4
-  superblock and a journal block at a power-off from the session, what the decoy
-  wrote just before the switch (no flush at the switch), and, in
-  `session-decoy-mount-table`, the first sector of the ESP.
+  a distribution VM that came up from its pristine image), unless the test asks
+  for none (`skip_control`: `session-fstab-policy`, whose decoy's
+  blk-availability.service unmounts its LVM filesystem at a plain soft-reboot
+  and leaves the next start in emergency mode). At a control's hold line the
+  host first types `blkstat-sync`, and the unit flushes the page cache and says
+  `blkstat-mark synced` before the cut, so the control holds what the decoy's
+  stop jobs wrote even where it reaches the disk late. The session phase holds
+  when nothing was written at all. `SWITCH_VERDICT` and `SESSION_VERDICT` in
+  `blockwrites.py` are `report`: the findings, the verdicts and the oracle's
+  errors are printed, and no test fails. `strict` fails the test, an oracle
+  error included; the session phase is to turn strict once the decoy disk is
+  read-only for the session, after the limits below are fixed.
 
-Not covered: a session entered without `follow_soft_reboot` or the fault tests'
-`emergency_outcome`, the access-time
-scenarios, the Fedora gate and the oracle images; a hidden NixOS system built
-without the mark unit splits no phase at its start (the way back's cut is the
-decoy's); and a switch that is refused and restarts the decoy drops its window,
-the activation's writes included.
+**What next writes** (named in the CHANGELOG's known issues). In the switch
+phase: the decoy's own stop jobs (`random-seed`, `wtmp`, the directories of
+the private `/tmp` of the units that stop); what dhcpcd writes whenever it binds
+a lease (`eth0.lease`, `/etc/resolv.conf`), which is no stop job and falls in a
+window or a control by chance; and, for an activation with a hidden NixOS
+configuration (`--nixos-flake`), the activation's own writes to the decoy's
+`/nix/var/nix` (its store database's `db.sqlite-shm`, `temproots`). In the
+session phase: the decoy root's ext4 superblock and a journal block at a
+power-off from the session; what the decoy wrote just before the switch,
+where it reaches the disk after it; and, in `session-decoy-mount-table`, the
+first sector of the ESP.
+
+**Limits, to fix before a verdict turns strict.**
+
+- Items, not blocks: the switch verdict compares files and kinds of ext4
+  metadata. A write to an inode-table block, a bitmap or the journal that the
+  control also wrote passes, whatever inode or block it changed; a file the
+  control wrote passes however many times or wherever the switch wrote it.
+- Attribution at the cuts: a unit with `DefaultDependencies=no` that is not
+  ordered after the mark unit can write before the cut and count in the phase
+  before. The late-cut check compares indices of the driver's console log, not
+  times: it sees a release line that came in before the cut, not a write that
+  the guest made after its hold and before the host's cut. A hidden start
+  without a hold line (a hidden NixOS system built without the mark unit) is an
+  oracle error: its switch and session phases are one.
+- A switch that is refused and restarts the decoy drops its window, the
+  activation's writes included. A test that ends inside the hidden root has no
+  control. A disk the session mounts and writes itself counts as a decoy
+  disk.
+
+Not covered: a session entered without `follow_soft_reboot` or the fault
+tests' `emergency_outcome`; the distribution access-time scenarios, the Fedora
+gate and the distribution oracle images (`nix/distro-tests/oracle-images.nix`),
+which install no oracle. The NixOS `oracle-images` test runs it like any other.
 
 ## Assertions must be able to fail
 

@@ -81,6 +81,9 @@
     wantedBy = [ "sysinit.target" ];
     before = [
       "sysinit.target"
+      # journald opens the decoy's persistent journal as it starts, a write
+      # that would otherwise land before the cut of the way back.
+      "systemd-journald.service"
       "local-fs-pre.target"
       "systemd-fsck-root.service"
       "systemd-remount-fs.service"
@@ -131,6 +134,12 @@
       fi
     '';
   };
+
+  # The block-write oracle counts a discard only where the drive passes it on:
+  # QEMU drops it at the drive otherwise. drive1 is the root disk.
+  virtualisation.qemu.options = lib.mkIf (config.virtualisation.diskImage != null) [
+    "-set drive.drive1.discard=unmap"
+  ];
 
   # Model an amnesic decoy: journald keeps no persistent journal on the decoy
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite

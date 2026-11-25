@@ -238,7 +238,9 @@ def follow_soft_reboot(
         if cut_at is None and blockwrites.watching(machine):
             hold, _ = blockwrites.hold_and_release(lines)
             if hold is not None:
-                cut_at = blockwrites.at_hold(machine, opened_here)
+                cut_at = blockwrites.at_hold(
+                    machine, opened_here, since=console_index + hold
+                )
         if blockwrites.paused_at_shutdown(machine):
             blockwrites.finish_power_off(machine)
         stuck = stuck_lines(lines)

@@ -162,9 +162,10 @@ let
   # per power cycle. Machines without a store image are left unchanged.
   #
   # It also installs the block-write oracle on every machine
-  # (nails_e2e.blockwrites): QEMU counts every write to the decoy disk from the
+  # (nails_e2e.blockwrites): QEMU counts the writes to the decoy disk from the
   # trigger of a switch into the hidden root until the session ends, and the
-  # closing step fails the test for each one.
+  # closing step reports them with its verdicts (report mode: it fails no
+  # test).
   vmStartedPrelude = ''
     from nails_e2e import blockwrites as _nails_blockwrites
     from nails_e2e.store_image import cache_store_image as _nails_cache_store_image

@@ -184,7 +184,7 @@ in
   testScript = _: ''
     import json
 
-    from nails_e2e import session
+    from nails_e2e import blockwrites, session
 
     ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
@@ -278,6 +278,14 @@ in
         return rows[0]
 
 
+    # The block-write oracle runs no plain soft-reboot of its own at the end
+    # here: this decoy's blk-availability.service unmounts its LVM filesystem
+    # when it stops (only a session keeps its stop off), and the next start
+    # ends in emergency mode, about 7 minutes later. The switch phase is
+    # reported without a control.
+    blockwrites.skip_control(
+        machine, "a plain soft-reboot of this decoy ends in emergency mode"
+    )
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mountpoint -q /boot && mountpoint -q /srv/data")

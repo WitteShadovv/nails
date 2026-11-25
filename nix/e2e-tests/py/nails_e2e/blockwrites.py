@@ -1,28 +1,32 @@
-"""Count every guest write to the decoy disk from the host, through QEMU.
+"""Count the guest's writes to the decoy disk from the host, through QEMU.
 
 The block-write oracle: from the trigger of a switch into the hidden root until
 the session ends, QEMU dirty bitmaps (granularity 512 bytes) on every decoy
-drive record each write, write-zeroes and discard the guest makes. They live in
-QEMU, on the host, where nothing in the guest can reach them, so the proof does
-not depend on knowing which program might write. At the end of the session the
-test fails for every byte written to a decoy drive outside the allowed extents
-(none in the suite's fixtures: the hidden volume lies on another disk or in
-RAM), with the sector ranges and, on ext4, what each range holds.
+drive record each write and write-zeroes the guest makes, and each discard a
+drive with ``discard=unmap`` passes on. They live in QEMU, on the host, where
+nothing in the guest can reach them. The oracle reports what it found, with the
+sector ranges and, on ext4, what each range holds, and judges it with two
+verdicts (:data:`SWITCH_VERDICT`, :data:`SESSION_VERDICT`). Both report for
+now and fail no test; what they cannot tell is listed in
+``nix/e2e-tests/README.md``.
 
 A window opens just before the trigger of a switch (:func:`before_switch`,
 after a guest ``sync``): it covers the activation, the decoy's own shutdown and
 the switch. A switch that does not land in the hidden root discards it. It ends
 on the way back to the decoy at the hold line of the decoy's early mark unit
 (``blkstat-mark``, see ``lib/vm-config.nix``), which waits while the host cuts
-the bitmaps, so nothing the decoy's own start writes counts; at a power-off,
-which QEMU turns into a pause while a window is open (``set-action``) so the
-host can read the bitmaps before it lets QEMU exit; or live, at a crash and at
-the end of the test script. The same hold line at the hidden root's own start
-splits the window into the phases ``switch`` and ``session``, for the report.
+the bitmaps, so nothing the decoy's own start writes after the cut counts; at a
+power-off, which QEMU turns into a pause while a window is open
+(``set-action``) so the host can read the bitmaps before it lets QEMU exit; or
+live, at a crash and at the end of the test script. The same hold line at the
+hidden root's own start splits the window into the phases ``switch`` and
+``session``.
 
-Decoy drives are every writable drive but the suite's extra disks
-(``empty<N>.qcow2``: the hidden ``data`` disk, external disks), whose writes
-are reported and never asserted.
+Decoy drives are every writable drive but those the hidden volume lies on, told
+by their serial from the session plan's hidden root once a session has started
+(:func:`hidden_serials`); before that, every writable drive but the suite's
+extra disks (``empty<N>.qcow2``). Writes to the hidden volume's drives are
+reported and never judged.
 """
 
 from __future__ import annotations
@@ -93,24 +97,39 @@ class Drive:
     device: str
     node: str
     file: str
+    #: The serial of the device the drive backs, "" where it has none.
+    serial: str = ""
 
 
-def drives(blocks: list[dict[str, Any]]) -> tuple[list[Drive], list[Drive]]:
-    """The writable drives of a ``query-block`` reply: the decoy drives, then
-    the extra disks (``empty<N>.qcow2``)."""
+def drives(
+    blocks: list[dict[str, Any]],
+    serials: dict[str, str] | None = None,
+    hidden: set[str] | None = None,
+) -> tuple[list[Drive], list[Drive]]:
+    """The writable drives of a ``query-block`` reply, each with its serial
+    from ``serials`` (by device): the decoy drives, then the others. With
+    ``hidden``, the serials of the drives the hidden volume lies on, the
+    others are those drives; without it, the extra disks
+    (``empty<N>.qcow2``)."""
     decoy: list[Drive] = []
     other: list[Drive] = []
     for block in blocks:
         inserted = block.get("inserted")
         if not inserted or inserted.get("ro"):
             continue
+        device = str(block.get("device") or block.get("qdev") or "")
         drive = Drive(
-            device=str(block.get("device") or block.get("qdev") or ""),
+            device=device,
             node=str(inserted.get("node-name", "")),
             file=str(inserted.get("file", "")),
+            serial=(serials or {}).get(device, ""),
         )
         name = os.path.basename(_backing_file(inserted))
-        if re.fullmatch(r"empty\d+\.qcow2", name):
+        if hidden is not None:
+            is_other = bool(drive.serial) and drive.serial in hidden
+        else:
+            is_other = re.fullmatch(r"empty\d+\.qcow2", name) is not None
+        if is_other:
             other.append(drive)
         else:
             decoy.append(drive)
@@ -467,6 +486,11 @@ class Oracle:
         #: Whether a control's window had no cut, so it takes in the decoy's
         #: own start too.
         self.uncut_control = False
+        #: The serials of the drives the hidden volume lies on, once a session
+        #: told them (:func:`hidden_serials`).
+        self.hidden: set[str] | None = None
+        #: Why the test's end runs no control (:func:`skip_control`).
+        self.no_control: str | None = None
         self.serial = 0
         #: Held by every step that reads or changes the window, from the test
         #: script's thread and from the watch thread (:func:`install`).
@@ -514,7 +538,8 @@ class Oracle:
         if self.window is not None:
             return
         self.machine.succeed("sync")
-        decoy, other = drives(self._qmp("query-block"))
+        blocks = self._qmp("query-block")
+        decoy, other = drives(blocks, self._serials(blocks), self.hidden)
         if not decoy:
             self.errors.append(f"{label}: no decoy drive to watch")
             return
@@ -528,6 +553,32 @@ class Oracle:
             f"block-write oracle: {label}: watching "
             + ", ".join(d.device or d.node for d in decoy)
         )
+
+    def _serials(self, blocks: list[dict[str, Any]]) -> dict[str, str]:
+        """The serial of each drive's device, by drive ("" where it has none
+        or QEMU cannot say)."""
+        found: dict[str, str] = {}
+        for block in blocks:
+            qdev = block.get("qdev")
+            if not qdev or not block.get("inserted"):
+                continue
+            try:
+                serial = self._qmp("qom-get", {"path": qdev, "property": "serial"})
+            except Exception:  # noqa: BLE001 - a device without a serial
+                serial = ""
+            found[str(block.get("device") or qdev)] = str(serial or "")
+        return found
+
+    def learn_hidden(self, serials: set[str]) -> None:
+        """Take ``serials`` as the hidden volume's drives, and sort the open
+        window's drives by them."""
+        self.hidden = serials
+        window = self.window
+        if window is None:
+            return
+        tracked = window.decoy + window.other
+        window.decoy = [d for d in tracked if not (d.serial and d.serial in serials)]
+        window.other = [d for d in tracked if d.serial and d.serial in serials]
 
     def cut(self, phase: str) -> None:
         """End the window's current phase and start ``phase``, atomically."""
@@ -709,9 +760,10 @@ class Oracle:
                 continue
             control = self.controls.get(finding.drive)
             if control is None:
+                why = f" ({self.no_control})" if self.no_control else ""
                 switch.append(
                     f"{finding.label}: {finding.drive}: no plain soft-reboot to judge "
-                    "the switch phase by"
+                    f"the switch phase by{why}"
                 )
                 continue
             extra = sorted(items_of(finding.writers) - control)
@@ -917,7 +969,9 @@ def install(machine: Any, tools: dict[str, str], watch: bool = True) -> Oracle:
 
     def wait_for_shutdown(*args: Any, **kwargs: Any) -> Any:
         if oracle.window is not None:
-            wait_for_exit(machine, None)
+            timeout = kwargs.get("timeout", args[0] if args else None)
+            seconds = getattr(timeout, "total_seconds", lambda: timeout)()
+            wait_for_exit(machine, seconds)
         return original_wait(*args, **kwargs)
 
     def crash(*args: Any, **kwargs: Any) -> Any:
@@ -1031,7 +1085,7 @@ def before_switch(machine: Any, label: str, control: bool = False) -> bool:
     return oracle.window is not None
 
 
-def at_hold(machine: Any, opened_here: bool) -> int:
+def at_hold(machine: Any, opened_here: bool, since: int | None = None) -> int:
     """At the mark unit's hold line: cut the window, then end the unit's wait
     by typing :data:`GO` on the serial console, unless it already stopped
     waiting. Returns the console index of the cut, to check the release line
@@ -1045,9 +1099,15 @@ def at_hold(machine: Any, opened_here: bool) -> int:
             if oracle.window is not None:
                 if oracle.window.control and send is not None:
                     _flush(machine, oracle, send)
-                oracle.cut(SESSION if opened_here else "after the way back")
+                try:
+                    oracle.cut(SESSION if opened_here else "after the way back")
+                except Exception as e:  # noqa: BLE001 - judged with the rest
+                    oracle.errors.append(f"the cut failed: {e}")
     cut_at = len(machine.full_console_log)
-    _, release = hold_and_release(machine.full_console_log[-200:])
+    # Only this switch's lines say whether the unit stopped waiting: an older
+    # hold and release pair would keep the answer back.
+    lines = machine.full_console_log[since if since is not None else -200 :]
+    _, release = hold_and_release(lines)
     if send is not None and release is None:
         send(GO)
     return cut_at
@@ -1066,6 +1126,31 @@ def _flush(machine: Any, oracle: Oracle, send: Any) -> None:
         time.sleep(
             0.1
         )  # sync-lint: allow sleep -- polls the console under the deadline
+
+
+#: The shell that names the serials of the drives below the session plan's
+#: hidden root, one per line, in the hidden session.
+_HIDDEN_SERIALS = (
+    'r=$(sed -n \'s/.*"hidden_root":"\\([^"]*\\)".*/\\1/p\' '
+    "/run/overlay-runtime/plan.json); "
+    's=$(findmnt -nro SOURCE --target "$r" | head -n 1 | sed "s/\\[.*//"); '
+    'lsblk -nrso SERIAL "$s" 2>/dev/null | sort -u || true'
+)
+
+
+def hidden_serials(machine: Any) -> set[str]:
+    """The serials of the drives the session plan's hidden root lies on, read
+    in the hidden session; empty where it lies on none (a loop device in RAM,
+    or a drive with no serial)."""
+    return {s for s in machine.succeed(_HIDDEN_SERIALS).split() if s}
+
+
+def skip_control(machine: Any, why: str) -> None:
+    """Run no control at the end of the test, for ``why``; the switch phase
+    is then judged by the test's own plain soft-reboots alone."""
+    oracle = oracle_of(machine)
+    if oracle is not None:
+        oracle.no_control = why
 
 
 def is_control(trigger: str) -> bool:
@@ -1111,6 +1196,19 @@ def _after_switch(
             oracle.errors.append(
                 f"{label}: a plain soft-reboot landed in the hidden root"
             )
+            oracle.discard()
+            return
+        try:
+            found = hidden_serials(oracle.machine)
+        except Exception:  # noqa: BLE001 - the extra-disk rule stays
+            found = set()
+        if found:
+            oracle.learn_hidden(found)
+        if opened_here and cut_at is None:
+            oracle.errors.append(
+                f"{label}: the hidden root's start came without the mark unit's "
+                "hold line; its switch and session phases are one"
+            )
         return
     if opened_here and not oracle.window.control:
         oracle.discard()
@@ -1150,7 +1248,10 @@ def finish(machines: list[Any]) -> None:
 
 def needs_control(oracle: Oracle) -> bool:
     """Whether a session's switch phase wrote to a decoy drive that no plain
-    soft-reboot of the test was measured on."""
+    soft-reboot of the test was measured on, and the test did not ask for no
+    control (:func:`skip_control`)."""
+    if oracle.no_control is not None:
+        return False
     return any(
         f.decoy and f.phase == SWITCH and f.drive not in oracle.controls
         for f in oracle.findings

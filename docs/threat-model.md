@@ -763,8 +763,11 @@ oracle, see `nix/e2e-tests/README.md`). On NixOS, Debian 13 and Ubuntu 24.04 and
    bind) ends during the way back. Not confirmed.
 
 The switch itself writes what the decoy's own stop jobs write at any
-soft-reboot (`random-seed`, `wtmp`, DHCP leases, logs), stamped with the
-activation's time. None of these is fixed: the decoy disk read-only in the
+soft-reboot (`random-seed`, `wtmp`, logs), stamped with the activation's time,
+and what dhcpcd writes when it binds a lease then (its lease file,
+`/etc/resolv.conf`). An activation with a hidden NixOS configuration
+(`--nixos-flake`) writes the decoy's `/nix/var/nix` itself (its store
+database's `db.sqlite-shm`, `temproots`). None of these is fixed: the decoy disk read-only in the
 kernel for the session, after a flush, is the planned answer.
 
 ## Evaluation scope

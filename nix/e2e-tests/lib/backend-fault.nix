@@ -39,7 +39,9 @@
             if cut_at is None and blockwrites.watching(machine):
                 hold, _ = blockwrites.hold_and_release(lines)
                 if hold is not None:
-                    cut_at = blockwrites.at_hold(machine, False)
+                    cut_at = blockwrites.at_hold(
+                        machine, False, since=console_index + hold
+                    )
             stuck = session.stuck_lines(lines)
             if stuck:
                 machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
