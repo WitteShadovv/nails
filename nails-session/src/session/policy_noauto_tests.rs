@@ -508,3 +508,69 @@ fn a_needed_noauto_line_warns_will_not_only_where_a_line_names_its_mount() {
         );
     }
 }
+
+/// A noauto line that a line the boot starts needs, here through an option
+/// with a backslash or a tmpfs below it: only the mount is kept off as a
+/// needed line is, and the rest of the line's own mask, a decoy disk's
+/// automount, stays masked, so a unit that pulls the automount in cannot
+/// start the mount on access. The needed decision dropped the automount,
+/// which the fuzz target found
+/// (fuzz/seeds/fstab_crypttab/crash-needed-noauto-automount-*):
+/// `var-cache.automount` was neither masked nor skipped. A network share's
+/// mask holds its mount alone, and the needed skip of that mount stands in
+/// for it (crash-needed-network-noauto-mount-skipped).
+#[test]
+fn a_needed_noauto_line_keeps_its_automount_masked() {
+    let disk = "/dev/vda6 /var/cache ext4 noauto 0 0\n";
+    for (line, needer, rest) in [
+        (
+            disk,
+            "store /nix/.ro-store 9p trans=virt\\\\ 0 0\n",
+            &["var-cache.automount"][..],
+        ),
+        (
+            disk,
+            "tmpfs /var/cache/t tmpfs defaults 0 0\n",
+            &["var-cache.automount"][..],
+        ),
+        (
+            "srv:/x /var/cache nfs4 noauto 0 0\n",
+            "tmpfs /var/cache/t tmpfs defaults 0 0\n",
+            &[][..],
+        ),
+    ] {
+        let fstab = format!("{line}{needer}");
+        for there in [true, false] {
+            let present = |_: &Path| there;
+            let own = decide(
+                &parse_fstab(line)[0],
+                &mounts(),
+                Path::new(HIDDEN),
+                &present,
+            );
+            assert_eq!(own.masked_units()[0], "var-cache.mount", "{line} {there}");
+            assert_eq!(&own.masked_units()[1..], rest, "{line} {there}");
+            let decisions = decide_fstab(&fstab, there);
+            let decision = at(&decisions, "/var/cache");
+            let (kept_off, masked): (&[String], &[String]) = match decision {
+                Decision::Skip { skip, masked, .. } => (&skip.units, masked),
+                Decision::Mask { units, .. } => (&units[..1], &units[1..]),
+                _ => panic!("{fstab} {there}: {decision:?}"),
+            };
+            assert_eq!(kept_off, ["var-cache.mount"], "{fstab} {there}");
+            assert_eq!(masked, rest, "{fstab} {there}");
+            let kept = runtime_units(&parse_fstab(&fstab), &decisions);
+            for unit in rest {
+                assert!(
+                    kept.masks.iter().any(|mask| mask == unit),
+                    "{fstab} {there}: {kept:?}"
+                );
+                // Never recorded as a unit a target requires.
+                assert!(
+                    !kept.required_masks.iter().any(|mask| mask.unit == *unit),
+                    "{fstab} {there}: {kept:?}"
+                );
+            }
+        }
+    }
+}

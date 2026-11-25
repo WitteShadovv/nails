@@ -1273,7 +1273,8 @@ of this changelog for that version becomes the release notes word for word, and
   mount, as before, or a mount unit linked in a boot target's `.requires` directory requires it
   through requirements NAILS reads, such as `Requires=`, the line is kept off as a line the boot
   mounts: skipped where its device is there, so that the target is reached, and listed by
-  `nails check` as skipped, and masked with a warning where it is not. A skipped unit whose pulls
+  `nails check` as skipped, and masked with a warning where it is not. Its automount stays masked
+  either way. A skipped unit whose pulls
   reach the mount is masked as before. Another unit that requires the mount by name, whose pulls
   NAILS does not read, does not start, and nothing warns of a target it keeps from being reached. A
   unit file of the line's name in `/etc/systemd/system` or `/run/systemd/system`, which systemd

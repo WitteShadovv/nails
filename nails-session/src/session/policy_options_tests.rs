@@ -665,7 +665,8 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
     else {
         panic!("{absent:?}");
     };
-    assert_eq!(units, &["data.mount"]);
+    // The line's automount stays masked with it.
+    assert_eq!(units, &["data.mount", "data.automount"]);
     assert_eq!(
         unreached,
         &Some(Unreached {
@@ -704,7 +705,7 @@ fn a_noauto_line_another_line_needs_is_kept_off() {
         else {
             panic!("{fstab}: {decisions:?}");
         };
-        assert_eq!(units, &["data.mount"], "{fstab}");
+        assert_eq!(units, &["data.mount", "data.automount"], "{fstab}");
         assert_eq!(*unreached, None, "{fstab}");
     }
 
@@ -938,7 +939,10 @@ fn a_noauto_line_a_line_that_may_start_needs_may_be_mounted() {
         reason(&decisions[0]),
         "noauto, but the line for /p/l3/tmp needs its mount, so the boot may mount it"
     );
-    assert_eq!(decisions[0].masked_units(), ["p-l3.mount"]);
+    assert_eq!(
+        decisions[0].masked_units(),
+        ["p-l3.mount", "p-l3.automount"]
+    );
 }
 
 /// The fstab generator has a unit require the unit `x-systemd.requires=`
@@ -985,7 +989,7 @@ fn a_noauto_line_a_left_line_pulls_in_is_kept_off() {
                 else {
                     panic!("{pull}: {decisions:?}");
                 };
-                assert_eq!(units, &["r-a.mount"], "{pull}");
+                assert_eq!(units, &["r-a.mount", "r-a.automount"], "{pull}");
                 assert_eq!(*unreached, None, "{pull}");
             }
             assert!(matches!(decisions[1], Decision::Leave { .. }), "{pull}");

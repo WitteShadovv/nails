@@ -91,7 +91,9 @@ struct Reach {
 /// A line with an option NAILS does not read ([`unread_fstab_options`]) stays
 /// masked, as that option may have the boot mount it in other ways too:
 /// where a target requires it, or may, the mask names that target
-/// ([`Unskippable::Unread`]). `None` where the decision stands.
+/// ([`Unskippable::Unread`]). Only the mount is skipped: the rest of the
+/// mask, the line's automount, stays masked, as a unit that pulls it in
+/// would start the mount on access. `None` where the decision stands.
 pub(super) fn needed_below(
     entries: &[FstabEntry],
     decided: &[Decision],
@@ -210,16 +212,31 @@ pub(super) fn needed_below(
         });
     }
     // Only a mount starts: a swap is always kept off.
+    let mount = mount_unit(&entry.file);
+    // The rest of the mask, the line's automount, stays masked: a unit that
+    // pulls the automount in would start the mount on access.
+    let automounts: Vec<String> = masked
+        .iter()
+        .filter(|unit| **unit != mount)
+        .cloned()
+        .collect();
     let mut decision = gate(
         entry.file.clone(),
-        vec![mount_unit(&entry.file)],
+        vec![mount],
         entry,
         &units,
         reason.into(),
         present,
     );
-    if let Decision::Skip { may, .. } = &mut decision {
-        *may = may_require || by_path;
+    match &mut decision {
+        Decision::Skip {
+            may, masked: with, ..
+        } => {
+            *may = may_require || by_path;
+            with.extend(automounts);
+        }
+        Decision::Mask { units, .. } => units.extend(automounts),
+        _ => {}
     }
     Some(decision)
 }
