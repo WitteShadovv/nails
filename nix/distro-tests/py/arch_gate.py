@@ -96,9 +96,7 @@ printf '%s\\n' """
     + " ".join(f"'{key} = {value}'" for key, value in sg.KMSG_SETTINGS)
     + """ \\
   > /etc/sysctl.d/50-kmsg.conf
-mkdir -p /etc/systemd/coredump.conf.d /etc/systemd/logind.conf.d
-printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 \\
-  > /etc/systemd/coredump.conf.d/50-discard.conf
+mkdir -p /etc/systemd/logind.conf.d
 printf '%s\\n' '[Login]' HandleLidSwitch=lock HandleLidSwitchExternalPower=lock \\
   HandleLidSwitchDocked=ignore IdleAction=ignore \\
   > /etc/systemd/logind.conf.d/10-lid.conf
@@ -139,6 +137,25 @@ DRIFT_PACKAGE = "gate-drift"
 DRIFT_DIR = "/run/gate-pkg"
 # The fix check's package-drift row gives for pacman.
 DRIFT_FIX = "sudo pacman -U"
+# What check gives on the stock image before the decoy is prepared, as the
+# Arch section of the decoy requirements says: each row, its verdict, the words
+# its message and fix name, and the assertion.
+STOCK_VERDICTS: tuple[tuple[str, str, tuple[str, ...], str], ...] = (
+    ("swap", "fail", (), "check refuses the stock image's active swap file"),
+    (
+        "decoy-persistence",
+        "fail",
+        ("journal",),
+        "check refuses the stock image's persistent journal",
+    ),
+    ("sleep-policy", "warn", ("lid",), "check warns of a lid that suspends"),
+    (
+        "memory-wipe",
+        "warn",
+        ("init_on_free=1",),
+        "check warns that the stock kernel does not zero freed memory",
+    ),
+)
 # zram-generator's program, where an image ships it.
 ZRAM_GENERATOR = "/usr/lib/systemd/system-generators/zram-generator"
 
@@ -337,6 +354,33 @@ class ArchGate(fg.Gate):
 
     # --- the decoy -------------------------------------------------------
 
+    def stock(self) -> None:
+        """check on the stock image, with a hidden root mounted, before the
+        decoy is prepared: what the Arch section of the decoy requirements
+        says check gives there. It refuses the swap file arch-boxes turns on
+        and its persistent journal, and warns of the core dumps
+        systemd-coredump keeps, of a lid that suspends and of freed memory
+        that is not zeroed."""
+        self.sh("hidden-root-stock", self.hidden_root)
+        status, rows = self.check_rows("check-stock")
+        self.facts["check-stock"] = {
+            name: {k: row.get(k) for k in ("status", "message", "remediation")}
+            for name, row in rows.items()
+        }
+        for name, verdict, words, what in STOCK_VERDICTS:
+            row = rows.get(name, {})
+            text = (
+                str(row.get("message", "")) + str(row.get("remediation", ""))
+            ).lower()
+            self.check(
+                what,
+                status == 4
+                and row.get("status") == verdict
+                and all(word.lower() in text for word in words),
+                row or f"check printed no {name} row (exit {status})",
+            )
+        self.sh("hidden-root-stock-off", f"umount {fg.HIDDEN}; true")
+
     def swap_off(self) -> None:
         """The decoy's disk swap off, at every boot: every swap line of the
         fstab made noauto, as the requirements ask, and each disk swap
@@ -390,12 +434,42 @@ class ArchGate(fg.Gate):
             user_op,
         )
         self.journal()
+        self.coredump()
         self.auditd_off()
         self.locate()
         self.lsm()
         self.drift_install()
         self.clean_check()
         self.failed_positive()
+
+    def coredump(self) -> None:
+        """With the journal volatile, check warns of the core dumps
+        systemd-coredump keeps on the disk (a refusal of the row hid the
+        warning before), and names them no more once they are discarded."""
+        _, rows = self.check_rows("check-coredump")
+        row = rows.get("decoy-persistence", {})
+        text = (str(row.get("message", "")) + str(row.get("remediation", ""))).lower()
+        found = row.get("status") == "warn" and "coredump" in text
+        self.check(
+            "check warns of the core dumps systemd-coredump keeps on the disk",
+            found,
+            row or "check printed no decoy-persistence row",
+        )
+        self.vm.succeed(
+            "mkdir -p /etc/systemd/coredump.conf.d && "
+            "printf '%s\\n' '[Coredump]' Storage=none ProcessSizeMax=0 "
+            "> /etc/systemd/coredump.conf.d/50-discard.conf"
+        )
+        _, rows = self.check_rows("check-coredump-fixed")
+        row = rows.get("decoy-persistence", {})
+        text = (str(row.get("message", "")) + str(row.get("remediation", ""))).lower()
+        self.check(
+            "check names the core dumps no more once they are discarded",
+            found
+            and fg.judged_row(rows, "decoy-persistence")
+            and "coredump" not in text,
+            row if found else "not judged: check never named them",
+        )
 
     def auditd_off(self) -> None:
         """auditd is installed but off on the stock image: check names no
@@ -539,6 +613,7 @@ class ArchGate(fg.Gate):
         vm.wait_for_unit("multi-user.target")
         self.prepare()
         self.attach(fg.HIDDEN_DISK, fg.HIDDEN_BYTES)
+        self.stock()
         self.swap_off()
         self.sh("prepare-decoy", PREPARE_DECOY, 600)
         self.power_cycle("reference")
