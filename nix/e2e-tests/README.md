@@ -1290,20 +1290,22 @@ folder counted by its unit, since each start of the unit names a new one. A
 path the decoy's own start changes at every switch therefore shows nothing of
 a session. A change a run of one of the decoy's own timers made counts as the
 decoy's too, but only when that run, as the decoy's PID 1 reports it, was
-started by its timer once the way back had begun and has ended, the change
-came while it ran, and either the unit changes the same path again when the
-gate starts it once more by hand, while nothing changes that path in the 30
-seconds before that start or in as long after it as the start took, 30
-seconds at least, or the path is the stamp of the run's persistent timer,
-dated at its trigger: a daily timer of the image's that came due while the
-session ran catches up right after the way back, as it would after any
-switch. A change of a timer's run in only one of the
-plain soft-reboots does not widen what a way back may change. A timer the
-gate adds before the first entry, set to catch up at the next start of PID 1,
-is the positive control: its write after the first way back must count as its
-run's. A change of a timer's run before the switch, in the seconds between the
-time the comparison counts from and the entry, is not explained and still
-fails the check. In this driver, once auditd is off, the gate masks
+started by its timer a second or more after the switch's last step ended (PID
+1 gives a start to the second) and has ended, the path's inode changed while
+it ran, its contents last changed before the entry or while it ran, and
+either the unit changes the same path again when the gate starts it once
+more by hand, while nothing changes that path in the 30 seconds before that
+start or in as long after it as the start took, 30 seconds at least, or the
+path is the stamp of the run's persistent timer, dated at its trigger: a
+daily timer of the image's that came due while the session ran catches up
+right after the way back, as it would after any switch. A change of a
+timer's run in only one of the plain soft-reboots does not widen what a way
+back may change. A timer the gate adds before the first entry, set to catch
+up at the next start of PID 1, is the positive control: its write after the
+first way back must count as its run's. A change of a run the hidden root's
+PID 1 started before the switch, contents the session changed that a later
+run only touched, and every change of a way back whose switch's time the
+gate could not read are not explained and still fail the check. In this driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
 them one that keeps every process from being audited, and has the kernel
 record every program run from below `/run`, with the domain it runs in, and
