@@ -368,7 +368,7 @@ def auto_jobs(meminfo: Path = Path("/proc/meminfo"), cpus: int | None = None) ->
             if line.startswith("MemTotal:"):
                 total_kib = int(line.split()[1])
                 break
-    except (OSError, ValueError, IndexError):
+    except OSError, ValueError, IndexError:
         total_kib = 0
     by_memory = int((total_kib / (1024 * 1024) - RESERVED_GIB) // GIB_PER_TEST)
     cores = cpus if cpus is not None else (os.cpu_count() or 2)
@@ -526,6 +526,38 @@ def _write_nix_log(drv: str, path: Path) -> None:
     path.write_text(completed.stdout or completed.stderr, encoding="utf-8")
 
 
+#: What marks a line of the block-write oracle's report in a test's log
+#: (nix/e2e-tests/py/nails_e2e/blockwrites.py).
+ORACLE_MARK = "block-write oracle"
+
+
+def keep_oracle_report(log: Path) -> Path | None:
+    """Copy the block-write oracle's report out of ``log`` before a passing
+    test's log is removed, as ``<test>.block-writes.txt`` beside it: its
+    lines and the writer lines indented below each. The oracle reports
+    without failing a test, so a green test's report would go with its log.
+    Returns where it is kept, or ``None`` where the log has none."""
+    try:
+        lines = log.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return None
+    kept: list[str] = []
+    following = False
+    for line in lines:
+        if ORACLE_MARK in line:
+            kept.append(line)
+            following = True
+        elif following and line.startswith("    "):
+            kept.append(line)
+        else:
+            following = False
+    if not kept:
+        return None
+    report = log.with_name(log.name.removesuffix(".log") + ".block-writes.txt")
+    report.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    return report
+
+
 def _keep_failed_attempt(logs: Path, test: str, attempt: int) -> Path | None:
     """Keep the log of ``test``'s failed ``attempt`` (1 for the first) before
     its retry writes its own, as ``<test>.attempt-<attempt>.log``, so a test
@@ -657,7 +689,9 @@ def run_build(
     for test in tests:
         path = logs / f"{test}.log"
         if test not in failed or outcomes[test].not_run:
-            # Passing logs are removed; only failures are worth uploading.
+            # Passing logs are removed; only failures are worth uploading,
+            # and the block-write oracle's report of every test.
+            keep_oracle_report(path)
             path.unlink(missing_ok=True)
             continue
         if not _has_text(path):
@@ -849,7 +883,7 @@ def _stop_group(process: subprocess.Popen[bytes]) -> None:
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(process.pid, sig)
-        except (ProcessLookupError, PermissionError):
+        except ProcessLookupError, PermissionError:
             break
         if sig == signal.SIGTERM:
             try:
@@ -937,6 +971,7 @@ def run_drivers(
             outcome = _execute_driver(drivers[test], seconds, log_path, clock, base)
             if outcome.result == "pass":
                 outcome.flaky = attempt > 0
+                keep_oracle_report(log_path)
                 log_path.unlink(missing_ok=True)
             else:
                 # The driver's own global timeout ends it with a failure too.

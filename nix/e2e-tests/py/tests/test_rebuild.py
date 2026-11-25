@@ -47,7 +47,7 @@ class InstallRebuildWrapperTest(unittest.TestCase):
         )
         body = machine.shim_body()
         self.assertIn("#!/bin/sh", body)
-        self.assertIn('printf \'%s\\n\' "$*" >> /tmp/rebuild.log', body)
+        self.assertIn("printf '%s\\n' \"$*\" >> /tmp/rebuild.log", body)
         self.assertIn("exit 0", body)
         self.assertNotIn("exec", body)
 

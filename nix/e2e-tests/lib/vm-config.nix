@@ -110,7 +110,19 @@
           i=0
           while [ "$i" -lt 15 ]; do
             echo 'blkstat-mark hold' >&3
-            if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
+            if line=$(timeout --foreground 1 head -n 1 <&3); then
+              # Before it cuts a plain soft-reboot, the host asks for a flush,
+              # so what the decoy's stop jobs left in the page cache counts.
+              case "$line" in
+                *blkstat-sync*)
+                  sync
+                  echo 'blkstat-mark synced' >&3
+                  i=0
+                  continue
+                  ;;
+              esac
+              break
+            fi
             i=$((i + 1))
           done
           echo 'blkstat-mark release' >&3

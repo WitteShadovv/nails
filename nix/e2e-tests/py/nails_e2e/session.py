@@ -219,10 +219,10 @@ def follow_soft_reboot(
     trigger_uptime = guest_uptime(machine)
     # The block-write oracle's window opens before the trigger, and the mark
     # unit's hold line in the new userspace cuts it (nails_e2e.blockwrites).
-    # A trigger that runs no nails command is a plain soft-reboot: the
-    # oracle's control for the switch phase.
+    # A plain soft-reboot of the decoy is the oracle's control for the switch
+    # phase.
     opened_here = blockwrites.before_switch(
-        machine, label, control="nails" not in trigger
+        machine, label, control=blockwrites.is_control(trigger)
     )
     cut_at: int | None = None
     console_index = len(machine.full_console_log)

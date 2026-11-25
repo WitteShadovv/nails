@@ -365,10 +365,17 @@ reach it; it records every write, write-zeroes and discard.
   every NixOS test, `blockwrites.finish([vm])` in the distribution tests). The
   switch phase holds when every file and every kind of ext4 metadata it wrote
   is one a plain soft-reboot of the decoy wrote in the same test, with no path
-  allowlist: such a soft-reboot followed by `follow_soft_reboot` (a trigger with
-  no `nails` command) is measured as the control, and where the test ran none
-  the oracle runs one when the script ends (starting the machine first when the
-  test left it off). The session phase holds when nothing was written at all.
+  allowlist: a soft-reboot followed by `follow_soft_reboot` whose trigger
+  soft-reboots and runs no `nails` command is measured as the control, and
+  where the test ran none the oracle runs one when the script ends (starting
+  the machine first when the test left it off, and installing the mark unit on
+  a distribution VM that came up from its pristine image). At a control's hold
+  line the host first types `blkstat-sync`, and the unit flushes the page cache
+  and says `blkstat-mark synced` before the cut, so the control holds what the
+  decoy's stop jobs wrote even where it reaches the disk late; a session's
+  switch gets no such flush, and its late writes count in its session phase.
+  A test's per-test report (`<test>.block-writes.txt`, beside the failure logs
+  in the `e2e-logs-shard-N` artifact) is kept for passing tests too. The session phase holds when nothing was written at all.
   `SWITCH_VERDICT` and `SESSION_VERDICT` in `blockwrites.py` are `report` now:
   the verdicts and findings are printed and no test fails. `strict` fails the
   test, and an oracle error fails it too where a verdict is strict; the session

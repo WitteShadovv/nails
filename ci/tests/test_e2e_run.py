@@ -39,6 +39,8 @@ def _running(pid: int, wait: float = 5.0) -> bool:
         if time.monotonic() > deadline:
             return True
         time.sleep(0.1)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 E2E_ROOT = REPO_ROOT / "nix" / "e2e-tests"
 # A Nix identifier, such as a node name.
@@ -355,7 +357,6 @@ class RunBuildTest(unittest.TestCase):
             self.assertEqual(records[1]["result"], "fail" if require_boot else "pass")
             self.assertEqual(records[1].get("not_booted", False), require_boot)
 
-
     def environ(self, **extra: str) -> dict[str, str]:
         return {
             **os.environ,
@@ -378,6 +379,31 @@ class RunBuildTest(unittest.TestCase):
         )
         # Passing logs are removed; only failures are worth uploading.
         self.assertFalse((logs / "basic-workflow.log").exists())
+
+    def test_the_oracle_report_of_a_passing_test_is_kept(self) -> None:
+        log = self.tmp / "t.log"
+        log.write_text(
+            "boot\n"
+            "machine: block-write oracle: a: switch: decoy drive drive1: 1 bytes\n"
+            "    sectors 0: the whole disk, ext4 blocks 0-0: superblock of group 0\n"
+            "machine: other\n    indented but not the oracle's\n"
+            "machine: block-write oracle verdict: no finding\n",
+            encoding="utf-8",
+        )
+        kept = run.keep_oracle_report(log)
+        assert kept is not None
+        self.assertEqual(kept.name, "t.block-writes.txt")
+        self.assertEqual(
+            kept.read_text(encoding="utf-8").splitlines(),
+            [
+                "machine: block-write oracle: a: switch: decoy drive drive1: 1 bytes",
+                "    sectors 0: the whole disk, ext4 blocks 0-0: superblock of group 0",
+                "machine: block-write oracle verdict: no finding",
+            ],
+        )
+        (self.tmp / "u.log").write_text("nothing\n", encoding="utf-8")
+        self.assertIsNone(run.keep_oracle_report(self.tmp / "u.log"))
+        self.assertIsNone(run.keep_oracle_report(self.tmp / "missing.log"))
 
     def test_a_pass_on_retry_keeps_the_log_of_the_attempt_that_failed(self) -> None:
         logs = self.tmp / "logs"

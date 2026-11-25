@@ -431,8 +431,9 @@ jobs:
           retention-days: 90
 
       # Only the logs of failed tests, and of the failed attempt of a test
-      # that passed on its retry, which a green shard keeps too; the rest of
-      # the runner stays private.
+      # that passed on its retry, which a green shard keeps too, and the
+      # block-write oracle's report of every test (<test>.block-writes.txt);
+      # the rest of the runner stays private.
       - name: Upload failure logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

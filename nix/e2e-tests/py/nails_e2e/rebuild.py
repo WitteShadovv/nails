@@ -48,7 +48,7 @@ def install_nixos_rebuild_wrapper(
 
     lines = [
         "#!/bin/sh",
-        f'printf \'%s\\n\' "$*" >> {shlex.quote(log_path)}',
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(log_path)}",
     ]
     if marker_path is not None:
         quoted_marker = shlex.quote(marker_path)

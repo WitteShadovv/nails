@@ -63,9 +63,7 @@ class FakeMachine:
         self.commands.append(command)
         return ""
 
-    def wait_until_tty_matches(
-        self, tty: str, regexp: str, timeout: int = 900
-    ) -> None:
+    def wait_until_tty_matches(self, tty: str, regexp: str, timeout: int = 900) -> None:
         self.commands.append(f"tty{tty} {regexp}")
 
     def send_chars(self, chars: str, delay: float | None = 0.01) -> None:
@@ -76,9 +74,7 @@ class DesktopTest(unittest.TestCase):
     def test_received_reads_the_records_of_the_operators_server(self) -> None:
         machine = FakeMachine([REMINDER, DISK])
         self.assertEqual(desktop.received(machine, 1000), [REMINDER, DISK])
-        self.assertEqual(
-            machine.commands, ["cat /run/user/1000/notifications.jsonl"]
-        )
+        self.assertEqual(machine.commands, ["cat /run/user/1000/notifications.jsonl"])
 
     def test_no_records_file_means_nothing_received(self) -> None:
         self.assertEqual(desktop.received(FakeMachine(None), 1000), [])

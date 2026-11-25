@@ -24,13 +24,8 @@
 # in /dev, /dev/mapper, /proc/mounts and the kernel log. The ext4 filesystem
 # gets no label: even a neutral one shows in /dev/disk/by-label, and the
 # hidden-volume check warns about any.
-{
-  # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
-  # the root is still mounted it is reused as is, never re-formatted; after a
-  # session it is gone and a fresh one is made.
-  setupHiddenRoot = ''
-    set -eu
-
+let
+  installMark = ''
     # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py),
     # as nix/e2e-tests/lib/vm-config.nix has it on NixOS: at every start of the
     # service manager after the first 8 s of uptime, a hold line on the serial
@@ -53,7 +48,17 @@
         i=0
         while [ "$i" -lt 15 ]; do
           echo 'blkstat-mark hold' >&3
-          if timeout --foreground 1 head -n 1 <&3 >/dev/null; then break; fi
+          if line=$(timeout --foreground 1 head -n 1 <&3); then
+            case "$line" in
+              *blkstat-sync*)
+                sync
+                echo 'blkstat-mark synced' >&3
+                i=0
+                continue
+                ;;
+            esac
+            break
+          fi
           i=$((i + 1))
         done
         echo 'blkstat-mark release' >&3
@@ -83,48 +88,60 @@
       systemctl daemon-reload
       sync
     fi
+  '';
+in
+{
+  # The mark unit alone, for the oracle's own control at the end of a test
+  # (nails_e2e.blockwrites, `mark_setup`).
+  inherit installMark;
+  # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
+  # the root is still mounted it is reused as is, never re-formatted; after a
+  # session it is gone and a fresh one is made.
+  setupHiddenRoot = ''
+        set -eu
 
-    mountpoint=/mnt/data
-    store=/run/blk
-    backing="$store/data.img"
+    ${installMark}
+        mountpoint=/mnt/data
+        store=/run/blk
+        backing="$store/data.img"
 
-    if mountpoint -q "$mountpoint"; then
-      echo "Hidden root already mounted at $mountpoint"
-    else
-      # A RAM-backed home for the backing file. The cap only bounds growth: the
-      # 1 GiB image is sparse, so only what is written consumes memory.
-      mkdir -p "$store"
-      if ! mountpoint -q "$store"; then
-        mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
-      fi
-      truncate -s 1G "$backing"
-      loop=$(losetup --show -f "$backing")
-      printf '%s\n' "$loop" > /run/blk.dev
+        if mountpoint -q "$mountpoint"; then
+          echo "Hidden root already mounted at $mountpoint"
+        else
+          # A RAM-backed home for the backing file. The cap only bounds growth: the
+          # 1 GiB image is sparse, so only what is written consumes memory.
+          mkdir -p "$store"
+          if ! mountpoint -q "$store"; then
+            mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
+          fi
+          truncate -s 1G "$backing"
+          loop=$(losetup --show -f "$backing")
+          printf '%s\n' "$loop" > /run/blk.dev
 
-      if command -v cryptsetup >/dev/null 2>&1; then
-        echo 'cryptsetup present: backing the hidden root with LUKS'
-        # PBKDF2 with --iter-time 1 keeps formatting fast and avoids Argon2's
-        # memory cost in a small VM; acceptable for a test passphrase.
-        echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
-          --pbkdf pbkdf2 --iter-time 1 "$loop" -
-        echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
-        mkfs.ext4 -q /dev/mapper/data
-        mkdir -p "$mountpoint"
-        mount /dev/mapper/data "$mountpoint"
-      else
-        echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
-        mkfs.ext4 -q "$loop"
-        mkdir -p "$mountpoint"
-        mount "$loop" "$mountpoint"
-      fi
-    fi
+          if command -v cryptsetup >/dev/null 2>&1; then
+            echo 'cryptsetup present: backing the hidden root with LUKS'
+            # PBKDF2 with --iter-time 1 keeps formatting fast and avoids Argon2's
+            # memory cost in a small VM; acceptable for a test passphrase.
+            echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
+              --pbkdf pbkdf2 --iter-time 1 "$loop" -
+            echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
+            mkfs.ext4 -q /dev/mapper/data
+            mkdir -p "$mountpoint"
+            mount /dev/mapper/data "$mountpoint"
+          else
+            echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
+            mkfs.ext4 -q "$loop"
+            mkdir -p "$mountpoint"
+            mount "$loop" "$mountpoint"
+          fi
+        fi
 
-    # The whole-root layout: the root overlay's work directory (its upper is
-    # created at activation with the decoy root's mode and owner) and the
-    # configuration directory.
-    mkdir -p "$mountpoint"/root/work "$mountpoint"/config
+        # The whole-root layout: the root overlay's work directory (its upper is
+        # created at activation with the decoy root's mode and owner) and the
+        # configuration directory.
+        mkdir -p "$mountpoint"/root/work "$mountpoint"/config
 
-    echo 'Hidden root ready at '"$mountpoint"
+        echo 'Hidden root ready at '"$mountpoint"
   '';
 
   # Open and mount the hidden root of the last setupHiddenRoot again, on the

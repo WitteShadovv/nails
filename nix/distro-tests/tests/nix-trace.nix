@@ -174,6 +174,7 @@ distroVm.buildVmTest {
             "qemu_img": "${pkgs.qemu_test}/bin/qemu-img",
             "debugfs": "${pkgs.e2fsprogs}/bin/debugfs",
             "sfdisk": "${pkgs.util-linux}/bin/sfdisk",
+            "mark_setup": """${hiddenRoot.installMark}""",
         },
     )
 

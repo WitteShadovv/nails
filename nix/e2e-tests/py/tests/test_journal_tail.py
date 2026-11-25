@@ -363,7 +363,6 @@ class AllowedTest(unittest.TestCase):
                 any(p.fullmatch(line) for p in journal_tail.HIDDEN_PID1_LINES), line
             )
 
-
     def test_the_kernel_s_count_of_held_back_audit_records_is_allowed(self) -> None:
         allowed = journal_tail.KERNEL_LINES
         for line in (

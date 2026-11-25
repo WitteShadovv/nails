@@ -49,6 +49,14 @@ HOLD = "blkstat-mark hold"
 RELEASE = "blkstat-mark rel"
 #: What the host types on the serial console to end the wait, once it cut.
 GO = "blkstat-go\n"
+#: What the host types first at a plain soft-reboot's hold line: the unit
+#: flushes the page cache, so what the decoy's stop jobs wrote counts in the
+#: control, and says :data:`SYNCED`.
+SYNC = "blkstat-sync\n"
+#: What the mark unit says once it flushed.
+SYNCED = "blkstat-mark synced"
+#: How long the host waits for :data:`SYNCED`.
+SYNC_WAIT = 60.0
 
 #: The phase a window starts with: the activation, the decoy's shutdown, the
 #: switch.
@@ -70,7 +78,8 @@ SWITCH_VERDICT = REPORT
 #: Strict once the decoy disk is read-only for the session (item 2's fence).
 SESSION_VERDICT = REPORT
 
-#: The tool names :func:`install` takes.
+#: The tool names :func:`install` takes; ``mark_setup``, a shell command that
+#: installs the mark unit where the VM's image has none, is optional.
 TOOLS = ("qemu_img", "debugfs", "sfdisk")
 
 #: The most blocks of one range the report names a writer for.
@@ -1030,16 +1039,39 @@ def at_hold(machine: Any, opened_here: bool) -> int:
     guest in the burst of lines a switch prints, so a wait of fixed length
     would end before the host saw the hold line."""
     oracle = oracle_of(machine)
+    send = getattr(machine, "send_console", None)
     if oracle is not None:
         with oracle.lock:
             if oracle.window is not None:
+                if oracle.window.control and send is not None:
+                    _flush(machine, oracle, send)
                 oracle.cut(SESSION if opened_here else "after the way back")
     cut_at = len(machine.full_console_log)
     _, release = hold_and_release(machine.full_console_log[-200:])
-    send = getattr(machine, "send_console", None)
     if send is not None and release is None:
         send(GO)
     return cut_at
+
+
+def _flush(machine: Any, oracle: Oracle, send: Any) -> None:
+    """Have the mark unit flush the guest's page cache before a control's
+    cut, and wait, bounded, until it says it has."""
+    since = len(machine.full_console_log)
+    send(SYNC)
+    deadline = time.monotonic() + SYNC_WAIT
+    while not any(SYNCED in line for line in machine.full_console_log[since:]):
+        if time.monotonic() > deadline:
+            oracle.errors.append("a control's flush did not end in time")
+            return
+        time.sleep(
+            0.1
+        )  # sync-lint: allow sleep -- polls the console under the deadline
+
+
+def is_control(trigger: str) -> bool:
+    """Whether a switch's ``trigger`` is a plain soft-reboot of the decoy:
+    one that soft-reboots and runs no nails command (a reboot is none)."""
+    return "soft-reboot" in trigger and "nails" not in trigger
 
 
 def after_switch(
@@ -1144,6 +1176,10 @@ def _control(machine: Any, oracle: Oracle) -> None:
         if session.root_fstype(machine) == "overlay":
             oracle.errors.append("no control: the test ended in the hidden root")
             return
+        # A distribution VM boots its pristine image again after a power-off,
+        # without the mark unit the test installed.
+        if oracle.tools.get("mark_setup"):
+            machine.succeed(oracle.tools["mark_setup"])
         session.follow_soft_reboot(machine, CONTROL_TRIGGER, "oracle-control")
     except Exception as e:  # noqa: BLE001 - recorded, judged with the rest
         oracle.errors.append(f"the control soft-reboot failed: {e}")

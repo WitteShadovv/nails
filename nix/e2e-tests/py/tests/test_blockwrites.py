@@ -97,6 +97,8 @@ class FakeMachine:
 
     def send_console(self, chars: str) -> None:
         self.typed.append(chars)
+        if chars == blockwrites.SYNC:
+            self.full_console_log.append("blkstat-mark synced")
 
     def send_monitor_command(self, command: str) -> str:
         self.monitor.append(command)
@@ -272,6 +274,23 @@ class Verdicts(unittest.TestCase):
         self.assertEqual(oracle.findings, [])
         self.assertIn("disk.raw2: journal", oracle.controls["drive1"])
         self.assertFalse(blockwrites.needs_control(oracle))
+        # The guest flushed before the cut, and was let go after it.
+        self.assertEqual(machine.typed, [blockwrites.SYNC, blockwrites.GO])
+        self.assertEqual(oracle.errors, [])
+
+    def test_only_a_plain_soft_reboot_is_a_control(self) -> None:
+        self.assertTrue(blockwrites.is_control("systemctl soft-reboot"))
+        self.assertFalse(blockwrites.is_control("systemctl reboot"))
+        self.assertFalse(blockwrites.is_control("nails --config c activate -y"))
+        self.assertFalse(blockwrites.is_control("nails deactivate --soft-reboot"))
+
+    def test_a_flush_that_never_ends_is_an_oracle_error(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "soft-reboot", control=True)
+        machine.send_console = machine.typed.append  # type: ignore[method-assign, assignment]
+        with mock.patch.object(blockwrites, "SYNC_WAIT", 0.2):
+            blockwrites.at_hold(machine, opened_here=True)
+        self.assertIn("flush did not end", oracle.errors[0])
 
     def test_a_control_without_a_cut_is_noted_and_one_that_enters_is_an_error(
         self,
