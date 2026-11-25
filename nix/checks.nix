@@ -341,6 +341,7 @@ in
       ruff check nix/distro-tests/py
       MYPYPATH=nix/distro-tests/py mypy \
         nix/distro-tests/py/access_times.py \
+        nix/distro-tests/py/arch_gate.py \
         nix/distro-tests/py/atime_walk.py \
         nix/distro-tests/py/btrfs_controls.py \
         nix/distro-tests/py/btrfs_scan.py \
@@ -350,6 +351,7 @@ in
         nix/distro-tests/py/probe_facts.py \
         nix/distro-tests/py/selinux_gate.py \
         nix/distro-tests/py/tests/test_access_times.py \
+        nix/distro-tests/py/tests/test_arch_gate.py \
         nix/distro-tests/py/tests/test_btrfs_controls.py \
         nix/distro-tests/py/tests/test_btrfs_scan.py \
         nix/distro-tests/py/tests/test_distro_checks.py \

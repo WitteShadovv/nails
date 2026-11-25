@@ -13,9 +13,11 @@ name: Distro E2E
 #   probe    the fact probes of the Fedora and Arch images
 #   staged   the scenarios a family's admission needs: the smoke and records
 #            scenarios of each image staged for its admission (arch-boxes),
-#            with a test-only build that admits the family, and the drivers
-#            of Fedora's admission gate: its gate scenarios and the
-#            resolution of the package closures they install offline, each
+#            with a test-only build that admits the family, the drivers of
+#            Fedora's admission gate (its gate scenarios, btrfs controls and
+#            the resolution of the package closures they install offline),
+#            and the drivers of Arch's admission gate (its gate scenario and
+#            btrfs controls, with a test-only build that admits Arch), each
 #            uploading what it wrote
 #
 # A smoke scenario is a derivation that nix build runs in the Nix build
@@ -74,7 +76,7 @@ on:
           probes, such as fedora-44-enforcing), or the scenarios of the images
           staged for admission and the drivers of an admission gate, each
           driver uploading what it wrote (distros then names them, such as
-          arch-boxes-smoke or fedora-44-gate)
+          arch-boxes-smoke, arch-boxes-gate or fedora-44-gate)
         type: choice
         default: all
         options: [all, smoke, records, refusal, probe, staged]

@@ -9,10 +9,10 @@
 # 13 runs the Nix scenario among its smokes, and Debian 13 and both Ubuntu
 # images the unattended-upgrades scenario. Beside the smokes are the host
 # drivers: the records scenarios, the access-time scenarios, the refusals of the
-# families the family table does not admit, the probes, the drivers of Fedora's
-# admission gate and the oracle images. An image staged for its family's
-# admission also runs its smoke and records scenarios, with a test-only build
-# that admits the family, when a run asks for them.
+# families the family table does not admit, the probes, the drivers of the
+# admission gates of Fedora and Arch and the oracle images. An image staged for
+# its family's admission also runs its smoke and records scenarios, with a
+# test-only build that admits the family, when a run asks for them.
 {
   self,
   pkgs,
@@ -183,6 +183,8 @@ let
   # ("fedora-44-rpms"): host drivers too, run by the staged suite of
   # distro-e2e.yml, which only a dispatch selects.
   gateSet = import ./fedora-gate.nix { inherit self pkgs nix-vm-test; };
+  # The drivers of Arch's admission gate ("arch-boxes-gate"), the same kind.
+  archGateSet = import ./arch-gate.nix { inherit self pkgs nix-vm-test; };
 
   # The real btrfs decoy images of the forensic oracle, keyed
   # "<name>-oracle-images": a host driver too, run by the oracle real-image
@@ -221,7 +223,8 @@ let
       // driverTimeouts accessTimesSet accessTimesName
       // driverTimeouts refusalSet refusalName
       // stagedTimeouts
-      // gateSet.timeouts;
+      // gateSet.timeouts
+      // archGateSet.timeouts;
     # Probe name -> its attribute, for every probe a run can boot.
     probes = lib.genAttrs probeSet.runnable probeName;
     # Distribution -> its records scenario's attribute, and each access-time
@@ -234,8 +237,9 @@ let
     # Staged scenario name -> its attribute (stagedImages).
     staged = stagedTable;
     # Staged driver name -> its attribute (the same name), for every driver of
-    # Fedora's admission gate a run can boot: host drivers of the staged suite.
-    stagedDrivers = lib.genAttrs gateSet.runnable lib.id;
+    # the admission gates of Fedora and Arch a run can boot: host drivers of
+    # the staged suite.
+    stagedDrivers = lib.genAttrs (gateSet.runnable ++ archGateSet.runnable) lib.id;
   };
 
   # Every entry reduced to the derivation path of a minimal VM test, so the
@@ -268,6 +272,7 @@ tests
 // refusals
 // stagedScenarios
 // gateSet.drivers
+// archGateSet.drivers
 // oracleImages
 // {
   _metadata = metadata;
