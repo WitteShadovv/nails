@@ -49,7 +49,12 @@
 # left; the variables are set by the backdoor's shell, so nothing starts for
 # them. The decoy is made amnesic, as NAILS requires, its
 # timers are masked and cloud-init is turned off before the first measured
-# phase, so nothing the decoy schedules runs into a phase. apt's configuration
+# phase, so nothing the decoy schedules runs into a phase. Fedora 45's console
+# on tty1, kmscon, is masked as well: at about one stop in five, the moment PID
+# 1 stops it, it starts its login once more (/usr/bin/login, PAM and the issue
+# files), and no control can be made to hit or miss that race, so a way in
+# whose stop hit it and controls whose stops missed it would show reads that
+# are the decoy's own. apt's configuration
 # is not aged: NAILS compares its change times with the start of Debian's
 # unattended-upgrades helper, and refuses where it changed after it (its
 # entries still show a read, as their access times are older than a day).
@@ -471,6 +476,11 @@ distroVm.buildVmTest {
             + "if [ -d /etc/cloud ]; then touch /etc/cloud/cloud-init.disabled; fi"
         )
         vm.succeed("""${hiddenRoot.stopAptTimers}""")
+        # kmscon's race at its stop (see the header).
+        vm.succeed(
+            "if [ -e /usr/lib/systemd/system/kmsconvt@.service ]; then "
+            + "systemctl mask --now kmsconvt@tty1.service; fi"
+        )
         # The operator account, with a home and a shell as useradd makes them.
         vm.succeed(f"useradd --create-home --shell /bin/bash {OPERATOR}")
         operator_uid = vm.succeed(f"id -u {OPERATOR}").strip()
