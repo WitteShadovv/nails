@@ -323,3 +323,28 @@ fn a_passwd_file_without_a_final_newline_keeps_its_last_entry() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[1].dir, PathBuf::from("/home/op"));
 }
+
+#[test]
+fn nis_lines_commented_out_entries_and_blank_names_are_no_accounts() {
+    // Every field is filled in and numeric: only the name keeps these lines
+    // from being accounts.
+    let content = b"+:x:0:0::/:/bin/sh\n\
+-alice:x:1000:100::/home/alice:/bin/sh\n\
+#bob:x:1001:100::/home/bob:/bin/sh\n\
+:x:1002:100::/home/blank:/bin/sh\n\
+op:x:7:7::/home/op:/bin/sh\n";
+    let names: Vec<String> = parse_passwd(content)
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    assert_eq!(names, ["op"]);
+}
+
+#[test]
+fn the_local_passwd_database_finds_root_by_uid_and_by_name() {
+    // Every Linux passwd file, a Nix build sandbox's too, holds root at uid 0.
+    let root = SystemPasswd.by_uid(0).expect("root in /etc/passwd");
+    assert_eq!((root.uid, root.name.as_str()), (0, "root"));
+    assert_eq!(SystemPasswd.by_name("root"), Some(root.clone()));
+    assert_eq!(home_of_uid(0), Some(root.dir));
+}
