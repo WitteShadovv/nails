@@ -843,19 +843,14 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             run: paths.run.clone(),
             nextroot: nextroot.clone(),
             runtime_dir: paths.runtime(),
-            kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
-            pid_places: None,
-            zram: None,
             now: unix_now(),
-            mounts: read_mountinfo().unwrap(),
-            network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_kernel: None,
+            mounts: Some(read_mountinfo().unwrap()),
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
-            tail: None,
+            detach: nails_teardown::whole_root::nextroot::detach_tree,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
         };
@@ -874,67 +869,6 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         assert_timeout_guard(&world, true);
         entry::rollback(&paths);
         assert_timeout_guard(&world, false);
-    });
-}
-
-#[test]
-fn the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter() {
-    // The way back numbers the decoy's units by what the entry read in the
-    // decoy before anything ran and by the counter the switch handed over.
-    let _ = Rerun::new(test_path!(
-        the_entry_records_the_decoy_s_process_numbers_and_the_switch_its_counter
-    ))
-    .in_user_mount_ns()
-    .run(|| {
-        let world = World::new();
-        let paths = world.paths();
-        let host = FakeHost {
-            pids: fresh_pids::Record {
-                floor: Some(388),
-                anchors: vec![fresh_pids::Anchor {
-                    comm: "agetty".to_string(),
-                    tty: 0x0401,
-                    pid: 600,
-                }],
-                ..fresh_pids::Record::default()
-            },
-            ..FakeHost::default()
-        };
-        let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
-        assert_eq!(entry.plan.pids, host.pids);
-        assert_eq!(Plan::load(&paths.plan()).unwrap().pids, host.pids);
-
-        let counter = tempfile::tempdir().unwrap();
-        nails_teardown::test_support::stage_pid_counter(counter.path());
-        let env = Env {
-            run: paths.run.clone(),
-            nextroot: paths.nextroot(),
-            runtime_dir: paths.runtime(),
-            kmsg: paths.run.join("no-kmsg"),
-            systemctl: None,
-            pid_places: Some(fresh_pids::Places::under(counter.path())),
-            zram: None,
-            now: unix_now(),
-            mounts: read_mountinfo().unwrap(),
-            network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_kernel: None,
-            power_off: transition::PowerOff {
-                grace: std::time::Duration::ZERO,
-                kernel: || false,
-            },
-            tail: None,
-            selinux: &nails_teardown::whole_root::selinux::KERNEL,
-            start: nails_teardown::whole_root::program_label::Started::by_hand(),
-        };
-        assert_eq!(transition::run(&env), Outcome::Entered);
-        assert_eq!(
-            Plan::load(&paths.plan()).unwrap().pids,
-            fresh_pids::Record {
-                at_switch: Some(1625),
-                ..host.pids.clone()
-            }
-        );
-        entry::rollback(&paths);
     });
 }
 
@@ -1376,19 +1310,14 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             run: paths.run.clone(),
             nextroot: paths.nextroot(),
             runtime_dir: paths.runtime(),
-            kmsg: paths.run.join("no-kmsg"),
             systemctl: None,
-            pid_places: None,
-            zram: None,
             now: unix_now(),
-            mounts: read_mountinfo().unwrap(),
-            network: nails_teardown::whole_root::network::Places::system(&paths.run),
-            network_kernel: None,
+            mounts: Some(read_mountinfo().unwrap()),
             power_off: transition::PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: || false,
             },
-            tail: None,
+            detach: nails_teardown::whole_root::nextroot::detach_tree,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
         };
@@ -1851,7 +1780,7 @@ fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
         };
 
-        let report = emergency::run(Some(plan), &host, Finish::Return);
+        let report = emergency::run(Some(plan), &host, Finish::Default);
 
         assert_eq!(report.side, Side::Decoy);
         assert!(report.remaining.is_empty(), "{:?}", report.remaining);

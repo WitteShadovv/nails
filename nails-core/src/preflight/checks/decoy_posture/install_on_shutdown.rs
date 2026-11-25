@@ -7,9 +7,10 @@
 //! unattended-upgrades (Debian, Ubuntu) runs a shutdown helper,
 //! `unattended-upgrades.service` (`unattended-upgrade-shutdown
 //! --wait-for-signal`), that waits for logind's shutdown signal. Activation
-//! sends that signal, as `systemctl soft-reboot` does, and so does the way
-//! back with `nails deactivate` (`emergency` asks PID 1 directly and sends
-//! none). The helper does not ask what kind of shutdown comes. With
+//! sends that signal, as `systemctl soft-reboot` does, and so does any
+//! shutdown of the session through logind (the desktop's power-off, or
+//! `systemctl poweroff`); `nails deactivate` and `emergency` ask PID 1
+//! directly and send none. The helper does not ask what kind of shutdown comes. With
 //! `Unattended-Upgrade::InstallOnShutdown` on, it reads apt's configuration
 //! again on the signal and starts unattended-upgrade in its shutdown mode,
 //! which installs the pending updates its settings allow: at activation on
@@ -52,9 +53,9 @@
 //! named until it restarts, which NAILS does not see.
 //!
 //! The hidden session runs its own copy of the helper wherever the unit is
-//! enabled and not masked, on the decoy or in the session's overlay. At the
-//! way back through logind (`nails deactivate`) that copy installs the
-//! updates into the session's overlay. That alone only warns: when the
+//! enabled and not masked, on the decoy or in the session's overlay. At a
+//! shutdown of the session through logind that copy installs the updates into
+//! the session's overlay. That alone only warns: when the
 //! decoy's helper is stopped but the session starts it, and when the
 //! session's overlay turns the setting on. Where apt refuses a file the
 //! session reads, the warning says what its copy does: it starts with the
@@ -804,25 +805,25 @@ fn how_it_starts(start: &Result<SessionStart, String>, running: bool) -> String 
     }
 }
 
-/// What the refusal adds of the way back: what the session's own copy does
-/// when the session ends with deactivate, where it has one.
+/// What the refusal adds of the session's end: what the session's own copy
+/// does at a shutdown of the session through logind, where it has one.
 fn way_back(start: Option<&Result<SessionStart, String>>) -> String {
     match start {
         None => String::new(),
         Some(Ok(_)) => {
-            ", and when a session ends with deactivate, the session's own copy installs \
+            ", and when a session is shut down through logind (the desktop's power-off, or `systemctl poweroff`), the session's own copy installs \
                         them again, into its overlay on the hidden volume"
                 .to_string()
         }
         Some(Err(why)) => format!(
             ", and NAILS cannot tell whether a session's own copy installs them again, into its \
-             overlay on the hidden volume, when the session ends with deactivate ({why})"
+             overlay on the hidden volume, when the session is shut down through logind ({why})"
         ),
     }
 }
 
-/// The warning of what the session's copy of the helper does at the way
-/// back, with the setting as the session reads it; `None` when it does
+/// The warning of what the session's copy of the helper does at a shutdown
+/// through logind, with the setting as the session reads it; `None` when it does
 /// nothing.
 fn session_warning(
     start: &Result<SessionStart, String>,
@@ -831,32 +832,32 @@ fn session_warning(
 ) -> Option<String> {
     let how = how_it_starts(start, running);
     let installs = if start.is_ok() {
-        "when the session ends with deactivate, it installs the pending updates"
+        "when the session is shut down through logind, it installs the pending updates"
     } else {
-        "if the session starts it, it installs the pending updates when the session ends with \
-         deactivate,"
+        "if the session starts it, it installs the pending updates when the session is shut \
+         down through logind,"
     };
     match session {
         Setting::On(at) => Some(format!(
             "{how}, and {SETTING} is on there ({at}): {installs} into the session's overlay on \
              the hidden volume (set it to false, or end the session with `{}`, which sends no \
              shutdown signal)",
-            sudo_line(NextStep::DeactivatePoweroff)
+            sudo_line(NextStep::Deactivate)
         )),
         Setting::Unknown(why) => Some(format!(
             "{how}, and NAILS cannot tell whether {SETTING} is on there, which would make it \
-             install the pending updates when the session ends with deactivate: {why}"
+             install the pending updates when the session is shut down through logind: {why}"
         )),
         // The session's copy starts with the file refused, so it logs to
         // its standard error, the session's journal, for its whole run, and
-        // at the way back its read fails again, which leaves it no install.
+        // at a shutdown through logind its read fails again, which leaves it no install.
         Setting::Refused { at, reason } => Some(format!(
             "{how}, and apt refuses {at} ({reason}): {copy} installs nothing when the \
-             session ends with deactivate as long as apt refuses that file, and logs apt's \
+             session is shut down through logind as long as apt refuses that file, and logs apt's \
              errors to the session's journal, but a session that fixes the file has it read \
              {SETTING} again then (set it to false, or end the session with `{}`, which sends no \
              shutdown signal)",
-            sudo_line(NextStep::DeactivatePoweroff),
+            sudo_line(NextStep::Deactivate),
             copy = if start.is_ok() {
                 "that copy"
             } else {
@@ -900,7 +901,7 @@ fn cannot_tell_without_root(why: &str) -> Blocker {
 /// The refusal of the decoy under `root` whose helper runs, its processes
 /// `pids` reading first the file at `apt_config`, `None` when there is none:
 /// `start` says how a session's own copy of the helper starts, for what the
-/// way back does.
+/// session's end does.
 fn decoy_blocker<F: Filesystem>(
     fs: &F,
     root: &Path,

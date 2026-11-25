@@ -27,7 +27,7 @@
       },
       "state_file_path": "/mnt/data/state.json",
       "window": {
-        "emergency": "return"
+        "emergency": "poweroff"
       }
     },
     "exists": true,

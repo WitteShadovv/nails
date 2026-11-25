@@ -429,7 +429,7 @@ impl Rehearsal {
                 ExitStatus::InvalidState,
                 "same_boot",
                 "the canary was planted in this session, so its writes may not have reached the \
-                 disk; deactivate first (it soft-reboots back to the decoy), then scan from the \
+                 disk; deactivate first (it powers off), then scan from the \
                  decoy or a later session, or pass --allow-same-boot",
             ));
         }

@@ -49,8 +49,9 @@ fn in_init() -> &'static FakeSelinux {
 
 /// The step of a switch armed for `direction` in `world`, whose plan records
 /// the program's label when `labelled`, with its copy in the runtime
-/// directory, the next root's init in place and a `systemctl` that logs each
-/// call ([`systemctl_calls`]), started as `start` under `selinux`.
+/// directory, the next root's init in place and the world's `systemctl`,
+/// which logs each call ([`systemctl_calls`]), started as `start` under
+/// `selinux`.
 fn armed_step(
     world: &World,
     direction: Direction,
@@ -71,56 +72,41 @@ fn armed_step(
     fs::write(world.runtime().join(BINARY_NAME), b"\x7fELF").unwrap();
     STARTED_AGAIN_FROM.with(|from| from.borrow_mut().clear());
     Env {
-        systemctl: Some(fake_systemctl(world.dir.path(), 0)),
         selinux,
         start,
         ..world.env(true, 1_000)
     }
 }
 
-/// Where the plan records the program's label, an armed step PID 1 started
+/// Where the plan records the program's label, an armed entry PID 1 started
 /// outside the program's domain gives its copy the label again and starts
-/// itself again from it, in both directions, before it does anything of the
-/// switch.
+/// itself again from it, before it does anything of the switch.
 #[test]
-fn an_armed_step_outside_the_program_s_domain_labels_its_copy_and_starts_again() {
-    for direction in [Direction::Enter, Direction::Leave] {
-        let world = World::new();
-        let selinux = in_init();
-        let env = armed_step(&world, direction, true, BY_PID1, selinux);
+fn an_armed_entry_outside_the_program_s_domain_labels_its_copy_and_starts_again() {
+    let world = World::new();
+    let selinux = in_init();
+    let env = armed_step(&world, Direction::Enter, true, BY_PID1, selinux);
 
-        let outcome = run(&env);
+    // That start failed here, so the step ended the session.
+    let why = ends(&world, &env);
 
-        assert_eq!(
-            selinux.labels_written(),
-            [b"system_u:object_r:bin_t:s0\0".to_vec()],
-            "{direction:?}"
-        );
-        assert_eq!(
-            started_again_from(),
-            [world.runtime().join(BINARY_NAME)],
-            "{direction:?}"
-        );
-        // That start failed here, so the step refused the switch.
-        let Outcome::Disarmed(why) = outcome else {
-            panic!("expected a refused switch, got {outcome:?}");
-        };
-        assert_eq!(
-            why,
-            "the last step before the switch does not run in unconfined_service_t: it could \
-             not start itself again from its RAM copy: Permission denied (os error 13)"
-        );
-    }
+    assert_eq!(
+        selinux.labels_written(),
+        [b"system_u:object_r:bin_t:s0\0".to_vec()]
+    );
+    assert_eq!(started_again_from(), [world.runtime().join(BINARY_NAME)]);
+    assert_eq!(
+        why,
+        "the last step before the switch does not run in unconfined_service_t: it could \
+         not start itself again from its RAM copy: Permission denied (os error 13)"
+    );
 }
 
-/// A step still outside the program's domain once it started itself again
-/// does nothing of the switch. It refuses the entry, so nothing of it is
-/// left; on the way back it asks for the power-off first, and only where
-/// neither PID 1 nor the kernel took it (the stand-ins here) does it refuse
-/// the way back, which leaves the hidden session as it was, with its plan and
-/// the reason in the runtime directory.
+/// An entry still outside the program's domain once it started itself again
+/// does nothing of the switch and ends the session: it neither labels the
+/// copy again nor starts again, and writes none of the entry's masks.
 #[test]
-fn a_step_still_outside_the_domain_refuses_the_entry_and_powers_off_on_the_way_back() {
+fn an_entry_still_outside_the_domain_ends_the_session() {
     let again = Started {
         again: true,
         ..BY_PID1
@@ -129,11 +115,8 @@ fn a_step_still_outside_the_domain_refuses_the_entry_and_powers_off_on_the_way_b
     let selinux = in_init();
     let env = armed_step(&world, Direction::Enter, true, again, selinux);
 
-    let outcome = run(&env);
+    let why = ends(&world, &env);
 
-    let Outcome::Disarmed(why) = outcome else {
-        panic!("expected a refused entry, got {outcome:?}");
-    };
     assert_eq!(
         why,
         "the last step before the switch does not run in unconfined_service_t: it runs in \
@@ -147,34 +130,24 @@ fn a_step_still_outside_the_domain_refuses_the_entry_and_powers_off_on_the_way_b
         Path::new("/nix/store/aaa-nixos-system")
     );
     assert!(!world.run().join("systemd/system/dev-vda3.swap").exists());
-    assert!(!world.runtime().exists(), "nothing of the entry is left");
-    assert!(!systemctl_calls(&world).contains("poweroff"));
-
-    let world = World::new();
-    let env = armed_step(&world, Direction::Leave, true, again, in_init());
-
-    let outcome = run(&env);
-
-    assert_eq!(systemctl_calls(&world), "--force poweroff\n");
-    let Outcome::Disarmed(why) = outcome else {
-        panic!("expected a refused way back, got {outcome:?}");
-    };
-    assert!(why.contains("though it started itself again"), "{why}");
-    let kept = switch_refusal::read(&world.runtime()).expect("the reason is kept in /run");
-    assert_eq!(kept.reason, why);
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/bbb-nixos-system"),
-        "the session's system stays"
-    );
-    assert_eq!(
-        world.plan().armed.map(|arm| arm.direction),
-        Some(Direction::Leave)
-    );
-    assert!(world.run().join("decoy-state").exists(), "no scrub ran");
 }
 
-/// The step goes on with the switch where it runs in the program's domain,
+/// A plan armed for the way back ends the session before the step asks its
+/// domain anything: there is nothing it may do there.
+#[test]
+fn a_way_back_ends_the_session_without_asking_the_domain() {
+    let world = World::new();
+    let selinux = in_init();
+    let env = armed_step(&world, Direction::Leave, true, BY_PID1, selinux);
+
+    let why = ends(&world, &env);
+
+    assert!(why.contains("a hidden session never goes back"), "{why}");
+    assert!(selinux.questions().is_empty());
+    assert!(started_again_from().is_empty());
+}
+
+/// The step goes on with the entry where it runs in the program's domain,
 /// which it asks only whether a policy is loaded and the context it runs in;
 /// and where the plan records no label, where PID 1 did not start it, or
 /// where the switch is not armed, it asks nothing at all.
@@ -188,8 +161,8 @@ fn a_step_in_the_domain_unlabelled_by_hand_or_unarmed_asks_no_more() {
 
     let world = World::new();
     let selinux = in_init();
-    let env = armed_step(&world, Direction::Leave, false, BY_PID1, selinux);
-    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    let env = armed_step(&world, Direction::Enter, false, BY_PID1, selinux);
+    assert_eq!(run(&env), Outcome::Entered);
     assert!(selinux.questions().is_empty(), "no label in the plan");
 
     let world = World::new();

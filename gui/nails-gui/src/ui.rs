@@ -21,7 +21,7 @@ use std::rc::{Rc, Weak};
 use nails_api::CheckOutcome;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 
-use crate::emergency::Firing;
+use crate::emergency::Finish;
 use crate::model::{
     ActionKind, Asker, CheckView, Effect, Field, Model, Page, SWITCH_OVERDUE, View,
 };
@@ -37,9 +37,9 @@ pub struct Hooks {
     pub hang_up: Box<dyn Fn()>,
     /// Close the window (the person's Close, or a dismissed password dialog).
     pub close: Box<dyn Fn()>,
-    /// Fire the emergency to end the session as this firing says. It must
-    /// not wait for anything.
-    pub emergency: Box<dyn Fn(Firing)>,
+    /// Fire the emergency to end the session with this finish. It must not
+    /// wait for anything.
+    pub emergency: Box<dyn Fn(Finish)>,
 }
 
 /// The window's half of a session.
@@ -168,7 +168,7 @@ impl Controller {
         match effect {
             Some(Effect::Ask(ask)) => (self.hooks.ask)(ask),
             Some(Effect::HangUp) => (self.hooks.hang_up)(),
-            Some(Effect::Emergency(firing)) => (self.hooks.emergency)(firing),
+            Some(Effect::Emergency(finish)) => (self.hooks.emergency)(finish),
             None => {}
         }
     }
@@ -203,13 +203,6 @@ impl Controller {
 
     fn answer(&mut self, confirmed: bool) {
         if let Some(ask) = self.model.answer(confirmed) {
-            (self.hooks.ask)(ask);
-        }
-        self.refresh();
-    }
-
-    fn alternative(&mut self) {
-        if let Some(ask) = self.model.alternative() {
             (self.hooks.ask)(ask);
         }
         self.refresh();
@@ -299,12 +292,6 @@ fn wire(window: &AppWindow, controller: &Rc<RefCell<Controller>>) {
     window.on_question_answered(move |confirmed| {
         if let Some(controller) = weak.upgrade() {
             controller.borrow_mut().answer(confirmed);
-        }
-    });
-    let weak = Rc::downgrade(controller);
-    window.on_question_alternative_chosen(move || {
-        if let Some(controller) = weak.upgrade() {
-            controller.borrow_mut().alternative();
         }
     });
     wire_tools(window, controller);
@@ -409,9 +396,6 @@ pub fn draw(window: &AppWindow, page: &Page) {
             window.set_question_destructive(question.destructive);
             window.set_question_prompt(question.prompt.as_deref().unwrap_or_default().into());
             window.set_question_locked(question.locked);
-            window.set_question_alternative(
-                question.alternative.as_deref().unwrap_or_default().into(),
-            );
             window.set_question_open(true);
         }
         None => {
@@ -423,7 +407,6 @@ pub fn draw(window: &AppWindow, page: &Page) {
             window.set_question_destructive(false);
             window.set_question_prompt(SharedString::default());
             window.set_question_locked(false);
-            window.set_question_alternative(SharedString::default());
             if was_open {
                 window.invoke_focus_page();
             }

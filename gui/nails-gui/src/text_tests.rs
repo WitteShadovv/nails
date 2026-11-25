@@ -46,13 +46,13 @@ fn the_engines_reasons_end_the_sentence_they_are_put_in() {
     // The reason as the engine gives it, its opening words left out, since
     // the page's sentence says them already.
     assert_eq!(
-        no_way_back_reason(
-            "in the hidden root without a way back: no session plan in /run (upper /mnt/data/root/upper)"
+        without_plan_reason(
+            "in the hidden root without its session plan: no session plan in /run (upper /mnt/data/root/upper)"
         ),
         "No session plan in /run (upper /mnt/data/root/upper)."
     );
     assert_eq!(
-        no_way_back_reason("the plan in /run names another upper."),
+        without_plan_reason("the plan in /run names another upper."),
         "The plan in /run names another upper."
     );
     assert_eq!(

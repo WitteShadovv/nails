@@ -322,14 +322,14 @@ fn render_template(root: &Path, title: &str) -> String {
 
 # How the window's Emergency control ends a hidden session. It acts on one
 # gesture and asks nothing then, so its ending is chosen here, in advance.
-#   "return" (default): back to the decoy's login screen, as `nails emergency`,
-#     or off where the way back cannot undo the session's network changes.
-#   "poweroff": power off, as `nails emergency --poweroff`; RAM decays.
-#   "reboot": a full reboot, as `nails emergency --reboot`; RAM is not cleared.
+# A hidden session never goes back to the decoy.
+#   "poweroff" (default): power off, as `nails emergency`. RAM decays.
+#   "reboot": a full reboot, as `nails emergency --reboot`. RAM is not cleared.
+# An older file that says "return" powers off.
 # Where the window cannot reach NAILS in time or read this setting, it powers
 # off. `nails emergency` does not read it: its flags choose its ending.
 # [window]
-# emergency = "return"
+# emergency = "poweroff"
 "##
     )
 }

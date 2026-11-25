@@ -28,13 +28,13 @@
       ],
       "properties": {
         "status": {
+          "description": "`poweroff_requested`: a hidden session ends in a power-off. `return_requested` is no longer sent.",
           "enum": [
-            "return_requested",
             "poweroff_requested"
           ]
         },
         "warnings": {
-          "description": "What the return does not put back, one sentence each, as a person reads them: first, where the return is bound to power off instead, why (a link the kernel keeps when it is deleted); where it cannot number the decoy's processes from where the decoy's own boot did; and each backend device in `backend_left_open`. Absent when there is nothing to say; a power-off has none.",
+          "description": "Kept for older readers; a power-off has nothing to warn of, so it is absent.",
           "type": "array",
           "items": {
             "type": "string",

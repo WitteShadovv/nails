@@ -36,7 +36,7 @@ fn every_attention_the_schema_names_reads() {
         ("ended_abnormally", Attention::EndedAbnormally),
         ("switch_refused", Attention::SwitchRefused),
         ("record_unreadable", Attention::RecordUnreadable),
-        ("no_way_back", Attention::NoWayBack),
+        ("no_way_back", Attention::WithoutPlan),
         ("volume_lost", Attention::VolumeLost),
         ("volume_covered", Attention::VolumeCovered),
         ("almost_full", Attention::AlmostFull),

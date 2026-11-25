@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+//! `deactivate` ends the hidden session in a power-off. No test here powers
+//! anything off: the lock step's handle and its power-off are stand-ins that
+//! print [`ENQUEUED`] where the power-off would be enqueued.
+
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::test_support::{envelope, stdout_lines};
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::NailsError;
-use nails_core::app::deactivate::{PowerOffReason, Prepared, ReadyDeactivation};
-use nails_core::session::{LeaveReport, LeaveTo};
+use nails_core::app::deactivate::{Prepared, ReadyDeactivation};
 use std::path::Path;
 
 fn json() -> OutputSettings {
@@ -19,9 +22,9 @@ fn json() -> OutputSettings {
 const SUBPROCESS_TEST_NAME: &str =
     "cli::commands::deactivate::tests::subprocess_deactivate_entrypoint";
 
-/// What the stand-in for the way back prints on stdout when it runs: the
-/// moment the soft-reboot would be enqueued.
-const ENQUEUED: &str = "<the way back is enqueued here>";
+/// What the stand-in for the power-off prints on stdout when it runs: the
+/// moment the power-off would be enqueued.
+const ENQUEUED: &str = "<the power-off is enqueued here>";
 
 /// Run `case` of [`subprocess_deactivate_entrypoint`] in a child process, so
 /// the test sees its real stdout and exit code.
@@ -33,50 +36,13 @@ fn run_subprocess(case: &str) -> std::process::Output {
         .expect("failed to run deactivate subprocess test")
 }
 
-/// Why the probe found no way back in a hidden root without its plan.
-const WITHOUT_PLAN: &str = "no session plan in /run (upper /mnt/data/root/upper)";
-
-/// The error the way back returns when systemd refuses the soft-reboot.
+/// The error the power-off returns when systemd refuses it.
 fn refused() -> NailsError {
-    NailsError::InvalidState("systemctl could not enqueue soft-reboot.target".to_string())
+    NailsError::InvalidState("systemctl could not enqueue poweroff.target".to_string())
 }
 
-/// A hidden session's PID 1 with service watchdogs off, so that a return's
-/// job timeout would not power off, and a logind that lists no program that
-/// blocks shutdown. It starts nothing.
-struct WatchdogsOff;
-
-impl nails_core::session::GuardHost for WatchdogsOff {
-    fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
-        Ok(String::new())
-    }
-    fn job_timeout_action(&self, _: &str) -> nails_core::Result<String> {
-        Ok("poweroff-force".to_string())
-    }
-    fn job_timeout(&self, _: &str) -> nails_core::Result<String> {
-        Ok("30min".to_string())
-    }
-    fn service_watchdogs(&self) -> nails_core::Result<String> {
-        Ok("no".to_string())
-    }
-}
-
-impl nails_core::session::TargetHost for WatchdogsOff {
-    fn start_target(&self, target: &str) -> nails_core::Result<()> {
-        panic!("the check started {target}")
-    }
-}
-
-/// The check of the handle that leaves in a session whose PID 1 has service
-/// watchdogs off: the session layer's own, which refuses a return and lets a
-/// power-off go.
-fn unguarded_check(_: &(), to: LeaveTo) -> Result<(), NailsError> {
-    nails_core::session::leave::may_leave(to, &WatchdogsOff)
-}
-
-/// The check of the handle that leaves while a program blocks shutdown,
-/// which refuses either way.
-fn blocked_check(_: &(), _: LeaveTo) -> Result<(), NailsError> {
+/// The check of the handle that leaves while a program blocks shutdown.
+fn blocked_check(_: &()) -> Result<(), NailsError> {
     Err(NailsError::InvalidState(
         "apt blocks shutdown (Installing, PID 4242): the switch would cut it short. Let it \
          finish, then try again"
@@ -85,15 +51,16 @@ fn blocked_check(_: &(), _: LeaveTo) -> Result<(), NailsError> {
 }
 
 /// A check of the handle that leaves, as a stand-in for its own.
-type Check = fn(&(), LeaveTo) -> Result<(), NailsError>;
+type Check = fn(&()) -> Result<(), NailsError>;
 
-/// The check of the handle that leaves where nothing holds the way back.
-fn no_refusal(_: &(), _: LeaveTo) -> Result<(), NailsError> {
+/// The check of the handle that leaves where nothing holds the power-off.
+fn no_refusal(_: &()) -> Result<(), NailsError> {
     Ok(())
 }
 
-/// Report a way back through a stand-in for it that prints [`ENQUEUED`] and
-/// then succeeds or fails, as the case says, and exit with the status.
+/// Report a deactivation through a stand-in for the power-off that prints
+/// [`ENQUEUED`] and then succeeds or fails, as the case says, and exit with
+/// the status.
 #[test]
 fn subprocess_deactivate_entrypoint() {
     let Ok(case) = std::env::var("NAILS_DEACTIVATE_SUBPROCESS_CASE") else {
@@ -103,26 +70,13 @@ fn subprocess_deactivate_entrypoint() {
         ascii: true,
         ..OutputSettings::default()
     };
-    if let Some(settings) = match case.as_str() {
-        "json-without-way-back" => Some(json()),
-        "human-without-way-back" => Some(ascii),
-        _ => None,
-    } {
-        // No -y: a prompt would refuse off a terminal with exit 2 first.
-        let status = super::deactivate_prepared(
-            &settings,
-            &DeactivateArgs::default(),
-            Prepared::WayBackUnknown(WITHOUT_PLAN.to_string()),
-        );
-        crate::cli::chokepoint::exit_process(status.code());
-    }
     let yes = DeactivateArgs {
         yes: true,
         poweroff: false,
     };
     if let Some((settings, args)) = match case.as_str() {
-        "human-ready" | "human-ready-kernel-kept" => Some((ascii, yes)),
-        "json-ready" | "json-ready-kernel-kept" => Some((json(), yes)),
+        "human-ready" => Some((ascii, yes)),
+        "json-ready" => Some((json(), yes)),
         "json-ready-poweroff" => Some((
             json(),
             DeactivateArgs {
@@ -133,250 +87,92 @@ fn subprocess_deactivate_entrypoint() {
         "json-ready-unconfirmed" => Some((json(), DeactivateArgs::default())),
         _ => None,
     } {
-        // The hidden root holds no program: the way back starts none.
         let root = tempfile::tempdir().unwrap();
-        if case.ends_with("kernel-kept") {
-            put_kernel_kept_link(root.path());
-        }
-        // A stand-in for the lock step and the way back: what the operator
-        // reads up to the switch.
+        // A stand-in for the lock step and the power-off: what the operator
+        // reads up to it.
         let status = super::deactivate_prepared_with(
             &settings,
             &args,
             Prepared::Ready(Box::new(ready_at(root.path()))),
-            |_ready, to, warnings, bound| {
-                super::leave_and_report(
-                    &settings,
-                    to,
-                    warnings,
-                    bound.as_ref(),
-                    &mut (),
-                    no_refusal,
-                    |_, _| {
-                        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
-                        Ok(LeaveReport::default())
-                    },
-                )
+            |_ready| {
+                super::leave_and_report(&settings, &mut (), no_refusal, |_| {
+                    crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+                    Ok(())
+                })
             },
         );
         // The exit runs no destructor: remove the scratch tree first.
         drop(root);
         crate::cli::chokepoint::exit_process(status.code());
     }
-    // The handle's check refuses as the case says, asked about the ending the
-    // case leaves to.
-    if let Some((settings, to, check)) = match case.as_str() {
-        "human-blocked" => Some((ascii, LeaveTo::Decoy, blocked_check as Check)),
-        "json-blocked" => Some((json(), LeaveTo::Decoy, blocked_check as Check)),
-        "human-unguarded" => Some((ascii, LeaveTo::Decoy, unguarded_check as Check)),
-        "json-unguarded" => Some((json(), LeaveTo::Decoy, unguarded_check as Check)),
-        "human-unguarded-poweroff" => Some((ascii, LeaveTo::Poweroff, unguarded_check as Check)),
-        "json-unguarded-poweroff" => Some((json(), LeaveTo::Poweroff, unguarded_check as Check)),
-        _ => None,
-    } {
-        let status =
-            super::leave_and_report(&settings, to, Vec::new(), None, &mut (), check, |_, _| {
-                crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
-                Ok(LeaveReport::default())
-            });
-        crate::cli::chokepoint::exit_process(status.code());
-    }
-    let (settings, to, outcome) = match case.as_str() {
-        "json-enqueued" => (json(), LeaveTo::Poweroff, Ok(LeaveReport::default())),
-        "json-refused" => (json(), LeaveTo::Decoy, Err(refused())),
-        "json-left-open" => (json(), LeaveTo::Decoy, Ok(left_open())),
-        "human-enqueued" => (ascii, LeaveTo::Decoy, Ok(LeaveReport::default())),
-        "human-refused" => (ascii, LeaveTo::Decoy, Err(refused())),
-        "human-left-open" => (ascii, LeaveTo::Decoy, Ok(left_open())),
-        // The way back's own ask of the guards refuses.
-        "json-unguarded-late" => (
-            json(),
-            LeaveTo::Decoy,
-            unguarded_check(&(), LeaveTo::Decoy).map(|()| LeaveReport::default()),
-        ),
-        "human-unguarded-late" => (
-            ascii,
-            LeaveTo::Decoy,
-            unguarded_check(&(), LeaveTo::Decoy).map(|()| LeaveReport::default()),
-        ),
+    let (settings, check, outcome): (_, Check, _) = match case.as_str() {
+        "json-enqueued" => (json(), no_refusal, Ok(())),
+        "json-refused" => (json(), no_refusal, Err(refused())),
+        "human-enqueued" => (ascii, no_refusal, Ok(())),
+        "human-refused" => (ascii, no_refusal, Err(refused())),
+        "human-blocked" => (ascii, blocked_check, Ok(())),
+        "json-blocked" => (json(), blocked_check, Ok(())),
         other => panic!("unknown deactivate subprocess case: {other}"),
     };
-    // The warning given before the question rides along in the envelope.
-    let warnings = if case.ends_with("left-open") {
-        vec![EARLIER_WARNING.to_string()]
-    } else {
-        Vec::new()
-    };
-    let status = super::leave_and_report(
-        &settings,
-        to,
-        warnings,
-        None,
-        &mut (),
-        no_refusal,
-        |_, _| {
-            crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
-            outcome
-        },
-    );
+    let status = super::leave_and_report(&settings, &mut (), check, |_| {
+        crate::cli::output::println_tolerating_broken_pipe(ENQUEUED);
+        outcome
+    });
     crate::cli::chokepoint::exit_process(status.code());
 }
 
-/// A warning given before the question.
-const EARLIER_WARNING: &str = "The return finds no getty or logind to measure the decoy's process \
-                               numbers by";
-
-/// A deactivation ready to leave a hidden session whose decoy runs no NixOS,
-/// with its hidden volume, its state file and the root the way back's last
-/// step runs in all below `root`.
+/// A deactivation ready to end a hidden session, with its hidden volume and
+/// its state file below `root`.
 fn ready_at(root: &Path) -> ReadyDeactivation {
-    use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
-    let plan = serde_json::json!({
-        "version": PLAN_VERSION,
-        "hidden_root": "/mnt/data",
-        "upper": "/mnt/data/root/upper",
-        "work": "/mnt/data/root/work",
-        "decoy_root": {"source": "/dev/vda2", "fstype": "ext4"},
-        "decoy": {"init": "/sbin/init"},
-        "hidden": {"init": "/sbin/init"},
-    });
     let config = nails_core::Config {
         hidden_volume_root: root.to_path_buf(),
         state_file_path: root.join("state.json"),
         log_path: root.join("logs"),
         ..nails_core::Config::test_default()
     };
-    let mut plan = Plan::from_json(&plan.to_string()).expect("a minimal plan");
-    plan.pids = nails_teardown::test_support::stage_pid_measure(root);
-    ReadyDeactivation::for_test(config, plan, root)
+    ReadyDeactivation::for_test(config)
 }
 
-/// The lines a person reads of a return to the decoy, up to the switch.
-const RETURN_LINES: [&str; 3] = [
-    "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
-    "  The decoy starts at its own login screen in a few seconds (a display manager set to log \
-     an account in automatically logs it in again, as at boot), or the machine powers off \
-     instead if a link, MAC address, rule or table the way back sets out to undo is still the \
-     session's afterwards.",
-    ENQUEUED,
-];
-
-/// The lines a person reads of a return whose way back is bound to power off
-/// over `tunl0`, up to the switch.
-const BOUND_LINES: [&str; 3] = [
-    "[PASS] Ending the hidden session: soft-rebooting back to the decoy",
-    "  The way back cannot delete tunl0, which the kernel keeps: the machine powers off in a few \
-     seconds instead of returning to the decoy.",
-    ENQUEUED,
-];
-
-/// What a person reads before the question when the way back is bound to
-/// power off over `tunl0`.
-fn kernel_kept_warning() -> String {
-    use nails_core::next_step::{NextStep, sudo_line};
-    format!(
-        "The way back cannot delete tunl0, which the kernel keeps, so the machine powers off \
-         instead of returning to the decoy. `{}` powers off at once.",
-        sudo_line(NextStep::DeactivatePoweroff)
-    )
+/// The lines a person reads of the session's end, up to the power-off.
+fn ending_lines() -> Vec<String> {
+    vec![
+        format!("[PASS] {}", super::ENDING_LINES[0]),
+        super::ENDING_LINES[1].to_string(),
+    ]
 }
 
-/// Give the tree at `root` the record entry takes of its links (`lo` alone)
-/// and then the link `tunl0` the kernel keeps once a session loads `ipip`.
-fn put_kernel_kept_link(root: &Path) {
-    use nails_teardown::whole_root::network::{self, NetworkRecord, Places};
-    let link = |name: &str, index: u32| {
-        let dir = root.join("sys/class/net").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
-    };
-    link("lo", 1);
-    let places = Places {
-        run: root.join("run"),
-        sys_class_net: root.join("sys/class/net"),
-        proc_hostname: root.join("proc/sys/kernel/hostname"),
-        proc_sys: root.join("proc/sys"),
-    };
-    let record = NetworkRecord::capture(
-        &places,
-        &nails_teardown::test_support::FakeNetKernel::offline(),
-    );
-    let at = root.join("run/overlay-runtime").join(network::RECORD_NAME);
-    std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-    std::fs::write(at, record.encode()).unwrap();
-    link("tunl0", 7);
-}
-
-/// Where the way back is bound to power off, a person reads why before the
-/// question, first, and then that the machine powers off, not that the decoy
-/// starts; under `--json` the envelope carries the same warning.
+/// A person reads that the machine powers off, and nothing of a return,
+/// before the power-off, which stops the terminal; under `--json` the one
+/// envelope says the power-off, with or without `--poweroff`.
 #[test]
-fn a_person_reads_before_the_question_that_the_way_back_powers_off() {
-    let output = run_subprocess("human-ready-kernel-kept");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(
-        stderr.lines().collect::<Vec<_>>(),
-        [format!("[WARN] {}", kernel_kept_warning())],
-        "{output:?}"
-    );
-    assert_eq!(stdout_lines(&output), BOUND_LINES, "{output:?}");
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-
-    let output = run_subprocess("json-ready-kernel-kept");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    let lines = stdout_lines(&output);
-    assert_eq!(
-        lines.len(),
-        2,
-        "the stand-in's line, one envelope: {output:?}"
-    );
-    let value = envelope("deactivate", &lines[1]);
-    assert_eq!(
-        value["data"]["warnings"],
-        serde_json::json!([kernel_kept_warning()]),
-        "{value}"
-    );
-}
-
-/// The return asks the kernel for the network state itself, so it needs no
-/// program in the hidden session's system directories: where they hold none,
-/// a person reads nothing before the lines of the return.
-#[test]
-fn a_person_reads_no_network_tool_warning_before_the_return() {
+fn a_person_reads_that_the_machine_powers_off() {
     let output = run_subprocess("human-ready");
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(stdout_lines(&output), RETURN_LINES, "{output:?}");
+    let mut expected = ending_lines();
+    expected.push(ENQUEUED.to_string());
+    assert_eq!(stdout_lines(&output), expected, "{output:?}");
+    let text = String::from_utf8_lossy(&output.stdout).to_lowercase();
+    assert!(!text.contains("return"), "{text}");
+    assert!(!text.contains("login screen"), "{text}");
     assert_eq!(output.status.code(), Some(0), "{output:?}");
-}
 
-/// Under `--json` the one envelope of a return, or of a power-off, after
-/// which the decoy starts afresh, has no `warnings` where the hidden
-/// session's system directories hold no program.
-#[test]
-fn the_envelope_carries_no_network_tool_warning() {
-    for (case, status) in [
-        ("json-ready", "return_requested"),
-        ("json-ready-poweroff", "poweroff_requested"),
-    ] {
+    for case in ["json-ready", "json-ready-poweroff"] {
         let output = run_subprocess(case);
-        assert!(output.stderr.is_empty(), "{case}: {output:?}");
         let lines = stdout_lines(&output);
-        assert_eq!(
-            lines.len(),
-            2,
-            "the stand-in's line, one envelope: {output:?}"
-        );
+        assert_eq!(lines.len(), 2, "{case}: {output:?}");
         assert_eq!(lines[0], ENQUEUED, "{case}: {output:?}");
         let value = envelope("deactivate", &lines[1]);
-        assert_eq!(value["ok"], true, "{case}: {value}");
-        assert_eq!(value["data"]["status"], status, "{case}: {value}");
-        assert_eq!(value["data"].get("warnings"), None, "{case}: {value}");
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(
+            value["data"],
+            serde_json::json!({"status": "poweroff_requested"}),
+            "{case}: {value}"
+        );
         assert_eq!(output.status.code(), Some(0), "{case}: {output:?}");
     }
 }
 
 /// Without `-y` off a terminal a ready deactivation is refused before it
-/// warns, asks or leaves: the one envelope is `needs_confirmation`, exit 2.
+/// asks or leaves: the one envelope is `needs_confirmation`, exit 2.
 #[test]
 fn an_unconfirmed_deactivation_off_a_terminal_is_refused_before_anything() {
     let output = run_subprocess("json-ready-unconfirmed");
@@ -395,112 +191,17 @@ fn an_unconfirmed_deactivation_off_a_terminal_is_refused_before_anything() {
 #[test]
 fn the_lock_step_refuses_a_hidden_root_that_is_no_mount_point() {
     let root = tempfile::tempdir().unwrap();
-    let status = super::lock_and_leave(
-        &json(),
-        ready_at(root.path()),
-        LeaveTo::Decoy,
-        Vec::new(),
-        None,
-    );
+    let status = super::lock_and_leave(&json(), ready_at(root.path()));
     assert_eq!(status, ExitStatus::PreflightRefused);
-    // Only the stand-in for the procfs files ready_at staged is there.
-    let left: Vec<_> = std::fs::read_dir(root.path())
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name())
-        .filter(|name| name != "proc")
-        .collect();
+    let left: Vec<_> = std::fs::read_dir(root.path()).unwrap().collect();
     assert!(left.is_empty(), "{left:?}");
 }
 
-/// A way back that marked one backend device to close and not the other.
-fn left_open() -> LeaveReport {
-    LeaveReport {
-        deferred: vec![
-            ("hidden-crypt".to_string(), false),
-            ("hidden-loop".to_string(), true),
-        ],
-        unmounted: Vec::new(),
-    }
-}
-
-/// A backend device the way back could not mark to close is named in the one
-/// envelope, after the warning given before the question: `ok`, exit 0.
-#[test]
-fn a_device_left_open_is_named_in_the_envelope() {
-    let output = run_subprocess("json-left-open");
-    let lines = stdout_lines(&output);
-    assert_eq!(
-        lines.len(),
-        2,
-        "the stand-in's line, one envelope: {output:?}"
-    );
-    let value = envelope("deactivate", &lines[1]);
-    assert_eq!(value["ok"], true, "{value}");
-    assert_eq!(value["data"]["status"], "return_requested", "{value}");
-    assert_eq!(
-        value["data"]["backend_left_open"],
-        serde_json::json!(["hidden-crypt"]),
-        "{value}"
-    );
-    assert_eq!(
-        value["data"]["warnings"],
-        serde_json::json!([
-            EARLIER_WARNING,
-            crate::cli::output::deactivate::backend_left_open_warning("hidden-crypt"),
-        ]),
-        "{value}"
-    );
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-}
-
-/// A person reads a device left open after the lines that come before the
-/// switch, once the way back is enqueued.
-#[test]
-fn a_person_reads_a_device_left_open_after_the_enqueue() {
-    let output = run_subprocess("human-left-open");
-    let lines = stdout_lines(&output);
-    assert_eq!(
-        lines[2..],
-        [
-            ENQUEUED.to_string(),
-            format!(
-                "[WARN] {}",
-                crate::cli::output::deactivate::backend_left_open_warning("hidden-crypt")
-            ),
-        ],
-        "{output:?}"
-    );
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-}
-
-/// The warnings come before the question, one marked line each, on the
-/// question's stream.
-#[test]
-fn the_warnings_are_written_before_the_question() {
-    let settings = OutputSettings {
-        ascii: true,
-        ..OutputSettings::default()
-    };
-    let mut out = Vec::new();
-    super::write_warnings(
-        &settings,
-        &["first".to_string(), "second".to_string()],
-        &mut out,
-    );
-    assert_eq!(
-        String::from_utf8(out).unwrap(),
-        "[WARN] first\n[WARN] second\n"
-    );
-    let mut none = Vec::new();
-    super::write_warnings(&settings, &[], &mut none);
-    assert!(none.is_empty());
-}
-
-/// Under `--json` a way back that cannot be enqueued is the only envelope on
+/// Under `--json` a power-off that cannot be enqueued is the only envelope on
 /// stdout: printed after the attempt, `ok` false with the error, exit 1. No
 /// success envelope comes first for a reader of the first line to trust.
 #[test]
-fn a_way_back_that_fails_is_the_only_envelope() {
+fn a_power_off_that_fails_is_the_only_envelope() {
     let output = run_subprocess("json-refused");
     let lines = stdout_lines(&output);
     assert_eq!(
@@ -516,9 +217,10 @@ fn a_way_back_that_fails_is_the_only_envelope() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 
-/// An enqueued way back is one success envelope, printed once it is enqueued.
+/// An enqueued power-off is one success envelope, printed once it is
+/// enqueued.
 #[test]
-fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
+fn an_enqueued_power_off_is_one_envelope_printed_after_it() {
     let output = run_subprocess("json-enqueued");
     let lines = stdout_lines(&output);
     assert_eq!(
@@ -533,11 +235,11 @@ fn an_enqueued_way_back_is_one_envelope_printed_after_it() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
 }
 
-/// A program that blocks shutdown refuses the way back before anything is
+/// A program that blocks shutdown refuses the power-off before anything is
 /// printed: a person reads the refusal alone, on stderr, and under `--json`
 /// it is the one envelope.
 #[test]
-fn a_blocked_way_back_is_refused_before_its_banner() {
+fn a_blocked_power_off_is_refused_before_its_banner() {
     let output = run_subprocess("human-blocked");
     assert!(stdout_lines(&output).is_empty(), "{output:?}");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -556,138 +258,30 @@ fn a_blocked_way_back_is_refused_before_its_banner() {
     assert_eq!(output.status.code(), Some(1), "{output:?}");
 }
 
-/// A return whose guards do not hold in the hidden session's PID 1 is refused
-/// before anything is printed, as a blocked one is: a person reads why (here
-/// service watchdogs turned off), the command that turns them back on, and
-/// the two other ways to end the session, and under `--json` it is the one
-/// envelope, with the power-off as the next step. Unlike a blocked one it
-/// exits 4, as activation's refusal of the same check does.
+/// Only a refused check exits 4: a program that blocks shutdown, and every
+/// power-off that fails, exit 1.
 #[test]
-fn an_unguarded_way_back_is_refused_before_its_banner() {
-    use nails_core::next_step::{NextStep, sudo_line};
-    let output = run_subprocess("human-unguarded");
-    assert!(stdout_lines(&output).is_empty(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let lines: Vec<&str> = stderr.lines().collect();
-    assert_eq!(lines.len(), 2, "{stderr}");
-    assert!(
-        lines[0].starts_with(
-            "error: the way back is refused: PID 1 has service watchdogs turned off \
-             (ServiceWatchdogs=no), and then takes no action at a job timeout"
-        ),
-        "{stderr}"
-    );
-    assert_eq!(
-        lines[1],
-        format!(
-            "  Turn service watchdogs back on with `sudo systemctl service-watchdogs yes` and \
-             deactivate again, or end the session with `{}`, which powers off, or with `{}`",
-            sudo_line(NextStep::DeactivatePoweroff),
-            sudo_line(NextStep::Emergency)
-        )
-    );
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
-
-    let output = run_subprocess("json-unguarded");
-    let lines = stdout_lines(&output);
-    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
-    let value = envelope("deactivate", &lines[0]);
-    assert_eq!(value["ok"], false, "{value}");
-    assert_eq!(value["error"]["code"], "not_ready", "{value}");
-    assert_eq!(
-        value["error"]["next"]["command"], "deactivate --poweroff",
-        "{value}"
-    );
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
-}
-
-/// The way back asks the guards again itself before it prepares anything: a
-/// refusal there exits 4 as well, after the lines a person reads, where a
-/// way back that fails partway exits 1.
-#[test]
-fn a_refusal_of_the_way_back_itself_exits_as_a_refusal() {
-    let output = run_subprocess("json-unguarded-late");
-    let lines = stdout_lines(&output);
-    assert_eq!(
-        lines.len(),
-        2,
-        "the stand-in's line, one envelope: {output:?}"
-    );
-    let value = envelope("deactivate", &lines[1]);
-    assert_eq!(value["ok"], false, "{value}");
-    assert_eq!(value["error"]["code"], "not_ready", "{value}");
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
-
-    let output = run_subprocess("human-unguarded-late");
-    assert_eq!(stdout_lines(&output), RETURN_LINES, "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.starts_with("error: the way back is refused: PID 1 has service watchdogs"),
-        "{stderr}"
-    );
-    assert_eq!(output.status.code(), Some(4), "{output:?}");
-}
-
-/// Only the refusal of the guards a return needs exits 4: a program that
-/// blocks shutdown, and every way back that fails, exit 1.
-#[test]
-fn only_a_refusal_of_the_guards_exits_as_a_refusal() {
-    let unguarded = unguarded_check(&(), LeaveTo::Decoy).unwrap_err();
-    assert_eq!(
-        super::way_back_error_status(&unguarded),
-        ExitStatus::PreflightRefused
-    );
-    for error in [blocked_check(&(), LeaveTo::Decoy).unwrap_err(), refused()] {
-        assert_eq!(
-            super::way_back_error_status(&error),
-            ExitStatus::Failed,
-            "{error}"
-        );
+fn only_a_refused_check_exits_as_a_refusal() {
+    let check =
+        NailsError::PreFlightCheckFailed(vec![("some-check".to_string(), "off".to_string(), None)]);
+    assert_eq!(super::error_status(&check), ExitStatus::PreflightRefused);
+    for error in [blocked_check(&()).unwrap_err(), refused()] {
+        assert_eq!(super::error_status(&error), ExitStatus::Failed, "{error}");
     }
 }
 
-/// The handle's check is asked about the ending the operator chose: in the
-/// session whose return it refuses, `deactivate --poweroff`, which the
-/// refusal names, goes on to its banner and the power-off, and under
-/// `--json` its one envelope reports the power-off enqueued.
+/// A person reads the result before the power-off, which stops the terminal,
+/// however it goes; a failure to enqueue it follows on stderr.
 #[test]
-fn a_power_off_goes_on_where_a_return_is_refused() {
-    let output = run_subprocess("human-unguarded-poweroff");
-    assert_eq!(
-        stdout_lines(&output),
-        [
-            "[PASS] Ending the hidden session and powering off".to_string(),
-            ENQUEUED.to_string(),
-        ],
-        "{output:?}"
-    );
-    assert!(output.stderr.is_empty(), "{output:?}");
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-
-    let output = run_subprocess("json-unguarded-poweroff");
-    let lines = stdout_lines(&output);
-    assert_eq!(
-        lines.len(),
-        2,
-        "the stand-in's line, one envelope: {output:?}"
-    );
-    assert_eq!(lines[0], ENQUEUED, "{output:?}");
-    let value = envelope("deactivate", &lines[1]);
-    assert_eq!(value["ok"], true, "{value}");
-    assert_eq!(value["data"]["status"], "poweroff_requested", "{value}");
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-}
-
-/// A person reads the result before the switch, which stops the terminal,
-/// however the switch goes; a failure to enqueue it follows on stderr.
-#[test]
-fn a_person_reads_the_result_before_the_way_back() {
+fn a_person_reads_the_result_before_the_power_off() {
     for (case, code) in [("human-enqueued", 0), ("human-refused", 1)] {
         let output = run_subprocess(case);
-        assert_eq!(stdout_lines(&output), RETURN_LINES, "{case}: {output:?}");
+        let mut expected = ending_lines();
+        expected.push(ENQUEUED.to_string());
+        assert_eq!(stdout_lines(&output), expected, "{case}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert_eq!(
-            stderr.contains("error: systemctl could not enqueue soft-reboot.target"),
+            stderr.contains("error: systemctl could not enqueue poweroff.target"),
             code == 1,
             "{case}: {stderr}"
         );
@@ -695,55 +289,10 @@ fn a_person_reads_the_result_before_the_way_back() {
     }
 }
 
-/// In a hidden root without its plan there is no way back: under `--json`
-/// the one envelope is the refusal, before any prompt, with the power-off as
-/// the next step (a plain emergency finds no plan and does nothing).
-#[test]
-fn without_a_way_back_the_refusal_is_the_one_envelope() {
-    let output = run_subprocess("json-without-way-back");
-    let lines = stdout_lines(&output);
-    assert_eq!(lines.len(), 1, "one envelope: {output:?}");
-    let value = envelope("deactivate", &lines[0]);
-    assert_eq!(value["ok"], false, "{value}");
-    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
-    assert_eq!(
-        value["error"]["next"]["command"], "emergency --poweroff",
-        "{value}"
-    );
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains(WITHOUT_PLAN)),
-        "{value}"
-    );
-    assert!(value.get("data").is_none(), "{value}");
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-}
-
-/// A person is told before anything is asked or printed as done: no prompt,
-/// no line that says the session is ending, only the error with the power-off.
-#[test]
-fn without_a_way_back_a_person_gets_the_refusal_and_no_prompt() {
-    use nails_core::next_step::{NextStep, sudo_line};
-    let output = run_subprocess("human-without-way-back");
-    assert!(stdout_lines(&output).is_empty(), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(&format!(
-            "error: in the hidden root without a way back: {WITHOUT_PLAN}\n  Power off to end \
-             the session: `{}`",
-            sudo_line(NextStep::EmergencyPoweroff)
-        )),
-        "{stderr}"
-    );
-    assert!(!stderr.contains("Continue?"), "{stderr}");
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-}
-
 /// Outside a hidden session deactivate refuses before it asks, locks or
 /// leaves, with `-y --poweroff` as without. The probe's verdict is given here
 /// rather than read from the host: on a host in a hidden session the real
-/// command would take that session's way back, or power the host off.
+/// command would power the host off.
 #[test]
 fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
     for args in [
@@ -758,65 +307,24 @@ fn outside_a_hidden_session_deactivate_refuses_with_invalid_state() {
     }
 }
 
-/// The prompt as it is shown before the answer, where the way back is
-/// `bound` to power off, if it is.
-fn prompt_bound(poweroff: bool, bound: Option<&PowerOffReason>) -> String {
+/// The prompt as it is shown before the answer.
+fn prompt() -> String {
     let settings = OutputSettings {
         ascii: true,
         ..OutputSettings::default()
     };
     let mut out = Vec::new();
-    super::write_prompt(&settings, poweroff, bound, &mut out);
+    super::write_prompt(&settings, &mut out);
     String::from_utf8(out).unwrap()
 }
 
-/// The prompt as it is shown before the answer.
-fn prompt(poweroff: bool) -> String {
-    prompt_bound(poweroff, None)
-}
-
 #[test]
-fn the_prompt_says_where_the_session_ends_before_asking() {
+fn the_prompt_says_the_session_ends_in_a_power_off_before_asking() {
     assert_eq!(
-        prompt(false),
-        "[WARN] This ends the hidden session and returns to the decoy now.\n\
-         \x20   Every hidden program is closed; unsaved work is lost.\n\
+        prompt(),
+        "[WARN] This ends the hidden session and powers off the machine now.\n\
+         \x20   Every hidden program closes. Unsaved work is lost.\n\
          \x20   Continue? [y/N]: "
-    );
-    assert!(
-        prompt(true).starts_with("[WARN] This ends the hidden session and powers off now.\n"),
-        "{}",
-        prompt(true)
-    );
-    // Where the way back is bound to power off, the prompt says so too, and
-    // whether anything before it runs can still change that.
-    let certain = PowerOffReason {
-        what: "The way back cannot delete tunl0, which the kernel keeps".to_string(),
-        certain: true,
-    };
-    assert!(
-        prompt_bound(false, Some(&certain)).starts_with(
-            "[WARN] This ends the hidden session now, and the machine powers off instead of \
-             returning to the decoy.\n"
-        ),
-        "{}",
-        prompt_bound(false, Some(&certain))
-    );
-    let likely = PowerOffReason {
-        what: "The way back finds no `iw` to delete wlan1 with".to_string(),
-        certain: false,
-    };
-    assert!(
-        prompt_bound(false, Some(&likely)).starts_with(
-            "[WARN] This ends the hidden session now, and unless that changes before it runs, \
-             the machine powers off instead of returning to the decoy.\n"
-        ),
-        "{}",
-        prompt_bound(false, Some(&likely))
-    );
-    assert!(
-        prompt_bound(true, Some(&certain))
-            .starts_with("[WARN] This ends the hidden session and powers off now.\n")
     );
 }
 
@@ -829,8 +337,7 @@ fn a_declined_or_interrupted_deactivation_is_a_neutral_notice_and_exits_130() {
     use crate::cli::commands::prompt::Answer;
     let ask = |answer: Answer| {
         let mut err = Vec::new();
-        let status =
-            super::confirm_or_cancel(&OutputSettings::default(), false, None, &mut err, || answer);
+        let status = super::confirm_or_cancel(&OutputSettings::default(), &mut err, || answer);
         (status, String::from_utf8(err).unwrap())
     };
     let notice = "\u{25cb} Deactivation cancelled; nothing was changed.\n";

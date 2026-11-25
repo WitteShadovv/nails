@@ -501,10 +501,10 @@ fn once_the_engine_holds_the_volume_and_the_record_they_stay_held_in_its_words()
     assert_eq!(model.page().action, Some(text::SAVE_ACTION));
 }
 
-/// The page of `window.emergency`: its three endings, each with its line,
+/// The page of `window.emergency`: its two endings, each with its line,
 /// the default marked whether it is in force or not.
 #[test]
-fn the_emergency_offers_its_three_endings_with_the_default_marked() {
+fn the_emergency_offers_its_two_endings_with_the_default_marked() {
     const KEY: &str = "window.emergency";
     let line = |spelling: &str| text::choice(KEY, spelling).1;
     let mut model = settings("config-show");
@@ -512,7 +512,7 @@ fn the_emergency_offers_its_three_endings_with_the_default_marked() {
         model.page().choices[row(KEY)],
         Choice {
             title: text::FACT_EMERGENCY.to_string(),
-            subtitle: "Return to the decoy. The default".to_string(),
+            subtitle: "Power off. The default".to_string(),
         }
     );
     assert_eq!(model.choose(row(KEY)), None, "the key's page opens");
@@ -522,7 +522,7 @@ fn the_emergency_offers_its_three_endings_with_the_default_marked() {
     assert_eq!(
         page.facts,
         [
-            ("Now".to_string(), "Return to the decoy".to_string()),
+            ("Now".to_string(), "Power off".to_string()),
             ("Comes from".to_string(), "The default".to_string()),
         ]
     );
@@ -530,12 +530,8 @@ fn the_emergency_offers_its_three_endings_with_the_default_marked() {
         page.choices,
         [
             Choice {
-                title: "Return to the decoy".to_string(),
-                subtitle: format!("{}. {}", text::CHOSEN_DEFAULT, line("return")),
-            },
-            Choice {
                 title: "Power off".to_string(),
-                subtitle: line("poweroff").to_string(),
+                subtitle: format!("{}. {}", text::CHOSEN_DEFAULT, line("poweroff")),
             },
             Choice {
                 title: "Restart".to_string(),
@@ -543,37 +539,35 @@ fn the_emergency_offers_its_three_endings_with_the_default_marked() {
             },
         ]
     );
-    // The return's line says where it powers off instead, as the way back
-    // of Return to Decoy does.
-    assert!(
-        line("return").contains("powers off instead"),
-        "{}",
-        line("return")
-    );
+    // No ending goes back to the decoy.
+    let shown = format!("{:?} {:?}", page.description, page.choices).to_lowercase();
+    for word in ["return", "way back", "login screen"] {
+        assert!(!shown.contains(word), "{word}: {shown}");
+    }
     assert_eq!((page.action, page.secondary), (None, None));
     assert_eq!(model.choose(0), None, "what holds already asks nothing");
     assert_eq!(
-        model.choose(2),
+        model.choose(1),
         Some(set(KEY, SettingValue::Text("reboot".to_string())))
     );
 
     // Where the file sets it, Now marks that ending, the default keeps its
     // mark, and the page offers the default.
     let mut shown = fixture("config-show");
-    shown["data"]["config"]["window"]["emergency"] = json!("poweroff");
+    shown["data"]["config"]["window"]["emergency"] = json!("reboot");
     shown["data"]["sources"]["window"] = json!("file");
     shown["data"]["sources"]["window.emergency"] = json!("file");
     let mut model = settings_on(shown);
     assert_eq!(
         model.page().choices[row(KEY)].subtitle,
-        "Power off. The settings file"
+        "Restart. The settings file"
     );
     model.choose(row(KEY));
     let page = model.page();
     assert_eq!(
         page.facts,
         [
-            ("Now".to_string(), "Power off".to_string()),
+            ("Now".to_string(), "Restart".to_string()),
             ("Comes from".to_string(), "The settings file".to_string()),
         ]
     );
@@ -585,9 +579,8 @@ fn the_emergency_offers_its_three_endings_with_the_default_marked() {
     assert_eq!(
         lines,
         [
-            format!("{}. {}", text::DEFAULT_CHOICE, line("return")),
-            format!("{}. {}", text::CHOSEN, line("poweroff")),
-            line("reboot").to_string(),
+            format!("{}. {}", text::DEFAULT_CHOICE, line("poweroff")),
+            format!("{}. {}", text::CHOSEN, line("reboot")),
         ]
     );
     assert_eq!(page.action, Some(text::USE_DEFAULT));

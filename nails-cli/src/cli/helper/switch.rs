@@ -14,15 +14,13 @@ use std::path::Path;
 
 use nails_api::Event;
 use nails_api::protocol::{
-    ActivateArgs, ActivatePlanData, DeactivateArgs, DeactivatePlanData, EmergencyArgs,
-    PlanAdvisory, PowerOffInstead,
+    ActivateArgs, ActivatePlanData, DeactivateArgs, DeactivatePlanData, EmergencyArgs, PlanAdvisory,
 };
 use nails_core::RuntimeEnv;
 use nails_core::app::activate::LockedActivation;
-use nails_core::app::deactivate::{PowerOffReason, ReadyDeactivation};
+use nails_core::app::deactivate::ReadyDeactivation;
 use nails_core::cancel::CancelToken;
 use nails_core::reporter::{EventReporter, EventSink, progress};
-use nails_core::session::LeaveTo;
 
 use super::hangup::HangupWatch;
 use super::ops::{Engine, Planned, answer_from, captured, json_settings};
@@ -39,12 +37,9 @@ pub(crate) struct PlannedActivation {
     locked: LockedActivation,
 }
 
-/// A deactivation planned for the window: a way back exists.
+/// A deactivation planned for the window: a hidden session to end.
 pub(crate) struct PlannedDeactivation {
     ready: ReadyDeactivation,
-    to: LeaveTo,
-    warnings: Vec<String>,
-    bound: Option<PowerOffReason>,
 }
 
 /// The CLI's `activate` arguments for `args`, confirmed: the plan and its apply
@@ -127,10 +122,12 @@ impl Engine<'_> {
         })
     }
 
-    /// The plan half of `nails deactivate`: whether there is a way back, and
-    /// what it will not put back, kept behind a token. Off the hidden root, or
-    /// in one without a way back, it answers as the CLI does and keeps
-    /// nothing. The apply takes the lock, as the CLI does once confirmed.
+    /// The plan half of `nails deactivate`: whether there is a hidden session
+    /// to end, kept behind a token. The plan always says that the apply
+    /// powers off (a hidden session never goes back to the decoy), with
+    /// nothing to warn of, whatever `--poweroff` says. Off the hidden root it
+    /// answers as the CLI does and keeps nothing. The apply takes the lock,
+    /// as the CLI does once confirmed.
     pub(super) fn deactivate_plan(&mut self, args: &DeactivateArgs) -> Answer {
         let prepared = nails_core::app::deactivate::prepare(self.env, self.config());
         self.deactivate_plan_from(args, prepared)
@@ -154,12 +151,9 @@ impl Engine<'_> {
                 &settings,
                 &args,
                 prepared,
-                |deactivation, to, warnings, bound| {
+                |deactivation| {
                     ready = Some(PlannedDeactivation {
                         ready: deactivation,
-                        to,
-                        warnings,
-                        bound,
                     });
                     ExitStatus::Ok
                 },
@@ -168,39 +162,25 @@ impl Engine<'_> {
         let Some(planned) = ready else {
             return answer_from(DEACTIVATE, exit, line);
         };
-        let poweroff = planned.to == LeaveTo::Poweroff;
-        let warnings = planned.warnings.clone();
-        // Why the return powers off instead, which the CLI's question
-        // states before it asks: the window offers no return then.
-        let powers_off_instead = planned.bound.as_ref().map(|reason| PowerOffInstead {
-            what: reason.what.clone(),
-            certain: reason.certain,
-        });
         self.hold(
             DEACTIVATE,
             Planned::Deactivate(Box::new(planned)),
             |token| DeactivatePlanData {
-                poweroff,
-                warnings,
-                powers_off_instead,
+                poweroff: true,
+                warnings: Vec::new(),
+                powers_off_instead: None,
                 token,
             },
         )
     }
 }
 
-/// The apply half of `nails deactivate`: take the lock and leave, as the CLI
-/// does once confirmed.
+/// The apply half of `nails deactivate`: take the lock and end the session,
+/// as the CLI does once confirmed.
 pub(super) fn deactivate_apply(planned: PlannedDeactivation) -> Answer {
     let settings = json_settings();
     captured(DEACTIVATE, || {
-        commands::deactivate::lock_and_leave(
-            &settings,
-            planned.ready,
-            planned.to,
-            planned.warnings,
-            planned.bound,
-        )
+        commands::deactivate::lock_and_leave(&settings, planned.ready)
     })
 }
 

@@ -1,0 +1,11 @@
+{
+  "command": "deactivate",
+  "data": {
+    "poweroff": true,
+    "powers_off_instead": null,
+    "token": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "warnings": []
+  },
+  "ok": true,
+  "schema_version": 2
+}

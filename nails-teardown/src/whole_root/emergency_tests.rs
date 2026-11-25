@@ -24,7 +24,7 @@ fn host(dir: &Path) -> Host {
 #[test]
 fn without_a_plan_only_an_explicit_power_action_is_dispatched() {
     let dir = tempfile::tempdir().unwrap();
-    let report = run(None, &host(dir.path()), Finish::Return);
+    let report = run(None, &host(dir.path()), Finish::Default);
     assert_eq!(report.side, Side::None);
     assert!(report.found_nothing());
     assert_eq!(report.dispatched, None);
@@ -44,7 +44,7 @@ fn phases(report: &HotReport) -> Vec<&'static str> {
 fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
     // This test process does not run in the plan's overlay root.
     let dir = tempfile::tempdir().unwrap();
-    let report = run(Some(sample()), &host(dir.path()), Finish::Return);
+    let report = run(Some(sample()), &host(dir.path()), Finish::Default);
     assert_eq!(report.side, Side::Decoy);
     assert_eq!(report.dispatched, None, "the decoy needs no soft-reboot");
     assert_eq!(
@@ -82,14 +82,14 @@ fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
 #[test]
 fn a_soft_reboot_that_may_still_come_forces_the_power_action() {
     use logind::Pending;
-    assert_eq!(decoy_escape(Finish::Return, Pending::Nothing), None);
+    assert_eq!(decoy_escape(Finish::Default, Pending::Nothing), None);
     assert_eq!(decoy_escape(Finish::Poweroff, Pending::Nothing), None);
-    let (finish, why) = decoy_escape(Finish::Return, Pending::Held).unwrap();
+    let (finish, why) = decoy_escape(Finish::Default, Pending::Held).unwrap();
     assert_eq!(finish, Finish::Poweroff);
     assert!(
         why.contains("cannot drop") && why.ends_with("powering off at once, before it can run")
     );
-    let (finish, why) = decoy_escape(Finish::Return, Pending::Started).unwrap();
+    let (finish, why) = decoy_escape(Finish::Default, Pending::Started).unwrap();
     assert_eq!(finish, Finish::Poweroff);
     assert!(why.starts_with("PID 1 has started"), "{why}");
     let (finish, why) = decoy_escape(Finish::Reboot, Pending::Held).unwrap();
@@ -104,138 +104,58 @@ fn a_soft_reboot_that_may_still_come_forces_the_power_action() {
     );
 }
 
+/// The emergency without a flag ends a hidden session the way every hidden
+/// session ends: it powers off. It prepares nothing of a way back, marks no
+/// backend and arms nothing; it kills the shells, enqueues the power-off and
+/// kills the rest, in that order.
 #[test]
-fn the_hidden_side_prepares_arms_kills_shells_enqueues_then_kills_in_that_order() {
+fn the_hidden_side_without_a_flag_ends_the_session_in_a_power_off() {
     let dir = tempfile::tempdir().unwrap();
     let h = host(dir.path());
     std::fs::create_dir_all(&h.runtime_dir).unwrap();
     let mut plan = sample();
     plan.armed = None;
-    let mut report = HotReport::new(Side::Hidden, Finish::Return);
-    hidden(&mut plan, &h, &mut report);
-    let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
-    assert_eq!(
-        names,
-        [
-            "prepare-return",
-            "close-backend",
-            "arm",
-            "kill-shells",
-            "enqueue",
-            "kill"
-        ]
-    );
-    assert_eq!(report.dispatched, Some(Finish::Return));
-    let written = Plan::load(&h.plan_path()).unwrap();
-    assert!(written.armed_for(
-        crate::whole_root::plan::Direction::Leave,
-        crate::whole_root::plan::unix_now()
-    ));
+    plan.write_atomic(&h.runtime_dir.join(crate::whole_root::plan::PLAN_NAME))
+        .unwrap();
+    let mut report = HotReport::new(Side::Hidden, Finish::Default);
+    hidden(&plan, &h, &mut report);
+    assert_eq!(phases(&report), ["kill-shells", "enqueue", "kill"]);
+    assert_eq!(report.dispatched, Some(Finish::Poweroff));
+    assert_eq!(report.fallback, None);
+    assert!(report.deferred.is_empty());
+    let written = Plan::load(&h.runtime_dir.join(crate::whole_root::plan::PLAN_NAME)).unwrap();
+    assert_eq!(written.armed, None, "nothing armed");
+    assert!(!h.nextroot.exists(), "no decoy root prepared");
+    assert_eq!(Finish::session_end(), Finish::Poweroff);
+    assert_eq!(Finish::Default.target(), "poweroff.target");
 }
 
-/// Where the plan records a label for the RAM copy, the way back gives the
-/// copy that label again and checks PID 1's start of it against the loaded
-/// policy before it arms anything; where it records none, SELinux is asked
-/// nothing.
+/// Where the plan records a label for the RAM copy, the emergency asks
+/// SELinux nothing: no last step of a way back will start from the copy.
 #[test]
-fn the_way_back_labels_the_copy_again_before_it_arms() {
+fn the_hidden_side_asks_selinux_nothing() {
     use crate::test_support::FakeSelinux;
     let dir = tempfile::tempdir().unwrap();
     let mut h = host(dir.path());
-    std::fs::create_dir_all(&h.runtime_dir).unwrap();
-    std::fs::write(h.runtime_dir.join(BINARY_NAME), b"\x7fELF").unwrap();
-
-    let untouched = FakeSelinux {
-        write_error: Some(libc::EPERM),
-        ..FakeSelinux::targeted()
-    }
-    .leak();
-    h.selinux = untouched;
-    let mut plan = sample();
-    let mut report = HotReport::new(Side::Hidden, Finish::Return);
-    hidden(&mut plan, &h, &mut report);
-    assert_eq!(report.dispatched, Some(Finish::Return));
-    assert!(!phases(&report).contains(&"label-program"));
-    assert!(untouched.labels_written().is_empty() && untouched.questions().is_empty());
-
     let selinux = FakeSelinux::targeted().leak();
     h.selinux = selinux;
     let mut plan = sample();
     plan.program_label = Some(crate::whole_root::program_label::PROGRAM_LABEL.to_string());
-    let mut report = HotReport::new(Side::Hidden, Finish::Return);
-    hidden(&mut plan, &h, &mut report);
-    assert_eq!(report.dispatched, Some(Finish::Return));
-    assert_eq!(report.fallback, None);
-    assert_eq!(
-        phases(&report),
-        [
-            "prepare-return",
-            "label-program",
-            "close-backend",
-            "arm",
-            "kill-shells",
-            "enqueue",
-            "kill"
-        ]
-    );
-    assert_eq!(
-        selinux.labels_written(),
-        [b"system_u:object_r:bin_t:s0\0".to_vec()]
-    );
-}
-
-/// A copy that does not take the label, or whose start the loaded policy
-/// would keep in PID 1's domain, powers off instead of returning: the way
-/// back's last step would not run where it can write the kernel log's cursor.
-/// Nothing is armed.
-#[test]
-fn a_copy_that_is_not_ready_for_the_way_back_powers_off_instead() {
-    use crate::test_support::FakeSelinux;
-    for (selinux, why) in [
-        (
-            FakeSelinux {
-                write_error: Some(libc::EACCES),
-                ..FakeSelinux::targeted()
-            },
-            "could not take the label",
-        ),
-        (
-            FakeSelinux {
-                entered: "system_u:system_r:init_t:s0".to_string(),
-                ..FakeSelinux::targeted()
-            },
-            "runs in PID 1's own domain",
-        ),
-    ] {
-        let dir = tempfile::tempdir().unwrap();
-        let mut h = host(dir.path());
-        std::fs::create_dir_all(&h.runtime_dir).unwrap();
-        std::fs::write(h.runtime_dir.join(BINARY_NAME), b"\x7fELF").unwrap();
-        h.selinux = selinux.leak();
-        let mut plan = sample();
-        plan.armed = None;
-        plan.program_label = Some(crate::whole_root::program_label::PROGRAM_LABEL.to_string());
-        let mut report = HotReport::new(Side::Hidden, Finish::Return);
-        hidden(&mut plan, &h, &mut report);
-        assert_eq!(report.dispatched, Some(Finish::Poweroff), "{why}");
-        let fallback = report.fallback.clone().unwrap();
-        assert!(fallback.contains(why), "{fallback}");
-        assert!(fallback.ends_with("; powering off instead"), "{fallback}");
-        assert!(!phases(&report).contains(&"arm"), "{why}");
-        assert!(!h.plan_path().exists(), "nothing armed: {why}");
-    }
-}
-
-#[test]
-fn a_way_back_that_cannot_be_armed_powers_off_instead() {
-    let dir = tempfile::tempdir().unwrap();
-    // No runtime directory: the plan cannot be written.
-    let h = host(dir.path());
-    let mut plan = sample();
-    let mut report = HotReport::new(Side::Hidden, Finish::Return);
-    hidden(&mut plan, &h, &mut report);
+    let mut report = HotReport::new(Side::Hidden, Finish::Default);
+    hidden(&plan, &h, &mut report);
     assert_eq!(report.dispatched, Some(Finish::Poweroff));
-    assert!(report.fallback.unwrap().contains("powering off"));
+    assert!(selinux.labels_written().is_empty() && selinux.questions().is_empty());
+}
+
+/// A full reboot asked for stays a full reboot: the firmware boots the decoy
+/// afresh, which is no return to its kernel.
+#[test]
+fn the_hidden_side_reboots_when_asked() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = host(dir.path());
+    let mut report = HotReport::new(Side::Hidden, Finish::Reboot);
+    hidden(&sample(), &h, &mut report);
+    assert_eq!(report.dispatched, Some(Finish::Reboot));
 }
 
 /// A scratch decoy `/run` as an activation interrupted after its entry
@@ -350,7 +270,7 @@ impl Interrupted {
 #[test]
 fn the_entry_s_soft_reboot_counts_as_held_unless_logind_says_otherwise() {
     let scratch = Interrupted::new();
-    let mut report = HotReport::new(Side::Decoy, Finish::Return);
+    let mut report = HotReport::new(Side::Decoy, Finish::Default);
     assert_eq!(
         drop_switch(&scratch.plan, &scratch.host, &mut report),
         logind::Pending::Held
@@ -379,7 +299,7 @@ fn the_entry_s_soft_reboot_counts_as_held_unless_logind_says_otherwise() {
 #[test]
 fn the_decoy_side_undoes_the_masks_and_the_kernel_paths() {
     let scratch = Interrupted::new();
-    let report = scratch.clean_up(Finish::Return, None);
+    let report = scratch.clean_up(Finish::Default, None);
     scratch.assert_cleaned();
     assert_eq!(scratch.calls(), "daemon-reload\n");
     assert_eq!(phases(&report).last(), Some(&"reload"));
@@ -404,12 +324,11 @@ fn a_power_action_on_the_decoy_side_waits_for_no_reload() {
 }
 
 #[test]
-fn a_requested_power_off_skips_the_way_back() {
+fn a_requested_power_off_takes_the_same_path() {
     let dir = tempfile::tempdir().unwrap();
     let h = host(dir.path());
-    let mut plan = sample();
     let mut report = HotReport::new(Side::Hidden, Finish::Poweroff);
-    hidden(&mut plan, &h, &mut report);
+    hidden(&sample(), &h, &mut report);
     let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["kill-shells", "enqueue", "kill"]);
     assert_eq!(report.dispatched, Some(Finish::Poweroff));

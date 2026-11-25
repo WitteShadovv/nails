@@ -106,7 +106,7 @@ pub const SETTINGS: &[Setting] = &[
     },
     Setting {
         key: "window.emergency",
-        kind: Kind::Choice(&["return", "poweroff", "reboot"]),
+        kind: Kind::Choice(&["poweroff", "reboot"]),
     },
 ];
 

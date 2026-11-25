@@ -13,8 +13,8 @@
 //! nobody. Where the window cannot tell, or knows the session cannot end so,
 //! the control powers off, the strongest ending, and says why:
 //!
-//! - once the window has no helper: it has no way back to the decoy of its
-//!   own ([`crate::emergency`]);
+//! - once the window has no helper: it has no restart of its own
+//!   ([`crate::emergency`]);
 //! - while the helper runs a request of Verify or of Rehearsal: a verify or
 //!   a step of the rehearsal can take minutes, and the read of where the
 //!   rehearsal stands counts too. The helper reads the emergency only after
@@ -23,34 +23,25 @@
 //! - until the window has read the setting;
 //! - where the settings could not be read, or the setting holds a value the
 //!   window does not know;
-//! - for a return or a restart while a deactivation powers the computer off:
-//!   the emergency never turns that into a weaker ending;
-//! - for a restart while a deactivation returns to the decoy: the helper
-//!   reads the emergency only once it has answered the deactivation's apply,
-//!   and the switch that follows ends the window and the helper with the
-//!   session, so the request may never be read. The window's own ending is a
-//!   power-off, which it then asks for at once
-//!   ([`Firing::POWER_OFF_AT_ONCE`]), as it does for every power-off fired
-//!   then;
-//! - for a return in a hidden session without a way back, which the engine's
-//!   emergency has nothing to return with;
-//! - for a return while the window holds the plan of one that powers off
-//!   instead whatever happens before it runs: the emergency's return ends
-//!   through the same way back.
+//! - for a restart while a deactivation powers the computer off: the
+//!   emergency never turns that into a weaker ending.
+//!
+//! An older engine's `return`, the ending before every hidden session ended
+//! in a power-off, reads as a power-off, as the engine reads it now.
 //!
 //! The page of a hidden session's status names what the control does as a
 //! fact, and every other page names it where the control powers off for one
 //! of these reasons, but for the page of a deactivation that ends once its
-//! switch has taken the helper with the session, as it does: that page stays
-//! as it is until the switch is overdue and names the control as a way out.
+//! power-off has taken the helper with the session, as it does: that page
+//! stays as it is until the power-off is overdue and names the control as a
+//! way out.
 //! The control's description says it on every page it shows on.
 
 use serde_json::Value;
 
-use super::deactivation::{Deactivation, Ending};
 use super::{Model, Stage};
-use crate::emergency::{Finish, Firing};
-use crate::envelope::{self, Attention, ConfigShowData};
+use crate::emergency::Finish;
+use crate::envelope::{self, ConfigShowData};
 use crate::text;
 use crate::worker::Kind;
 
@@ -83,14 +74,6 @@ pub(super) enum Instead {
     Unreadable,
     /// A deactivation powers the computer off.
     PoweringOff,
-    /// The setting asks for a restart while a deactivation returns to the
-    /// decoy.
-    Returning,
-    /// The setting asks for a return in a session without a way back.
-    NoWayBack,
-    /// The setting asks for a return, and the plan the window holds says the
-    /// way back powers off instead, whatever happens before it runs.
-    WayBackPowersOff,
 }
 
 /// The setting as the answer `value` of `config show` gives it.
@@ -105,8 +88,7 @@ pub(super) fn read(value: &Value) -> Chosen {
         .and_then(|window| window.get("emergency"))
         .and_then(Value::as_str);
     match spelling {
-        Some("return") => Chosen::Read(Finish::Return),
-        Some("poweroff") => Chosen::Read(Finish::PowerOff),
+        Some("poweroff" | "return") => Chosen::Read(Finish::PowerOff),
         Some("reboot") => Chosen::Read(Finish::Reboot),
         _ => Chosen::Unreadable,
     }
@@ -115,7 +97,6 @@ pub(super) fn read(value: &Value) -> Chosen {
 /// The spelling of `finish` in `nails.toml`.
 fn spelling(finish: Finish) -> &'static str {
     match finish {
-        Finish::Return => "return",
         Finish::PowerOff => "poweroff",
         Finish::Reboot => "reboot",
     }
@@ -135,69 +116,11 @@ impl Model {
                 Chosen::NotRead => Instead::NotRead,
                 Chosen::Unreadable => Instead::Unreadable,
                 Chosen::Read(Finish::PowerOff) => return (Finish::PowerOff, None),
-                Chosen::Read(_) if self.powering_off() => Instead::PoweringOff,
-                Chosen::Read(Finish::Reboot) if self.returning() => Instead::Returning,
-                Chosen::Read(Finish::Return) if self.no_way_back() => Instead::NoWayBack,
-                Chosen::Read(Finish::Return) if self.way_back_powers_off() => {
-                    Instead::WayBackPowersOff
-                }
+                Chosen::Read(_) if self.deactivation.is_some() => Instead::PoweringOff,
                 Chosen::Read(finish) => return (finish, None),
             }
         };
         (Finish::PowerOff, Some(instead))
-    }
-
-    /// How the control fires now: with [its finish](Self::emergency_finish),
-    /// and a power-off at once while a deactivation returns to the decoy,
-    /// where the window would not live through the grace it waits for the
-    /// helper otherwise.
-    pub(super) fn emergency_firing(&self) -> Firing {
-        match self.emergency_finish().0 {
-            Finish::PowerOff if self.returning() => Firing::POWER_OFF_AT_ONCE,
-            finish => finish.into(),
-        }
-    }
-
-    /// Whether the status says the hidden session has no way back.
-    fn no_way_back(&self) -> bool {
-        self.status
-            .as_ref()
-            .is_some_and(|status| status.attention == Some(Attention::NoWayBack))
-    }
-
-    /// Whether a deactivation powers the computer off: the person chose
-    /// Power Off, and its plan is asked for or applied.
-    fn powering_off(&self) -> bool {
-        matches!(
-            self.deactivation,
-            Some(
-                Deactivation::Replanning
-                    | Deactivation::Ending {
-                        ending: Ending::PowerOff,
-                        ..
-                    }
-            )
-        )
-    }
-
-    /// Whether a deactivation returns to the decoy: the person chose Return
-    /// to Decoy, and its plan is applied.
-    fn returning(&self) -> bool {
-        matches!(
-            self.deactivation,
-            Some(Deactivation::Ending {
-                ending: Ending::Return,
-                ..
-            })
-        )
-    }
-
-    /// Whether the plan of a return the window holds says the way back
-    /// powers off instead, whatever happens before it runs.
-    fn way_back_powers_off(&self) -> bool {
-        self.return_instead
-            .as_ref()
-            .is_some_and(|instead| instead.certain)
     }
 
     /// The fact that says what the Emergency control does: for the page of
@@ -216,9 +139,6 @@ impl Model {
                     Instead::NotRead => text::EMERGENCY_NOT_READ,
                     Instead::Unreadable => text::EMERGENCY_UNREADABLE,
                     Instead::PoweringOff => text::EMERGENCY_POWERING_OFF,
-                    Instead::Returning => text::EMERGENCY_RETURNING,
-                    Instead::NoWayBack => text::EMERGENCY_NO_WAY_BACK,
-                    Instead::WayBackPowersOff => text::EMERGENCY_WAY_BACK_POWERS_OFF,
                 }
             ),
         };

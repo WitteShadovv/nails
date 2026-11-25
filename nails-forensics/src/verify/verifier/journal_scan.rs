@@ -171,7 +171,7 @@ fn journal_finding(
     };
     let (kept, remedy) = match (place.on_disk, place.in_session) {
         (false, true) => (
-            "The journal is in RAM: the way back to the decoy or a power-off removes these \
+            "The journal is in RAM: the power-off that ends the session removes these \
              entries.",
             "",
         ),

@@ -67,7 +67,7 @@ const PERSONA_MODES: &[&str] = &["shared-home", "fresh-home"];
 const SLEEP_MODES: &[&str] = &["warn", "block", "teardown"];
 
 /// The spellings `window.emergency` takes.
-const WINDOW_EMERGENCIES: &[&str] = &["return", "poweroff", "reboot"];
+const WINDOW_EMERGENCIES: &[&str] = &["poweroff", "reboot"];
 
 /// Every key a value can be set for, in the order of the reference's key
 /// table. A unit test keeps it in step with the fields of

@@ -55,11 +55,21 @@ fn test_deactivate_command_flags_help() {
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--poweroff"))
+        // Kept for scripts, hidden: deactivate always powers off.
+        .stdout(predicates::str::contains("--poweroff").not())
         .stdout(predicates::str::contains("--quiet"))
         .stdout(predicates::str::contains("--verbose"))
         .stdout(predicates::str::contains("--json"))
         .stdout(predicates::str::contains("--color <WHEN>"));
+}
+
+/// `deactivate --poweroff` is still accepted, for scripts.
+#[test]
+fn test_deactivate_still_takes_the_hidden_poweroff_flag() {
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
+    cmd.args(["deactivate", "--poweroff", "--help"])
+        .assert()
+        .success();
 }
 
 /// Test that emergency command accepts new flags
@@ -945,14 +955,16 @@ fn test_activate_help_explains_the_soft_reboot() {
         .stdout(predicates::str::contains("--yes"));
 }
 
-/// `deactivate --help` states that it soft-reboots back to the decoy.
+/// `deactivate --help` states that it powers off, and promises no return.
 #[test]
-fn test_deactivate_help_mentions_the_soft_reboot() {
+fn test_deactivate_help_says_it_powers_off() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("soft-reboots"));
+        .stdout(predicates::str::contains("powers the machine off"))
+        .stdout(predicates::str::contains("never goes"))
+        .stdout(predicates::str::contains("login screen").not());
 }
 
 /// Test that --config flag is accepted globally

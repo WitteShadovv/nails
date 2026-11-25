@@ -267,8 +267,7 @@ mod tests {
             ))
         };
         let emergency = format!(
-            "`{}` ends the session without the lock: it returns to the decoy where it can \
-             prepare the return and powers off where it cannot",
+            "`{}` ends the session without the lock: it powers off at once",
             sudo_line(NextStep::Emergency)
         );
         for (error, status, code) in [

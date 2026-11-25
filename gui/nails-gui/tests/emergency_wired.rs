@@ -75,13 +75,17 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
             json!({"schema_version": 2, "command": "status", "ok": true, "data": {
                 "place": "hidden", "attention": null, "hidden_root": "/mnt/data"}}),
         )],
-        // The recorded settings, which return to the decoy.
-        Op::ConfigShow(_) => vec![result(request.id, 0, fixture("config-show"))],
+        // The recorded settings, set to restart.
+        Op::ConfigShow(_) => {
+            let mut shown = fixture("config-show");
+            shown["data"]["config"]["window"]["emergency"] = json!("reboot");
+            vec![result(request.id, 0, shown)]
+        }
         Op::DeactivatePlan(_) => vec![result(
             request.id,
             0,
             json!({"schema_version": 2, "command": "deactivate", "ok": true, "data": {
-                "poweroff": false, "warnings": [], "token": "0".repeat(32)}}),
+                "poweroff": true, "warnings": [], "token": "0".repeat(32)}}),
         )],
         _ => vec![],
     });
@@ -97,17 +101,16 @@ fn an_open_question_does_not_hold_the_emergency_up_nor_answer_itself() {
 
     wired.hold();
     assert!(!wired.screen.window.get_question_open());
-    assert!(wired.screen.shows(text::EMERGENCY_RETURNING_NOW));
+    assert!(wired.screen.shows(text::EMERGENCY_RESTARTING_NOW));
     let ops: Vec<Op> = (0..4).map(|_| next_request(&requests).op).collect();
     assert_eq!(
         ops,
         [
             Op::Status,
             Op::ConfigShow(ConfigShowArgs::default()),
-            Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
-            // The way back, as the settings say: `nails emergency` without a
-            // flag.
-            Op::Emergency(Finish::Return.args())
+            Op::DeactivatePlan(DeactivateArgs { poweroff: true }),
+            // The restart, as the settings say: `nails emergency --reboot`.
+            Op::Emergency(Finish::Reboot.args())
         ],
         "the plan was neither applied nor withdrawn first"
     );

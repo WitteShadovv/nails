@@ -131,7 +131,6 @@ pub fn allow_question(message: &str, locked: bool) -> Question {
         destructive: true,
         prompt: Some(text::type_to_continue(text::ALLOW_WORD)),
         locked,
-        alternative: None,
     }
 }
 
@@ -177,7 +176,6 @@ pub fn activate_question(
         destructive: false,
         prompt: None,
         locked: false,
-        alternative: None,
     }
 }
 

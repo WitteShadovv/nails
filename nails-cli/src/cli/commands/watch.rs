@@ -20,9 +20,9 @@
 //! every mount then counts as the session's own storage, as no device tells
 //! it apart. Where neither can be read it never tears the session down
 //! unasked: it watches alert-only, or not at all, and tells the operator so
-//! once. Without the plan a return to the decoy does nothing, so the
-//! automatic emergency the settings ask for powers the machine off instead
-//! ([`auto_emergency`]), and the watcher says so once.
+//! once. The automatic emergency the settings ask for powers the machine off,
+//! as every hidden session ends, with the plan or without
+//! ([`auto_emergency`]); without the plan the watcher says so once.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -70,9 +70,8 @@ enum Start {
 /// `on_volume` reads. The hidden root is the plan's, else the settings'.
 /// Where no settings can be read, the watcher watches alert-only and says so
 /// once: it never runs the emergency itself then. Where the plan cannot be
-/// read, a return to the decoy would do nothing at all, so the automatic
-/// emergency powers the machine off instead, and the watcher says so once
-/// where the settings ask for one. Where neither the plan nor the settings
+/// read, the automatic emergency powers the machine off all the same, and
+/// the watcher says so once where the settings ask for one. Where neither the plan nor the settings
 /// can be read, it says the session runs without it. A plan that is not there
 /// is no session.
 fn start(
@@ -115,16 +114,14 @@ fn start(
             manifest,
             plan: plan.map(Box::new),
             config: Box::new(config),
-            finish: Finish::Return,
+            finish: Finish::session_end(),
             notice: None,
         },
         (None, Some(config)) => {
             let watch = &config.backend_watch;
             let powers_off = watch.enabled && watch.auto_emergency;
             if powers_off {
-                tracing::warn!(
-                    "Without the session plan the automatic emergency cannot return; it powers off"
-                );
+                tracing::warn!("Without the session plan the automatic emergency powers off");
             }
             Start::Watch {
                 manifest: RuntimeManifest {
@@ -134,7 +131,7 @@ fn start(
                 },
                 plan: None,
                 config: Box::new(config),
-                finish: Finish::Poweroff,
+                finish: Finish::session_end(),
                 notice: powers_off.then(power_off_notice),
             }
         }
@@ -144,7 +141,7 @@ fn start(
                 manifest,
                 plan: plan.map(Box::new),
                 config: Box::new(alert_only()),
-                finish: Finish::Return,
+                finish: Finish::session_end(),
                 notice: Some(alert_only_notice()),
             }
         }
@@ -361,19 +358,13 @@ fn storage_plan(mut plan: Plan, hidden_root: &Path) -> Plan {
     plan
 }
 
-/// Run the automatic emergency through `run`, the hot path, to `finish`: a
-/// return to the decoy where the watcher read the session plan, else a
-/// power-off ([`start`]). A return that finds no plan when it fires does
-/// nothing at all, so the watcher then powers off the same way, as the sleep
-/// guard does without a plan. Says whether the emergency acted, which ends
-/// the watch loop: where not even a power-off could be asked for, the
-/// watcher watches on.
+/// Run the automatic emergency through `run`, the hot path, to `finish`: the
+/// session's end, a power-off ([`Finish::session_end`]), with the session
+/// plan or without. Says whether the emergency acted, which ends the watch
+/// loop: where not even a power-off could be asked for, the watcher watches
+/// on.
 fn auto_emergency(finish: Finish, mut run: impl FnMut(Finish) -> HotReport) -> bool {
-    let mut report = run(finish);
-    if finish == Finish::Return && report.found_nothing() {
-        tracing::warn!("The emergency found no session plan to return with; powering off instead");
-        report = run(Finish::Poweroff);
-    }
+    let report = run(finish);
     let acted = !report.found_nothing() || report.dispatched.is_some() || report.kernel_power_off;
     tracing::warn!(
         acted,

@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-The last step before each soft-reboot switch (run by systemd, not by hand)
+The last step before the soft-reboot into the hidden session (run by systemd, not by hand)
 
 Usage: nails transition [OPTIONS]
 

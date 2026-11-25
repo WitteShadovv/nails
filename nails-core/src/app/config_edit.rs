@@ -159,8 +159,8 @@ impl Failure {
             ),
             Failure::SessionPaths(key) => format!(
                 "`{key}` cannot change while a hidden session runs, is entering or was left \
-                 behind by an interrupted entry: the way back to the decoy finds the session's \
-                 state where the session recorded it. Make this change on another machine, with \
+                 behind by an interrupted entry: NAILS finds the session's state where the \
+                 session recorded it. Make this change on another machine, with \
                  the hidden volume mounted there. Nothing was written."
             ),
             Failure::Read(error) | Failure::Invalid(error) => format!(

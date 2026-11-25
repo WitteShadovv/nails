@@ -7,69 +7,58 @@
 //! of `systemd-soft-reboot.service`. That service is ordered after
 //! `shutdown.target`, `umount.target` and `final.target`, so every unit of the
 //! userspace being left has stopped (journald included) when it runs, and
-//! nothing runs after it but PID 1. It acts only on an **armed** plan
-//! ([`crate::whole_root::plan::Arm`]):
+//! nothing runs after it but PID 1. PID 1 switches root when the service
+//! succeeds (`SuccessAction=soft-reboot-force`).
 //!
-//! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
-//!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
-//!   the decoy units the hidden systemd must never start, skip those a boot
-//!   target requires ([`crate::whole_root::skips`]), mask the generators it
-//!   must never run and, best effort, the units the hidden root does not need,
-//!   install the hidden session's runtime units (and, opted in, the udev rule
-//!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
-//!   narrow the `/run` snapshot to what the decoy's own shutdown left, drop the
-//!   `utab` lines of the mounts the switch leaves behind
-//!   ([`crate::whole_root::utab`]), copy the decoy's records
-//!   ([`crate::whole_root::run_records`]), drop journald's stored output
-//!   streams ([`crate::whole_root::tail::drop_journal_streams`]), and record
-//!   the entry.
-//! - **Leave** (hidden to decoy): end the session's processes that PID 1
-//!   would still kill at the switch, but udevd's ([`crate::whole_root::tail`]), repoint
-//!   `/run/current-system` back to the decoy, make the disks the session set read-only writable again and remove
-//!   the rule, the drop-ins and the masks, scrub `/run`
-//!   ([`crate::whole_root::run_scrub`]), put the decoy's records back, leave
-//!   the line that removes the empty `/run/nextroot` at the decoy's start
-//!   and, once the hidden units have stopped, reset the zram devices that
-//!   hold a swap area out of use ([`crate::whole_root::zram`]), put the
-//!   decoy's network state back ([`crate::whole_root::network`]), give the
-//!   decoy's `utab` lines back to the decoy mounts the way back restored, wait,
-//!   bounded, until PID 1 has taken down the units of the mounts the scrub
-//!   detached, end what process of the session started since, quiet an ext4
-//!   hidden volume's unmount line and, last before the cursor, empty
-//!   journald's sockets in place ([`crate::whole_root::tail`]), write the
-//!   kmsg cursor and, last, set the kernel's process-number counter back to
-//!   where the decoy's own boot numbered its units
-//!   ([`crate::whole_root::fresh_pids`]).
-//!   When what it sets out to undo of the network state is still the
-//!   session's afterwards (a decoy device keeps another MAC address, a link,
-//!   rule or table of the session's is still there, or a part cannot be read
-//!   back: [`network::Kept::failed`]), it powers off instead of returning:
-//!   that state lives only in the kernel, where a power-off erases it.
-//!   Nothing on the screen says why, as a line there would tell anyone
-//!   watching that a hidden session has just ended.
+//! **One switch only.** The step lets PID 1 switch in one direction alone:
+//! **into** the hidden root, on a plan armed for the entry
+//! ([`crate::whole_root::plan::Arm`]). It repoints `/run/current-system` to the
+//! hidden NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`),
+//! masks the decoy units the hidden systemd must never start, skips those a
+//! boot target requires ([`crate::whole_root::skips`]), masks the generators
+//! it must never run and, best effort, the units the hidden root does not
+//! need, installs the hidden session's runtime units (and, opted in, the udev
+//! rule that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
+//! drops the `utab` lines of the mounts the switch leaves behind
+//! ([`crate::whole_root::utab`]) and records the entry. A hidden session never
+//! goes back to the decoy's kernel: it ends in a power-off
+//! ([`crate::whole_root::session_end`]), and a plan armed for the way back,
+//! which nothing of this build arms, powers off as well.
 //!
-//! Before either it checks the next root's init the way PID 1 will; when the
-//! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
-//! restarts userspace on the current root instead of freezing.
+//! **Fail closed.** Every outcome but the few named below ends the session
+//! the way every hidden session ends ([`end`]): the step asks PID 1 to power
+//! off at once, then the kernel, and returns only where neither took it. The
+//! caller then exits non-zero, and the drop-in's `FailureAction=` makes PID 1
+//! power off ([`dropin_text`]); a step that dies or cannot start ends the same
+//! way. Before a power-off on the decoy side, the reason goes to the hidden
+//! volume ([`switch_refusal`]) so `status` can say it next time. The outcomes
+//! that let the switch go on, each with its reason:
+//!
+//! - **No session plan** ([`Outcome::NothingToDo`]): NAILS staged nothing in
+//!   this boot, so a `/run/nextroot` there is another tool's, and the
+//!   soft-reboot is a plain one. A plan that exists but cannot be read is no
+//!   such case: it powers off.
+//! - **A plan armed for nothing and no `/run/nextroot`**
+//!   ([`Outcome::NothingToDo`]): PID 1 starts userspace again on the root it
+//!   runs on and switches nothing. In the hidden root that is the hidden
+//!   userspace again, with its masks still in `/run`.
+//! - **A `/run/nextroot` the plan did not arm** ([`Outcome::Disarmed`], the
+//!   leftover guard): a populated `/run/nextroot` turns a later plain `reboot`
+//!   into a soft-reboot into it (systemd >= 255). On the decoy side that is
+//!   the tree of an activation that died before it armed the switch, and
+//!   nothing of a hidden session ran in this boot: the step detaches the tree
+//!   and removes the runtime pieces, so PID 1 starts the decoy's userspace
+//!   again in place ([`disarm`]). In the hidden session it is a tree someone
+//!   mounted there, the decoy's root perhaps: the step detaches it and the
+//!   hidden session goes on. Either only while nothing stays mounted at
+//!   `/run/nextroot` afterwards; else it powers off.
 //!
 //! **The program's domain.** Where the plan records an SELinux label for the
-//! RAM copy of the binary ([`Plan::program_label`]), an armed step first
+//! RAM copy of the binary ([`Plan::program_label`]), an armed entry first
 //! checks that it runs in the domain that label gives it, as PID 1 started it
 //! ([`Env::start`], [`crate::whole_root::program_label::enter_domain`]): one
 //! that runs elsewhere gives the copy the label again and starts itself again
-//! from it, once. Where it still runs elsewhere it does nothing of the
-//! switch, which it could not do right there, and refuses it, as for a failed
-//! init check. On the way back it first powers off ([`power_off_instead`]):
-//! from another domain it could not take the kernel log's cursor, and a
-//! return would hand the decoy's journal the hidden session's kernel log.
-//! Only where neither PID 1 nor the kernel takes the power-off is the way back
-//! refused, and the hidden session goes on.
-//!
-//! **The leftover guard.** A populated `/run/nextroot` turns a later plain
-//! `reboot` into a soft-reboot into it (systemd >= 255). If the plan is not
-//! armed for this transition (an activation died after building the tree, or
-//! the arming expired), this step detaches `/run/nextroot` instead of letting
-//! PID 1 enter it.
+//! from it, once. Where it still runs elsewhere it powers off.
 //!
 //! **The timeout guard.** systemd gives a switch 30 minutes: from 254 to 262
 //! `soft-reboot.target` sets `JobTimeoutSec=30min` and
@@ -77,33 +66,30 @@
 //! whose stop never ends, or PID 1 asleep with work queued, as in systemd
 //! issue #44107) would then go on by force without
 //! `systemd-soft-reboot.service`, and so without this step: the hidden session
-//! would start without its masks, or the decoy with the hidden session's
-//! files in `/run`. A runtime guard installed and removed with the drop-in
-//! ([`SWITCH_TIMEOUT_TEXT`]) powers the machine off at that timeout instead,
-//! on the way in and on the way back alike.
+//! would start without its masks. A runtime guard installed with the drop-in
+//! ([`SWITCH_TIMEOUT_TEXT`]) powers the machine off at that timeout instead.
+//! It stays for the whole session, so a soft-reboot in the hidden session that
+//! hangs powers off too.
 //!
 //! It never writes to the decoy disk and never logs: its output goes nowhere,
 //! and a name sent to `/dev/kmsg` would reach the decoy's ring buffer. The one
-//! thing it does keep is the reason a switch was refused ([`disarm`]), never on
-//! the decoy (see [`switch_refusal`]): a refused entry's on the encrypted hidden
-//! volume beside the state file, written through the volume's bind in the next
-//! root while that bind is on the volume's recorded device; a refused way
-//! back's in the runtime directory in RAM, which every way back removes.
+//! thing it does keep is the reason a switch was refused ([`disarm`], [`end`]),
+//! never on the decoy (see [`switch_refusal`]): a refused entry's on the
+//! encrypted hidden volume beside the state file, written through the volume's
+//! bind in the next root while that bind is on the volume's recorded device;
+//! in the hidden session in the runtime directory in RAM.
 
-use crate::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo};
+use crate::mountinfo::{MountEntry, read_mountinfo};
 use crate::whole_root::disk_guard;
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
-    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
-    UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
+    self, BINARY_NAME, Direction, PLAN_NAME, Plan, PlanError, RUNTIME_DIR, SNAPSHOT_NAME, unix_now,
 };
-use crate::whole_root::program_label::{DOMAIN, Labelling, Outside, Started};
-use crate::whole_root::run_scrub::{self, Snapshot};
+use crate::whole_root::program_label::{DOMAIN, Outside, Started};
+use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::selinux::{self, Selinux};
-use crate::whole_root::{
-    boot_records, fresh_pids, kernel_helpers, network, run_records, runtime_units, skips,
-    switch_refusal, tail, utab, zram,
-};
+use crate::whole_root::session_end::session_end;
+use crate::whole_root::{kernel_helpers, runtime_units, skips, switch_refusal, utab};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -115,10 +101,21 @@ pub const DROPIN_NAME: &str = "50-overlay-runtime.conf";
 pub const TRANSITION_ARG: &str = "transition";
 
 /// The drop-in text that runs `binary transition` as the service's start.
+///
+/// The step fails closed: it exits non-zero where it could not end the
+/// session itself ([`Outcome::exit_code`]), and so does a step that dies, or
+/// a binary that cannot start. The service then fails, which skips its
+/// `SuccessAction=soft-reboot-force` (no switch), and its `FailureAction=`
+/// powers the machine off ([`SessionEnd::emergency_action`]: the forced form,
+/// which systemd runs while `shutdown.target` is active).
+///
+/// [`SessionEnd::emergency_action`]: crate::whole_root::session_end::SessionEnd::emergency_action
 pub fn dropin_text(binary: &Path) -> String {
     format!(
-        "[Service]\nType=oneshot\nStandardInput=null\nStandardOutput=null\nStandardError=null\n\
-         ExecStart=-{} {TRANSITION_ARG}\n",
+        "[Unit]\nFailureAction={}\n\
+         [Service]\nType=oneshot\nStandardInput=null\nStandardOutput=null\nStandardError=null\n\
+         ExecStart={} {TRANSITION_ARG}\n",
+        session_end().emergency_action(),
         binary.display()
     )
 }
@@ -133,9 +130,8 @@ pub fn dropin_text(binary: &Path) -> String {
 /// filesystem on a device-mapper device that is not mounted on one of its
 /// fixed system paths: on the way in the hidden volume below
 /// `/run/nextroot`, which leaves the hidden session without its volume at its
-/// path; on the way back the decoy root below `/run/nextroot` when the decoy
-/// root is on LUKS or LVM, which would leave PID 1 nothing to switch to. A
-/// real power-off still detaches device-mapper devices in systemd-shutdown.
+/// path. A real power-off, which ends every hidden session, still detaches
+/// device-mapper devices in systemd-shutdown.
 ///
 /// `network-addresses-<interface>.service` is how NixOS applies a static
 /// address (`networking.interfaces`). Its stop deletes the address, and it
@@ -354,13 +350,6 @@ pub fn remove_dropin(run: &Path, kept: &Snapshot) -> bool {
     removed
 }
 
-/// The jobs of the soft-reboot itself, which wait for the transition.
-const OWN_JOBS: [&str; 2] = ["soft-reboot.target", "systemd-soft-reboot.service"];
-
-/// How long the way back waits for other units to finish stopping before it
-/// takes the kmsg cursor.
-const OTHER_JOBS_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
-
 /// Where the transition looks.
 #[derive(Debug, Clone)]
 pub struct Env {
@@ -370,39 +359,21 @@ pub struct Env {
     pub nextroot: PathBuf,
     /// The runtime directory holding the plan.
     pub runtime_dir: PathBuf,
-    /// The kernel log device.
-    pub kmsg: PathBuf,
-    /// `systemctl`, to wait for the other units' stop jobs before the kmsg
-    /// cursor is taken; `None` skips the wait.
+    /// `systemctl`, which [`end`] asks to power off at once; `None` leaves
+    /// that to the kernel.
     pub systemctl: Option<PathBuf>,
     /// Now, in seconds since the epoch.
     pub now: u64,
-    /// The live mount table.
-    pub mounts: Vec<MountEntry>,
-    /// Where the way back sets the process-number counter
-    /// ([`fresh_pids::lower`]); `None` leaves it alone.
-    pub pid_places: Option<fresh_pids::Places>,
-    /// Where the way back resets the zram devices that hold a swap area out
-    /// of use ([`zram::reset_idle_swaps`]); `None` leaves them alone.
-    pub zram: Option<zram::Places>,
-    /// Where the way back reads and writes the network state
-    /// ([`network::Places::system`]).
-    pub network: network::Places,
-    /// What the way back asks to put the network state back, or `None` for
-    /// the running kernel, over netlink, as [`network::restore`] does.
-    pub network_kernel: Option<std::sync::Arc<dyn network::NetKernel>>,
-    /// How the way back powers off when it cannot put the network state back.
+    /// The live mount table, or `None` where it could not be read: the step
+    /// then cannot tell whether `/run/nextroot` is mounted, and powers off.
+    pub mounts: Option<Vec<MountEntry>>,
+    /// How the step powers off when it cannot do its work ([`end`]).
     pub power_off: PowerOff,
-    /// Where the way back ends every process of the session that PID 1 would
-    /// kill at the switch but udevd's, empties journald's sockets and quiets
-    /// the hidden filesystem before the
-    /// kmsg cursor ([`tail`]); `None` skips the three. A test gives it a fake
-    /// procfs or none: the real places kill processes and read PID 1's
-    /// sockets.
-    pub tail: Option<tail::Places>,
-    /// What gives the copy the way back leaves for the decoy's first start
-    /// the label the plan records ([`Plan::program_label`]), and tells the
-    /// domain this step runs in: the running kernel's SELinux, or a test's
+    /// What detaches the tree at `/run/nextroot` and returns what is still
+    /// mounted on or below it ([`nextroot::detach_tree`]; a test's stand-in).
+    pub detach: fn(&Path) -> Vec<PathBuf>,
+    /// What tells the domain this step runs in, and gives the RAM copy of the
+    /// binary its label again: the running kernel's SELinux, or a test's
     /// stand-in.
     pub selinux: &'static dyn Selinux,
     /// How this step was started: by PID 1 from the drop-in, as itself again,
@@ -410,7 +381,7 @@ pub struct Env {
     pub start: Started,
 }
 
-/// How the way back powers off instead of returning ([`PowerOff::system`]).
+/// How the step powers off ([`PowerOff::system`]).
 #[derive(Debug, Clone, Copy)]
 pub struct PowerOff {
     /// How long it waits, once PID 1 took the power-off, before it asks the
@@ -434,32 +405,18 @@ impl PowerOff {
 impl Env {
     /// The real system, for a step started as `start` says.
     pub fn system(start: Started) -> Self {
-        let run = PathBuf::from("/run");
         Self {
-            network: network::Places::system(&run),
-            run,
+            run: PathBuf::from("/run"),
             nextroot: PathBuf::from(NEXTROOT),
             runtime_dir: PathBuf::from(RUNTIME_DIR),
-            kmsg: PathBuf::from("/dev/kmsg"),
             systemctl: crate::whole_root::tools::find(None, "systemctl"),
             now: unix_now(),
-            mounts: read_mountinfo().unwrap_or_default(),
-            pid_places: Some(fresh_pids::Places::system()),
-            zram: Some(zram::Places::system()),
-            network_kernel: None,
+            mounts: read_mountinfo().ok(),
             power_off: PowerOff::system(),
-            tail: Some(tail::Places::system()),
+            detach: nextroot::detach_tree,
             selinux: &selinux::KERNEL,
             start,
         }
-    }
-
-    fn nextroot_mounted(&self) -> bool {
-        nextroot::is_mount_point(&self.mounts, &self.nextroot)
-    }
-
-    fn mount_points(&self) -> Vec<PathBuf> {
-        self.mounts.iter().map(|e| e.mount_point.clone()).collect()
     }
 
     /// The `/run` snapshot the entry saved, if any.
@@ -475,27 +432,25 @@ pub enum Outcome {
     NothingToDo,
     /// Prepared the entry into the hidden root.
     Entered,
-    /// Prepared the return to the decoy and scrubbed `/run`.
-    Returned {
-        /// Entries the scrub removed.
-        removed: usize,
-        /// Entries it could not remove.
-        failed: usize,
-        /// The network state the way back could not put back, and the parts
-        /// it left alone ([`network::restore`]), boxed so the outcome stays
-        /// small.
-        network: Box<network::Kept>,
-        /// What became of the process-number counter ([`fresh_pids::lower`]).
-        pids: fresh_pids::Lowered,
-        /// What became of each zram device ([`zram::reset_idle_swaps`]).
-        zram: Vec<(String, zram::Reset)>,
-        /// What did not succeed of emptying journald's sockets and store
-        /// ([`tail::settle_journal_sockets`], [`tail::drain_journal_sockets`]).
-        journal: Vec<String>,
-    },
-    /// `/run/nextroot` was populated but not armed for this transition, or
-    /// failed the init check: it was detached, so PID 1 stays on this root.
+    /// `/run/nextroot` was populated but not armed for this transition: it
+    /// was detached, so PID 1 stays on this root.
     Disarmed(String),
+    /// The step could not do its work, or met a switch it must never let
+    /// happen, and asked for the session's end ([`end`]). It returns only
+    /// where neither PID 1 nor the kernel took it. Carries why.
+    Ended(String),
+}
+
+impl Outcome {
+    /// The exit code of the step: 0 lets the switch (or a plain soft-reboot)
+    /// go on; non-zero fails the service, which then powers off through its
+    /// `FailureAction=` ([`dropin_text`]) instead of switching.
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Outcome::NothingToDo | Outcome::Entered | Outcome::Disarmed(_) => 0,
+            Outcome::Ended(_) => 1,
+        }
+    }
 }
 
 /// Repoint the `current-system` link under `run` to `target`, atomically.
@@ -515,66 +470,119 @@ pub fn repoint_current_system(run: &Path, target: &Path) -> io::Result<Option<Pa
 
 /// Run the transition step. See the module docs.
 pub fn run(env: &Env) -> Outcome {
-    let Ok(mut plan) = Plan::load(&env.runtime_dir.join(PLAN_NAME)) else {
+    let mut plan = match Plan::load(&env.runtime_dir.join(PLAN_NAME)) {
+        Ok(plan) => plan,
         // Not ours to judge: without a plan, /run/nextroot may be another
         // tool's staged root.
-        return Outcome::NothingToDo;
+        Err(PlanError::Missing) => return Outcome::NothingToDo,
+        Err(e) => return end(env, None, &format!("the session plan cannot be read: {e}")),
     };
-    if !env.nextroot_mounted() {
-        return Outcome::NothingToDo;
-    }
-    let Some(direction) = [Direction::Enter, Direction::Leave]
+    let Some(mounts) = &env.mounts else {
+        return end(env, Some(&plan), "the mount table cannot be read");
+    };
+    let mounted = nextroot::is_mount_point(mounts, &env.nextroot);
+    let direction = [Direction::Enter, Direction::Leave]
         .into_iter()
-        .find(|direction| plan.armed_for(*direction, env.now))
-    else {
-        return disarm(env, &plan, "not armed for this transition");
-    };
-    if plan.program_label.is_some()
-        && let Err(outside) = env
-            .start
-            .enter_domain(env.selinux, &env.runtime_dir.join(BINARY_NAME))
-    {
-        return outside_domain(env, &plan, direction, &outside);
-    }
-    match direction {
-        Direction::Enter => enter(env, &mut plan),
-        Direction::Leave => leave(env, &plan),
+        .find(|direction| plan.armed_for(*direction, env.now));
+    match (direction, mounted) {
+        (Some(Direction::Leave), _) => end(
+            env,
+            Some(&plan),
+            "the switch is armed for a way back to the decoy, and a hidden session never goes back",
+        ),
+        (Some(Direction::Enter), false) => end(
+            env,
+            Some(&plan),
+            "the entry is armed, but nothing is mounted at /run/nextroot",
+        ),
+        (None, _) if plan.armed.is_some() => {
+            end(env, Some(&plan), "the arming of the switch expired")
+        }
+        (None, false) => Outcome::NothingToDo,
+        (None, true) => disarm(env, &plan, mounts, "not armed for this transition"),
+        (Some(Direction::Enter), true) => {
+            if plan.program_label.is_some()
+                && let Err(outside) = env
+                    .start
+                    .enter_domain(env.selinux, &env.runtime_dir.join(BINARY_NAME))
+            {
+                return outside_domain(env, &plan, &outside);
+            }
+            enter(env, &mut plan, mounts)
+        }
     }
 }
 
-/// The end of an armed step that does not run in the program's domain (see
-/// the module docs): on the way back a power-off first, then, as on the way
-/// in, the switch refused.
-fn outside_domain(env: &Env, plan: &Plan, direction: Direction, outside: &Outside) -> Outcome {
-    if direction == Direction::Leave {
-        let _ = power_off_instead(
-            env.systemctl.as_deref(),
-            env.power_off.grace,
-            env.power_off.kernel,
-        );
-    }
+/// The end of an armed entry that does not run in the program's domain (see
+/// the module docs): a power-off.
+fn outside_domain(env: &Env, plan: &Plan, outside: &Outside) -> Outcome {
     let why = format!("the last step before the switch does not run in {DOMAIN}: {outside}");
-    disarm(env, plan, &why)
+    end(env, Some(plan), &why)
+}
+
+/// End the session the way every hidden session ends
+/// ([`crate::whole_root::session_end`]), because the switch must not go on:
+/// keep why (`why`) where `status` can read it, as [`disarm`] does, then ask
+/// PID 1 and the kernel to power off at once. Where neither took it, which
+/// happens only where the kernel refuses (a test's stand-in, a container),
+/// undo what the entry did of the switch that this process can undo (the
+/// repoint of `current-system` on the decoy side) and detach `/run/nextroot`,
+/// so that nothing can switch into it, and return: the caller exits
+/// non-zero, and the drop-in's `FailureAction=` powers off.
+fn end(env: &Env, plan: Option<&Plan>, why: &str) -> Outcome {
+    if let Some(plan) = plan {
+        keep_refusal(env, plan, env.mounts.as_deref(), why);
+    }
+    let _ = session_end().now(
+        env.systemctl.as_deref(),
+        env.power_off.grace,
+        env.power_off.kernel,
+    );
+    if let Some(plan) = plan
+        && plan.entered_at.is_none()
+        && let Some(system) = &plan.decoy.system
+    {
+        let _ = repoint_current_system(&env.run, system);
+    }
+    let _ = (env.detach)(&env.nextroot);
+    Outcome::Ended(why.to_string())
+}
+
+/// Keep why the switch was refused, before detaching anything, so `status`
+/// can say so. The shutdown has unmounted the hidden volume at its own path:
+/// in the hidden session, which PID 1 does not leave, the reason goes to the
+/// runtime directory; on the decoy side to the hidden volume through its bind
+/// in the next root, only while that bind is on the recorded device (and so
+/// not where the mount table cannot be read). Both are no-ops unless a switch
+/// was armed, so a plain reboot that meets a leftover tree records nothing.
+fn keep_refusal(env: &Env, plan: &Plan, mounts: Option<&[MountEntry]>, why: &str) {
+    if plan.entered_at.is_some() {
+        switch_refusal::record_in_runtime(plan, &env.runtime_dir, why, env.now);
+    } else if let Some(mounts) = mounts {
+        switch_refusal::record_on_volume(mounts, plan, &env.nextroot, why, env.now);
+    }
 }
 
 /// Detach a `/run/nextroot` the plan did not arm. On the decoy side (never
 /// entered) the runtime pieces go too and the hidden backend is marked for
 /// deferred removal, so nothing of the failed activation is left, its key
-/// included; in the hidden session the plan stays for a later deactivation.
-fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
-    // Keep why the switch was refused, before detaching anything, so `status`
-    // can say so. The shutdown has unmounted the hidden volume at its own
-    // path: in the hidden session, which PID 1 does not leave, the reason goes
-    // to the runtime directory; on the decoy side to the hidden volume through
-    // its bind in the next root, only while that bind is on the recorded
-    // device. Both are no-ops unless a switch was armed, so a plain reboot that
-    // meets a leftover tree records nothing.
-    if plan.entered_at.is_some() {
-        switch_refusal::record_in_runtime(plan, &env.runtime_dir, why, env.now);
-    } else {
-        switch_refusal::record_on_volume(&env.mounts, plan, &env.nextroot, why, env.now);
+/// included; in the hidden session the plan stays. Where something stays
+/// mounted at `/run/nextroot`, PID 1 would switch into it: it powers off
+/// instead ([`end`]).
+fn disarm(env: &Env, plan: &Plan, mounts: &[MountEntry], why: &str) -> Outcome {
+    keep_refusal(env, plan, Some(mounts), why);
+    let remaining = (env.detach)(&env.nextroot);
+    if !remaining.is_empty() {
+        let list: Vec<String> = remaining.iter().map(|p| p.display().to_string()).collect();
+        return end(
+            env,
+            None,
+            &format!(
+                "{why}, and {} stays mounted after the detach",
+                list.join(", ")
+            ),
+        );
     }
-    nextroot::detach_tree(&env.nextroot);
     if plan.entered_at.is_none() {
         // A reboot that met the leftover tree: the volume was unmounted by
         // the shutdown, and a real reboot would have closed it too.
@@ -615,15 +623,28 @@ fn repoint_and_check(env: &Env, side: &plan::RootSide) -> Result<(), String> {
     Ok(())
 }
 
-fn enter(env: &Env, plan: &mut Plan) -> Outcome {
+/// Prepare the entry, or end the session where any part of it that the
+/// hidden session's safety rests on fails (see the module docs). Only two
+/// parts are best effort, each for its reason:
+///
+/// - the masks of the units the hidden root does not need
+///   ([`runtime_units::mask_units_best_effort`]): they fail there or do
+///   nothing, and the boot filesystems they would write to are bound
+///   read-only by the fstab policy, whose masks are not best effort;
+/// - the `utab` lines of the mounts the switch leaves behind
+///   ([`prune_utab`]): `utab` is in RAM, and a line left there changes only
+///   which mount options the hidden session's own tools read.
+fn enter(env: &Env, plan: &mut Plan, mounts: &[MountEntry]) -> Outcome {
     if let Err(why) = repoint_and_check(env, &plan.hidden) {
-        return disarm(env, plan, &why);
+        return end(env, Some(plan), &why);
     }
     // Without its masks and skips the hidden systemd would swap onto, or mount
     // read-write, a decoy disk: never enter without them, nor without the
     // generator masks, which keep it from mounting the partitions the GPT
-    // auto-generator would find, or swapping onto them.
-    let masked = runtime_units::mask_units(&env.run, &plan.masks)
+    // auto-generator would find, or swapping onto them. Without its session
+    // units it would run without the watcher and the sleep guard, and
+    // without the opted-in read-only rule the unused disks stay writable.
+    let prepared = runtime_units::mask_units(&env.run, &plan.masks)
         .map_err(|e| format!("could not mask decoy units: {e}"))
         .and_then(|_| {
             skips::skip_units(&env.run, &plan.skips)
@@ -632,63 +653,37 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
         .and_then(|_| {
             runtime_units::mask_generators(&env.run, &plan.generator_masks)
                 .map_err(|e| format!("could not mask generators: {e}"))
+        })
+        .and_then(|_| {
+            runtime_units::install_units(&env.run, &plan.session_units)
+                .map_err(|e| format!("could not install the session's units: {e}"))
+        })
+        .and_then(|_| {
+            if !plan.read_only_disks {
+                return Ok(());
+            }
+            disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME))
+                .map(|_| ())
+                .map_err(|e| format!("could not install the read-only rule for unused disks: {e}"))
         });
-    if let Err(why) = masked {
-        if let Some(system) = &plan.decoy.system {
-            let _ = repoint_current_system(&env.run, system);
-        }
-        return disarm(env, plan, &why);
-    }
-    // The session's own units (watcher, sleep guard) are best-effort, and so
-    // is the read-only rule for unused disks: the watcher sweeps them too. So
-    // are the masks of the units the hidden root does not need: without them
-    // those units fail there or do nothing.
-    let _ = runtime_units::install_units(&env.run, &plan.session_units);
-    if plan.read_only_disks {
-        let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));
+    if let Err(why) = prepared {
+        return end(env, Some(plan), &why);
     }
     runtime_units::mask_units_best_effort(&env.run, &plan.boot_masks);
-    narrow_snapshot(env);
-    prune_utab(env);
-    // Without the copy, the way back clears the records instead.
-    if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
-        let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
-    }
-    // The decoy's stored output streams go before the counter is read, as
-    // the way back drops the session's: neither start then spends a number
-    // on closing them ([`tail::drop_journal_streams`]).
-    if let Some(systemctl) = &env.systemctl {
-        let _ = tail::drop_journal_streams(systemctl);
-        let _ = tail::record_sockets(systemctl, &env.runtime_dir.join(tail::SOCKETS_NAME));
-    }
-    // The counter as PID 1 hands over: the way back measures how many numbers
-    // the hidden start uses from here ([`fresh_pids::counter`]).
-    plan.pids.at_switch = env
-        .pid_places
-        .as_ref()
-        .and_then(fresh_pids::Places::current);
+    prune_utab(env, mounts);
     plan.armed = None;
     plan.entered_at = Some(env.now);
-    let _ = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME));
-    Outcome::Entered
-}
-
-/// Narrow the `/run` snapshot the entry took to the entries still there now
-/// that every decoy unit has stopped. What the decoy's own shutdown removed
-/// (the PID file of a service it stopped) is then no longer the decoy's, and
-/// the way back removes it when the hidden session wrote it again, as a
-/// session ended by an emergency's kill leaves it. A plain soft-reboot would
-/// not have carried it either. Best effort: on any error the entry's snapshot
-/// stays.
-fn narrow_snapshot(env: &Env) {
-    let path = env.runtime_dir.join(SNAPSHOT_NAME);
-    let Some(saved) = Snapshot::load(&path) else {
-        return;
-    };
-    let narrowed = saved.still_present(&env.run);
-    if narrowed != saved {
-        let _ = plan::write_private_atomic(&path, &narrowed.to_text());
+    // The hidden session's own tools read the plan to tell where they run;
+    // one left armed for the entry would arm the next soft-reboot too.
+    if let Err(e) = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME)) {
+        plan.entered_at = None;
+        plan.armed = Some(plan::Arm {
+            direction: Direction::Enter,
+            at: env.now,
+        });
+        return end(env, Some(plan), &format!("could not record the entry: {e}"));
     }
+    Outcome::Entered
 }
 
 /// Keep in `utab` only the lines that still name the same mount once PID 1
@@ -696,308 +691,16 @@ fn narrow_snapshot(env: &Env) {
 /// session must not join the decoy's lines to the mounts that reuse the IDs
 /// of the decoy's root and its submounts. Best effort: on any error the file
 /// stays as it is.
-fn prune_utab(env: &Env) {
+fn prune_utab(env: &Env, mounts: &[MountEntry]) {
     let _ = utab::update(&env.run, |text| {
-        utab::surviving_lines(text, &env.mounts, &env.nextroot)
+        utab::surviving_lines(text, mounts, &env.nextroot)
     });
 }
 
-fn leave(env: &Env, plan: &Plan) -> Outcome {
-    // Read everything the scrub needs before it removes the runtime directory.
-    let snapshot = env.saved_snapshot();
-    let saved_utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
-    let utab_mounts = std::fs::read_to_string(env.runtime_dir.join(UTAB_MOUNTS_NAME))
-        .ok()
-        .map(|text| parse_mountinfo(&text));
-    let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
-    let network = std::fs::read(env.runtime_dir.join(network::RECORD_NAME)).ok();
-    let sockets = std::fs::read_to_string(env.runtime_dir.join(tail::SOCKETS_NAME))
-        .ok()
-        .map(|text| tail::listed_sockets(&text));
-    // On an FHS decoy, keep the binary copy before the scrub removes the runtime
-    // directory: the boot-record reconcile step runs it on the decoy's first
-    // start. NixOS (a decoy system toplevel) leaves records that already read as
-    // a power cycle, so it needs none.
-    let fixup_binary = plan
-        .decoy
-        .system
-        .is_none()
-        .then(|| std::fs::read(env.runtime_dir.join(BINARY_NAME)).ok())
-        .flatten();
-    // First the session's processes PID 1 would still kill at the switch:
-    // ending them runs their units' stop commands, whose writes to /run the
-    // scrub below removes and whose changes to the network and to utab the
-    // restores below undo. udevd stays for the events the network restore
-    // causes ([`tail::LEFT_TO_THE_SWITCH`]).
-    end_session_leftovers(env, plan);
-    if let Err(why) = repoint_and_check(env, &plan.decoy) {
-        if let Some(system) = &plan.hidden.system {
-            let _ = repoint_current_system(&env.run, system);
-        }
-        return disarm(env, plan, &why);
-    }
-    // The hidden activation pointed the kernel's module loader and firmware
-    // path at the hidden store; nothing runs the decoy's activation again.
-    kernel_helpers::restore(&plan.kernel_settings);
-    // The disks the session made read-only are the decoy's again, and its
-    // udevd must never load the rule (the scrub leaves /run/udev alone).
-    disk_guard::remove_rule(&env.run);
-    disk_guard::release(&env.runtime_dir);
-    // By name: the scrub keeps a drop-in directory the decoy already had,
-    // and never looks inside it.
-    let no_snapshot = Snapshot::default();
-    let kept = snapshot.as_ref().unwrap_or(&no_snapshot);
-    remove_dropin(&env.run, kept);
-    // The masks and skips go by name as well: the scrub removes them with the
-    // rest of the session's /run, but keeps them all when the snapshot is
-    // gone, and the decoy would start with its swap, its other disks, the
-    // units the hidden root does not need and its generators masked, and
-    // would skip the units the session skipped.
-    runtime_units::remove_masks(
-        &env.run,
-        &plan.masks,
-        &plan.boot_masks,
-        &plan.generator_masks,
-        kept,
-    );
-    skips::remove_skips(&env.run, &plan.skips, kept);
-    let runtime_rel = env
-        .runtime_dir
-        .strip_prefix(&env.run)
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let runtime_rel = runtime_rel.to_string_lossy().into_owned();
-    // Without a snapshot only the known session state and the runtime
-    // directory go: deleting unknown entries could remove decoy state the
-    // next boot relies on.
-    let report = match &snapshot {
-        Some(snapshot) => {
-            run_scrub::scrub(&env.run, snapshot, &[&runtime_rel], &env.mount_points())
-        }
-        None => run_scrub::scrub(
-            &env.run,
-            &Snapshot::take(&env.run),
-            &[&runtime_rel],
-            &env.mount_points(),
-        ),
-    };
-    run_records::restore(&env.run, records.as_deref());
-    // The empty folder the switch leaves where the decoy root is mounted for
-    // it can only go once PID 1 has left the hidden root: the decoy's start
-    // removes it ([`tail::remove_nextroot_at_start`]).
-    let _ = tail::remove_nextroot_at_start(&env.run);
-    // A hidden unit that is not ordered before the shutdown can still be
-    // stopping now: its unmount rewrites utab, it may write to the kernel log
-    // after a cursor taken at once, and PID 1 logs its end. Wait, bounded,
-    // until only the soft-reboot's own jobs are left.
-    if let Some(systemctl) = &env.systemctl {
-        reset_new_failures(systemctl, &plan.failed_at_entry);
-        let _ =
-            crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
-    }
-    // Now that the hidden units have stopped, reset every zram device that
-    // holds a swap area no swap uses (one whose reset failed at a stop, or the
-    // decoy's own left with its swap off), before the kmsg cursor is taken.
-    let zram_reset = env
-        .zram
-        .as_ref()
-        .map(zram::reset_idle_swaps)
-        .unwrap_or_default();
-    // Now that the hidden network units have stopped, give the decoy its
-    // network state back: delete the links, rules and firewall tables the
-    // session made, set each device's recorded address, the hostname and the
-    // network settings back, and put the service manager's per-link runtime
-    // state back. A no-op without a record. What could not be put back goes
-    // into the outcome, as nothing here may log.
-    let network_kept = match &env.network_kernel {
-        Some(kernel) => network::restore_with(&env.network, kernel.as_ref(), network.as_deref()),
-        None => network::restore(&env.network, network.as_deref()),
-    };
-    // What the restore could not undo, or cannot tell it undid, lives only in
-    // the kernel: a power-off erases it, a return hands it to the decoy. So
-    // power off instead, without a word on the screen, where it would be a
-    // tell. This returns only when neither PID 1 nor the kernel took the
-    // power-off, and the way back then returns after all.
-    if network_kept.failed() {
-        let _ = power_off_instead(
-            env.systemctl.as_deref(),
-            env.power_off.grace,
-            env.power_off.kernel,
-        );
-    }
-    // The decoy's copy, taken at entry, names mounts by their IDs at that time;
-    // the decoy root and its other mounts come back as new mounts, whose IDs
-    // the way back recorded, and the old IDs may name the session's mounts or
-    // none. The session's lines go.
-    if let Some(saved) = saved_utab {
-        let restored: Vec<(i32, i32)> = plan
-            .decoy_mounts
-            .iter()
-            .filter_map(|mount| Some((mount.id, mount.restored?)))
-            .collect();
-        let restored = (!plan.decoy_mounts.is_empty()).then_some(restored.as_slice());
-        let _ = utab::update(&env.run, |_| {
-            utab::restored_lines(
-                &saved,
-                utab_mounts.as_deref(),
-                restored,
-                &env.mounts,
-                &env.nextroot,
-            )
-        });
-    }
-    // A process exec'd from /run keeps running once it turns noexec again. On an
-    // FHS decoy whose login or boot records a soft-reboot would give away, the
-    // pieces left for the decoy's first start run the binary copy from /run,
-    // and the reconcile one-shot turns noexec back on once they have, so /run
-    // stays executable until then. Everything else sets noexec here, and so
-    // does a failed install, a copy that does not take the plan's label among
-    // them: the decoy's PID 1 would start it in its own domain. Done this late
-    // so the boot clock read now dates the switch itself, which comes next.
-    let label = plan.program_label.as_deref().map(|label| Labelling {
-        selinux: env.selinux,
-        label,
-    });
-    let fixup_installed = fixup_binary
-        .as_deref()
-        .and_then(|binary| Some((binary, boot_records::Fix::for_decoy(&env.nextroot)?)))
-        .is_some_and(|(binary, fix)| {
-            let switched_at = boot_records::boot_clock();
-            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec, label)
-                .is_ok()
-        });
-    if plan.run_noexec && !fixup_installed {
-        let _ = nextroot::set_noexec(&env.run, true);
-    }
-    // Nothing of the hidden session may log after the cursor, and nothing it
-    // sent journald may wait for the decoy's journald.
-    let journal = finish_tail(env, plan, sockets.as_deref(), &report.detached);
-    // Anything logged after this is imported by the decoy journald.
-    if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
-        let _ = run_scrub::write_kernel_seqnum(&env.run, next);
-    }
-    // Last, after every process this step started: the next process is one
-    // PID 1 starts for the decoy, numbered from where the decoy's own boot
-    // numbered its units. Best effort, as everything here.
-    let pids = env
-        .pid_places
-        .as_ref()
-        .map_or(fresh_pids::Lowered::NoRecord, |places| {
-            fresh_pids::lower(plan.pids.way_back_counter(), places)
-        });
-    Outcome::Returned {
-        removed: report.removed.len(),
-        failed: report.failed.len(),
-        network: Box::new(network_kept),
-        pids,
-        zram: zram_reset,
-        journal,
-    }
-}
-
-/// End what PID 1 would still kill at the switch but udevd's, which it
-/// leaves to PID 1 ([`tail::end_leftovers`], [`tail::LEFT_TO_THE_SWITCH`]),
-/// and forget the failures that left.
-fn end_session_leftovers(env: &Env, plan: &Plan) {
-    if let Some(places) = &env.tail {
-        let killed = tail::end_leftovers(places, env.systemctl.as_deref(), &OWN_JOBS);
-        if let (Some(systemctl), false) = (&env.systemctl, killed.is_empty()) {
-            reset_new_failures(systemctl, &plan.failed_at_entry);
-        }
-    }
-}
-
-/// The last steps before the kmsg cursor ([`tail`]). First wait until PID 1
-/// has taken down the units of the mounts the `/run` scrub detached
-/// (`detached`), so that it logs their end before the cursor
-/// ([`tail::wait_for_unmounted`]). Then end once more what PID 1 would still
-/// kill at the switch but udevd's, which it leaves to PID 1
-/// ([`tail::LEFT_TO_THE_SWITCH`]): this pass finds nothing after the way
-/// back's first one unless a process started since or outlasted the first
-/// (one in uninterruptible sleep). Then drop journald's
-/// descriptor store and put its socket units as the decoy had them, and quiet
-/// the hidden ext4 filesystem, whose unmount follows the switch. Last, once
-/// every process of the session that PID 1 would kill at the switch but
-/// udevd's has ended (or outlasted that pass's bound), empty journald's
-/// sockets in place: what reached them
-/// during the steps before, the wait included, does not stay there for the
-/// decoy's journald. `sockets` are the journald socket units the decoy had
-/// active at the entry. Returns what did not succeed of the work on
-/// journald's sockets.
-fn finish_tail(
-    env: &Env,
-    plan: &Plan,
-    sockets: Option<&[String]>,
-    detached: &[PathBuf],
-) -> Vec<String> {
-    if let (Some(systemctl), false) = (&env.systemctl, detached.is_empty()) {
-        let _ = tail::wait_for_unmounted(systemctl, detached, nextroot::mount_points);
-    }
-    end_session_leftovers(env, plan);
-    let mut journal = match &env.systemctl {
-        Some(systemctl) => tail::settle_journal_sockets(systemctl, sockets),
-        None => vec!["no systemctl".to_string()],
-    };
-    if let Some(places) = &env.tail {
-        let _ = tail::quiet_hidden_unmount(places, plan, &env.mounts, &env.nextroot);
-        journal.extend(tail::drain_journal_sockets(places).failed);
-    }
-    journal
-}
-
-/// How long the way back waits, once PID 1 took the power-off, before it asks
-/// the kernel itself: PID 1's final stage signals every process to end as soon
-/// as it starts, this one included.
+/// How long the step waits, once PID 1 took the power-off, before it asks
+/// the kernel itself: PID 1's final stage signals every process to end as
+/// soon as it starts, this one included.
 const POWER_OFF_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Power off instead of returning. Ask PID 1 with `systemctl --force
-/// poweroff`, which goes straight to its final stage (as
-/// `systemd-poweroff.service` does), and wait `grace` for that stage to end
-/// this process. When there is no `systemctl`, PID 1 refuses, or this process
-/// still runs after `grace`, ask the kernel (`kernel`: sync, then power off).
-/// Nothing goes to the screen. Returns only when neither powered off, with
-/// whether PID 1 had taken it.
-fn power_off_instead(
-    systemctl: Option<&Path>,
-    grace: std::time::Duration,
-    kernel: impl FnOnce() -> bool,
-) -> bool {
-    let taken = systemctl.is_some_and(|systemctl| {
-        crate::whole_root::tools::run(
-            systemctl,
-            &["--force", "poweroff"],
-            crate::whole_root::tools::TOOL_BUDGET,
-        ) != crate::whole_root::tools::Outcome::Refused
-    });
-    if taken {
-        std::thread::sleep(grace);
-    }
-    let _ = kernel();
-    taken
-}
-
-/// Forget the failures the session caused: every unit failed now that was
-/// not failed when the session was prepared. An emergency SIGKILLs units (the
-/// session's watcher, a decoy unit caught stopping), and PID 1 carries a
-/// failed unit across the soft-reboot: the decoy would list it in
-/// `systemctl --failed` until its next boot. The decoy's own earlier failures
-/// stay.
-fn reset_new_failures(systemctl: &Path, failed_at_entry: &[String]) {
-    let Some(failed) = crate::whole_root::tools::failed_units(systemctl) else {
-        return;
-    };
-    let new: Vec<&str> = failed
-        .iter()
-        .filter(|unit| !failed_at_entry.contains(unit))
-        .map(String::as_str)
-        .collect();
-    if new.is_empty() {
-        return;
-    }
-    let mut args = vec!["reset-failed"];
-    args.extend(new);
-    let _ = crate::whole_root::tools::run(systemctl, &args, crate::whole_root::tools::TOOL_BUDGET);
-}
 
 #[cfg(test)]
 #[path = "transition_tests.rs"]

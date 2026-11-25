@@ -487,7 +487,7 @@ fn an_interrupted_activation_is_on_the_decoy_and_needs_attention() {
 /// machine is: the place stays what the live view says, and the attention
 /// names the record, also in the hidden session. Only what the live view says
 /// needs action now comes first, as its remediation does: a hidden root
-/// without a way back (power off) and an interrupted activation (recover).
+/// without its session plan (power off) and an interrupted activation (recover).
 #[test]
 fn an_unreadable_record_needs_attention_in_every_place() {
     for (posture, session, place, attention) in [

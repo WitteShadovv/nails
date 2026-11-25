@@ -4,7 +4,8 @@
 //! `[window]` configuration: what the window does in a hidden session.
 //!
 //! The window's Emergency control ends a hidden session with one gesture and
-//! asks nothing at that moment, so how it ends is chosen in advance, here.
+//! asks nothing at that moment, so how it ends is chosen in advance, here:
+//! a power-off (the default) or a full reboot.
 //! Only the window reads it: the hot path of `nails emergency` acts before
 //! any configuration is read, and takes `--poweroff` or `--reboot` on its
 //! command line instead.
@@ -12,17 +13,16 @@
 use serde::{Deserialize, Serialize};
 
 /// How the window's Emergency control ends a hidden session: the ending of
-/// `nails emergency`, `--poweroff` or `--reboot`.
+/// `nails emergency` or `--reboot`. A hidden session never goes back to the
+/// decoy, so there is no return to choose.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum WindowEmergency {
-    /// Back to the decoy's own login screen, as `nails emergency` without a
-    /// flag. The default: to someone in the room a running decoy looks like
-    /// a logout, where a machine that goes dark draws the eye.
+    /// Power off, as `nails emergency`: RAM decays, the strongest answer to
+    /// a seizure. The default. `return`, the default of older releases, reads
+    /// as this: the return it named is gone.
     #[default]
-    Return,
-    /// Power off, as `nails emergency --poweroff`: RAM decays, the strongest
-    /// answer to a seizure.
+    #[serde(alias = "return")]
     Poweroff,
     /// Reboot fully, as `nails emergency --reboot`. A warm reboot does not
     /// clear RAM.
@@ -36,7 +36,7 @@ pub enum WindowEmergency {
 #[serde(deny_unknown_fields)]
 pub struct WindowConfig {
     /// How the window's Emergency control ends a hidden session. Defaults to
-    /// [`WindowEmergency::Return`].
+    /// [`WindowEmergency::Poweroff`].
     #[serde(default)]
     pub emergency: WindowEmergency,
 }
@@ -46,8 +46,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_default_returns_to_the_decoy() {
-        assert_eq!(WindowConfig::default().emergency, WindowEmergency::Return);
+    fn the_default_powers_off() {
+        assert_eq!(WindowConfig::default().emergency, WindowEmergency::Poweroff);
         let config: WindowConfig = toml::from_str("").unwrap();
         assert_eq!(config, WindowConfig::default());
     }
@@ -55,7 +55,6 @@ mod tests {
     #[test]
     fn every_ending_parses_and_round_trips() {
         for (text, ending) in [
-            ("emergency = \"return\"", WindowEmergency::Return),
             ("emergency = \"poweroff\"", WindowEmergency::Poweroff),
             ("emergency = \"reboot\"", WindowEmergency::Reboot),
         ] {
@@ -66,13 +65,25 @@ mod tests {
         }
     }
 
+    /// An older file's `return` loads, and powers off: the return is gone.
+    /// It is written back as `poweroff`.
+    #[test]
+    fn an_older_return_reads_as_a_power_off() {
+        let config: WindowConfig = toml::from_str("emergency = \"return\"").unwrap();
+        assert_eq!(config.emergency, WindowEmergency::Poweroff);
+        assert_eq!(
+            toml::to_string(&config).unwrap().trim(),
+            "emergency = \"poweroff\""
+        );
+    }
+
     #[test]
     fn an_unknown_ending_or_key_is_refused() {
         for text in [
             "emergency = \"power-off\"",
             "emergency = \"halt\"",
             "emergency = true",
-            "emergancy = \"return\"",
+            "emergancy = \"poweroff\"",
         ] {
             assert!(toml::from_str::<WindowConfig>(text).is_err(), "{text}");
         }

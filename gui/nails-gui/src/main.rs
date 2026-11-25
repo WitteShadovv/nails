@@ -200,8 +200,8 @@ fn open(
             }
             let _ = slint::quit_event_loop();
         }),
-        emergency: Box::new(move |firing| {
-            emergency.fire(firing);
+        emergency: Box::new(move |finish| {
+            emergency.fire(finish);
         }),
     };
     let model = Model::new(engine, waits_for_password).in_hidden_session(in_hidden_session);

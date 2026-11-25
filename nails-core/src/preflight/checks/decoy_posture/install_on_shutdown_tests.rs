@@ -253,7 +253,7 @@ fn the_setting_on_with_the_helper_running_is_refused() {
     assert!(message.contains("logs that run there"), "{message}");
     // The session starts its own copy of the enabled helper.
     assert!(
-        message.contains("when a session ends with deactivate"),
+        message.contains("when a session is shut down through logind"),
         "{message}"
     );
     let fix = &found.blocker.as_ref().unwrap().fix;
@@ -695,7 +695,7 @@ fn a_helper_stopped_but_enabled_only_warns_of_the_way_back() {
         "{warning}"
     );
     assert!(
-        warning.contains("when the session ends with deactivate"),
+        warning.contains("when the session is shut down through logind"),
         "{warning}"
     );
     assert!(
@@ -703,7 +703,7 @@ fn a_helper_stopped_but_enabled_only_warns_of_the_way_back() {
         "{warning}"
     );
     assert!(
-        warning.contains(&sudo_line(NextStep::DeactivatePoweroff)),
+        warning.contains(&sudo_line(NextStep::Deactivate)),
         "{warning}"
     );
 }
@@ -732,7 +732,7 @@ fn a_file_apt_refuses_in_the_sessions_view_warns_of_what_its_copy_does() {
                     "unattended-upgrades.service is stopped on the decoy but enabled, so the \
                      hidden session starts it, and apt refuses \
                      /etc/apt/apt.conf.d/99local-refused:2 (Extra junk at end of file): \
-                     that copy installs nothing when the session ends with deactivate as long \
+                     that copy installs nothing when the session is shut down through logind as long \
                      as apt refuses that file, and logs apt's errors to the session's journal, \
                      but a session that fixes the file has it read \
                      Unattended-Upgrade::InstallOnShutdown again then (set it to false, or end \
@@ -1415,7 +1415,7 @@ fn what_nails_cannot_tell_of_the_session_is_said_so() {
     assert_eq!(
         way_back(Some(&start)),
         ", and NAILS cannot tell whether a session's own copy installs them again, into its \
-         overlay on the hidden volume, when the session ends with deactivate (a lookup failed)"
+         overlay on the hidden volume, when the session is shut down through logind (a lookup failed)"
     );
     assert_eq!(way_back(None), "");
 }

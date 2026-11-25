@@ -153,7 +153,7 @@ fn decoy_root_refuses_where_the_mount_table_cannot_be_read() {
     assert!(result.is_fail(), "{result:?}");
     assert!(
         result.message().starts_with(
-            "NAILS cannot tell whether the decoy root can be mounted again for the way back: it \
+            "NAILS cannot tell whether the decoy root is on a block device: it \
              cannot read the mount table ("
         ),
         "{result:?}"

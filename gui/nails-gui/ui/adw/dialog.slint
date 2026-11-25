@@ -5,11 +5,10 @@
 // sentence it asks about, Cancel and the action it confirms. A question that
 // asks for a word to be typed first (allowing a risk is never one click) has
 // a field for it, and its confirming button acts only once the word is there.
-// A question with a second action (a deactivation's two endings) stacks its
-// three buttons, as libadwaita does when they do not fit side by side: the
-// confirming one, the second action, and Cancel at the bottom. Cancel and
-// the confirming button stack the same way where a label does not fit half
-// the dialog's width, at the window's narrowest or for a long label.
+// Cancel and the confirming button stack, as libadwaita does when they do not
+// fit side by side, where a label does not fit half the dialog's width, at
+// the window's narrowest or for a long label: the confirming one first, and
+// Cancel at the bottom.
 //
 // It is never taller than the window. A sentence longer than the room left
 // between the heading and the answers scrolls there, with the wheel, a drag
@@ -41,16 +40,12 @@ export component AlertDialog {
     in property <string> prompt;
     // The confirming button waits for that word.
     in property <bool> locked;
-    // The label of the second action; empty when there is none.
-    in property <string> alternative;
     // The room at the top a control above the question keeps (the
     // Emergency control in a hidden session): the question never lies
     // under it.
     in property <length> top-reserved;
     // Called with true for the confirming button, false for Cancel or Escape.
     callback answered(confirmed: bool);
-    // Called for the second action.
-    callback alternative-chosen();
     // Called with what is in the field each time it changes.
     callback typed(text: string);
 
@@ -183,7 +178,7 @@ export component AlertDialog {
                     }
                 }
 
-                if root.alternative == "" && !root.stacked: HorizontalLayout {
+                if !root.stacked: HorizontalLayout {
                     padding-top: 22px;
                     spacing: 12px;
 
@@ -243,7 +238,7 @@ export component AlertDialog {
                     }
                 }
 
-                if root.alternative == "" && root.stacked: VerticalLayout {
+                if root.stacked: VerticalLayout {
                     padding-top: 22px;
                     spacing: 12px;
 
@@ -293,49 +288,6 @@ export component AlertDialog {
                             } else if (root.answer-focus == 1) {
                                 root.answer-focus = 0;
                             }
-                        }
-                        clicked => {
-                            root.answered(false);
-                        }
-                    }
-                }
-
-                if root.alternative != "": VerticalLayout {
-                    padding-top: 22px;
-                    spacing: 12px;
-
-                    Button {
-                        min-width: 0px;
-                        horizontal-stretch: 1;
-                        text: root.confirm-label;
-                        shape: ButtonShape.response;
-                        surface-fg: Adw.dialog-fg;
-                        kind: root.destructive ? ButtonKind.destructive : ButtonKind.suggested;
-                        enabled: !root.locked;
-                        clicked => {
-                            root.answered(true);
-                        }
-                    }
-
-                    Button {
-                        min-width: 0px;
-                        horizontal-stretch: 1;
-                        text: root.alternative;
-                        shape: ButtonShape.response;
-                        surface-fg: Adw.dialog-fg;
-                        clicked => {
-                            root.alternative-chosen();
-                        }
-                    }
-
-                    Button {
-                        min-width: 0px;
-                        horizontal-stretch: 1;
-                        text: "Cancel";
-                        shape: ButtonShape.response;
-                        surface-fg: Adw.dialog-fg;
-                        init => {
-                            self.focus();
                         }
                         clicked => {
                             root.answered(false);

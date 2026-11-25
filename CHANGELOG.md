@@ -15,6 +15,17 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Upgrade notes
 
+- A hidden session never goes back to the decoy any more. `deactivate`, `emergency` without a flag,
+  the watcher's automatic emergency and the window's Emergency all power the machine off. Scripts
+  that waited for the decoy's login after `deactivate` must wait for a power-off instead.
+  `deactivate --poweroff` still works and changes nothing. The JSON of `emergency` names the
+  request without a flag `default` (it was `return_to_decoy`), and `deactivate` reports
+  `poweroff_requested` only. A `nails.toml` that sets `window.emergency = "return"` still loads, and
+  that setting now powers off.
+- Entries below that describe what the way back does (the `/run` scrub, the kernel log cursor,
+  journald's sockets, the process numbers, the network state put back, the login and boot records
+  made to read as a power cycle, the zram reset, the decoy mounts made again) describe code that no
+  session reaches any more. It stays in the source until a later release removes it.
 - A `nails.toml` that still sets `accept_persistent_decoy` is refused by the new binary, and the
   decoy is no place to edit it. Before you move `<hidden-root>/nails.new` over `<hidden-root>/nails`,
   run `<hidden-root>/nails.new config validate` inside a hidden session (it checks the
@@ -332,28 +343,13 @@ of this changelog for that version becomes the release notes word for word, and
   `<hidden-root>/nails helper --stdio`. Its tests run without a display, on Slint's testing
   platform.
 - `window.emergency` in `nails.toml` chooses in advance how the window's Emergency control ends a
-  hidden session, since its gesture asks nothing at that moment: `return`, the default, goes back to
-  the decoy's login screen as a plain `nails emergency` does, and so powers off instead where the
-  way back cannot undo what the session changed in the network, `poweroff` and `reboot` end it as
-  `--poweroff` and `--reboot` do. `config set`, `config unset` and the window's Settings page change
-  it as any other key. Only the window reads it: the hot path of `nails emergency` still acts before
-  any configuration is read, and its flags choose how each run ends. The window reads the setting
-  once the first status of a hidden session came in and again with every read of its Settings page,
-  so a change saved there holds from the read after the save. The hidden session's page names what
-  the control does, and so does the control's description. The control powers off instead where the
-  window cannot be sure the session ends so, and the page then says why: once the window cannot
-  reach NAILS (on the page of a deactivation whose switch took NAILS with the session, only once the
-  session is still there a minute later); while Verify or Rehearsal waits for NAILS (a step, or the
-  read of where the rehearsal stands), since NAILS reads the emergency only after that and the
-  window does not wait that long; until the window has read the setting, and where the settings
-  cannot be read or hold a value the window does not know; for a return or a restart while a
-  deactivation powers off, and for a restart while one returns to the decoy; and for a return in a
-  session without a way back, or while the question of a deactivation says the return powers off
-  instead whatever happens before it runs. While a deactivation returns to the decoy, the window
-  also asks logind for a power-off of the control right after the request, since NAILS takes the
-  emergency only after it has started that return, whose switch can end the window and NAILS first.
-  A return logind already holds may still come first. Once it fired, the page says how the session
-  ends and that the computer powers off where it does not end so.
+  hidden session, since its gesture asks nothing at that moment: `poweroff`, the default, as
+  `nails emergency` does, or `reboot`, as `--reboot` does. `config set`, `config unset` and the
+  window's Settings page change it as any other key. Only the window reads it: the hot path of
+  `nails emergency` still acts before any configuration is read, and its flags choose how each run
+  ends. The control powers off wherever the window cannot be sure of the setting: once it cannot
+  reach NAILS, while Verify or Rehearsal waits for NAILS, until it has read the setting, and where
+  the setting cannot be read.
 - `nails check` and activation refuse an updatedb that would list the hidden volume in the
   decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
   `services.locate`) writes the name of every file it finds into a database on the decoy disk,
@@ -720,6 +716,16 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Changed
 
+- Every hidden session ends in a power-off. The kernel that ran the session never hands the
+  machine back to the decoy: its memory, kernel log, network state and process counter end with
+  it. `deactivate` refuses only while a program blocks shutdown, then records the session inactive
+  and powers off; it no longer mounts the decoy root, marks the hidden volume for deferred removal
+  or arms a second soft-reboot, and it no longer refuses where the hidden session's PID 1 lacks the
+  switch's guards or where the session plan in `/run` cannot be read. `emergency` without a flag
+  powers off in the hidden session, and `--reboot` still reboots fully. The watcher's automatic
+  emergency powers off with or without the session plan. The window offers Power Off alone when you
+  deactivate. All of these go through one function, so a later release can swap the power-off for
+  another ending.
 - The time code no longer uses chrono, which RustSec lists as unmaintained (RUSTSEC-2026-0543).
   NAILS writes and reads its times with code of its own, and reads the local time zone's rules with
   jiff. The times it writes stay as they were: the state file's fields, the JSON reports, the alerts
@@ -2737,6 +2743,30 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Security
 
+- The last step before the switch into the hidden session fails closed. systemd ran it with
+  `ExecStart=-`, and the caller ignored its result and exited 0, so a step that failed partway, or
+  died, still let PID 1 switch. The step now powers off on every failure but a few named cases,
+  and its unit carries `FailureAction=poweroff-force`, so a step that exits non-zero, dies or cannot
+  start fails the service and PID 1 powers off instead of switching. It powers off when the session
+  plan exists but cannot be read, when the mount table cannot be read, when an entry is armed but
+  nothing is mounted at `/run/nextroot`, when the arming expired, when the plan is armed for a way
+  back, when it does not run in its SELinux domain, and when any part of the entry fails: the init
+  check, the `current-system` repoint, the masks, the skips, the generator masks, the session's own
+  units (the watcher and the sleep guard, which were best effort), the opted-in read-only rule for
+  unused disks (also best effort before), and the plan's record of the entry. A `/run/nextroot`
+  nobody armed is still detached and the switch goes on in place, but now only where nothing stays
+  mounted there. A refused entry powers off instead of starting the decoy's userspace again. Before
+  the power-off it keeps the reason on the hidden volume, and `status` shows it once the volume is
+  open again. Nothing on the screen says why. The only parts still best effort are the masks of
+  units the hidden root does not need (the fstab policy binds the boot filesystems read-only) and
+  the cleanup of `utab`, which lives in RAM.
+- The emergency no longer reads a mount table it cannot read as the decoy's. With a session plan
+  it then takes the hidden session's end, the power-off, where it used to clean up as on the decoy
+  and leave a hidden session running.
+- Limits: `systemctl --force soft-reboot` typed in the hidden session with a tree at
+  `/run/nextroot` skips the step, and a root user in the session can remove the step's drop-in and
+  guards from `/run`. RAM keeps data for a while after the power-off, so leave the machine off for
+  a few minutes before you hand it over.
 - `check` and activation refuse a hidden volume whose filesystem is also mounted at another place in
   the decoy's mount table. A desktop that mounts drives by itself (gnome-shell through gvfs and
   udisks2, KDE Plasma, udiskie) can mount a volume unlocked from a terminal again under
@@ -3130,7 +3160,7 @@ of this changelog for that version becomes the release notes word for word, and
   warns at a `PROMPT_COMMAND` assignment in a comment inside a `$((...)` that bash reads as a
   command substitution (`X=$((echo a)#; PROMPT_COMMAND='history -a'` with the `)` on the next
   line), as it cannot tell where bash expands one. See docs/operator-guide.md.
-- A switch into or out of a hidden session can stop halfway: the programs have closed, but the
+- The switch into a hidden session can stop halfway: the programs have closed, but the
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a
   fault in systemd ([systemd issue #44107](https://github.com/systemd/systemd/issues/44107)). In
@@ -3139,8 +3169,8 @@ of this changelog for that version becomes the release notes word for word, and
   computer's keyboard woke PID 1 in the tests, and the switch went on. If that does nothing, power
   off. Left alone, the machine powers itself off about 30 minutes after the switch began, where
   systemd would have switched by force without NAILS's last step before the switch (see
-  Security, also for the settings under which nothing would happen then, which activation and
-  `deactivate` refuse). systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
+  Security, also for the settings under which nothing would happen then, which activation
+  refuses). A session no longer switches out: it ends in a power-off. systemd fixed the issue in 259.10, 260.6, 261.4 and 262.1. On
   3 November 2026 no release of 254 to 258 had the fix, and no supported decoy had it, neither in
   its systemd release nor as a patch of its package: Debian 13 had systemd 257.13, Ubuntu 24.04
   255.4, Ubuntu 26.04 259.9, NixOS 26.05 260.5 and NixOS unstable 262. See docs/operator-guide.md.

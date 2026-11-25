@@ -316,12 +316,12 @@ fn activation_advisory() -> Win {
     win
 }
 
-/// The question before a deactivation whose plan `name`, recorded from the
-/// real helper, says the return powers off instead.
-fn deactivation_asked(name: &str) -> Win {
+/// The question before a deactivation, on its plan as the helper gives it:
+/// the computer powers off.
+fn deactivation_asked() -> Win {
     let win = hidden();
     win.app.invoke_action_activated();
-    let recorded = fixture(name);
+    let recorded = fixture("deactivate-plan");
     win.update(Update::Planned(PlanData::Deactivate(
         serde_json::from_value(recorded["data"].clone()).expect("a deactivation's plan"),
     )));
@@ -384,28 +384,16 @@ const PAGES: &[Page] = &[
         "15-activate-question-advisory-short",
         activation_advisory_short,
     ),
-    ("16-deactivate-question-powers-off", powers_off),
+    ("16-deactivate-question", deactivation_asked),
+    ("17-deactivate-question-narrow", deactivation_asked_narrow),
+    ("18-deactivate-question-short", deactivation_asked_short),
     (
-        "17-deactivate-question-powers-off-narrow",
-        powers_off_narrow,
+        "19-activate-question-advisory-short-scrolled",
+        activation_advisory_short_scrolled,
     ),
-    ("18-deactivate-question-powers-off-short", powers_off_short),
-    ("19-deactivate-question-may-power-off", may_power_off),
-    (
-        "20-deactivate-question-may-power-off-narrow",
-        may_power_off_narrow,
-    ),
-    (
-        "21-deactivate-question-may-power-off-short",
-        may_power_off_short,
-    ),
-    (
-        "22-deactivate-question-may-power-off-short-scrolled",
-        may_power_off_short_scrolled,
-    ),
-    ("23-scan-an-image", scan_an_image),
-    ("24-set-up-narrow", set_up_narrow),
-    ("25-activation-options", activation_options),
+    ("20-scan-an-image", scan_an_image),
+    ("21-set-up-narrow", set_up_narrow),
+    ("22-activation-options", activation_options),
 ];
 
 fn narrow(win: Win) -> Win {
@@ -427,36 +415,18 @@ fn activation_advisory_short() -> Win {
     short(activation_advisory())
 }
 
-/// A return the way back turns into a power-off whatever happens first.
-fn powers_off() -> Win {
-    deactivation_asked("deactivate-plan-powers-off")
+fn deactivation_asked_narrow() -> Win {
+    narrow(deactivation_asked())
 }
 
-fn powers_off_narrow() -> Win {
-    narrow(powers_off())
-}
-
-fn powers_off_short() -> Win {
-    short(powers_off())
-}
-
-/// A return that powers off unless that changes before it runs.
-fn may_power_off() -> Win {
-    deactivation_asked("deactivate-plan-may-power-off")
-}
-
-fn may_power_off_narrow() -> Win {
-    narrow(may_power_off())
-}
-
-fn may_power_off_short() -> Win {
-    short(may_power_off())
+fn deactivation_asked_short() -> Win {
+    short(deactivation_asked())
 }
 
 /// Its sentence read to the end from the keyboard: the page keys move the
 /// view from Cancel, where the focus starts, and stop at the end.
-fn may_power_off_short_scrolled() -> Win {
-    let win = may_power_off_short();
+fn activation_advisory_short_scrolled() -> Win {
+    let win = activation_advisory_short();
     let _ = win.render();
     for _ in 0..40 {
         win.press_key(Key::PageDown);

@@ -1,10 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The transition step against real directory trees: a `/run`, a next root and
-//! a kernel log, all in a temporary directory. Only the mount table is given
-//! (a `/run/nextroot` entry), so nothing here needs privileges; the mounts
+//! The transition step against real directory trees: a `/run` and a next
+//! root, all in a temporary directory. Only the mount table is given (a
+//! `/run/nextroot` entry), so nothing here needs privileges; the mounts
 //! themselves are exercised by the kernel tests in `nails-core`.
+//!
+//! No test here powers anything off: every step gets a `systemctl` that only
+//! logs its arguments ([`fake_systemctl`]) and a kernel power-off that
+//! refuses and counts the calls ([`refused_power_off`]), so a step that ends
+//! the session returns [`Outcome::Ended`].
 
 use super::*;
 use crate::mountinfo::parse_mountinfo;
@@ -12,12 +17,42 @@ use crate::test_support::write_executable;
 use crate::whole_root::plan::{Arm, sample};
 use crate::whole_root::program_label;
 use crate::whole_root::runtime_units::RuntimeUnit;
+use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 
 // The step's check of its own domain, where the plan records a label.
 #[path = "transition_domain_tests.rs"]
 mod domain;
+
+thread_local! {
+    /// How often this test thread's steps asked the kernel to power off.
+    static KERNEL_ASKED: Cell<u32> = const { Cell::new(0) };
+}
+
+/// The kernel's power-off in every test: it refuses, so no test powers its
+/// host off, whatever the code under test decides, and counts the calls of
+/// this thread ([`kernel_asked`]).
+fn refused_power_off() -> bool {
+    KERNEL_ASKED.with(|asked| asked.set(asked.get() + 1));
+    false
+}
+
+/// How often this thread's steps asked the kernel to power off so far.
+fn kernel_asked() -> u32 {
+    KERNEL_ASKED.with(Cell::get)
+}
+
+/// A detach that finds nothing mounted, as the real one does below the
+/// world's next root, which the live mount table never names.
+fn detached(_: &Path) -> Vec<PathBuf> {
+    Vec::new()
+}
+
+/// A detach that leaves a mount at the next root.
+fn stuck(_: &Path) -> Vec<PathBuf> {
+    vec![PathBuf::from("/run/nextroot")]
+}
 
 struct World {
     dir: tempfile::TempDir,
@@ -52,9 +87,6 @@ impl World {
     fn nextroot(&self) -> PathBuf {
         self.dir.path().join("nextroot")
     }
-    fn kmsg(&self) -> PathBuf {
-        self.dir.path().join("kmsg")
-    }
     fn init_in_nextroot(&self, init: &Path) {
         let path = self.nextroot().join(init.strip_prefix("/").unwrap());
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -73,34 +105,16 @@ impl World {
             run: self.run(),
             nextroot: self.nextroot(),
             runtime_dir: self.runtime(),
-            kmsg: self.kmsg(),
-            systemctl: None,
-            pid_places: None,
-            zram: None,
+            systemctl: Some(fake_systemctl(self.dir.path(), 0)),
             now,
-            mounts: parse_mountinfo(&table),
-            network: self.network(),
-            network_kernel: Some(std::sync::Arc::new(
-                crate::test_support::FakeNetKernel::offline(),
-            )),
+            mounts: Some(parse_mountinfo(&table)),
             power_off: PowerOff {
                 grace: std::time::Duration::ZERO,
                 kernel: refused_power_off,
             },
-            tail: None,
+            detach: detached,
             selinux: &crate::whole_root::selinux::KERNEL,
             start: crate::whole_root::program_label::Started::by_hand(),
-        }
-    }
-    /// Where the way back reads and writes the network state: a fake
-    /// `/sys/class/net`, hostname and network settings below the world, and
-    /// the per-link runtime state below its `/run`.
-    fn network(&self) -> network::Places {
-        network::Places {
-            run: self.run(),
-            sys_class_net: self.dir.path().join("sys/class/net"),
-            proc_hostname: self.dir.path().join("proc/sys/kernel/hostname"),
-            proc_sys: self.dir.path().join("proc/sys"),
         }
     }
     fn write_plan(&self, plan: &Plan) {
@@ -112,6 +126,62 @@ impl World {
     fn current_system(&self) -> PathBuf {
         fs::read_link(self.run().join("current-system")).unwrap()
     }
+}
+
+/// A fake `systemctl` in `dir` that logs its arguments ([`systemctl_calls`])
+/// and exits `code`.
+fn fake_systemctl(dir: &Path, code: i32) -> PathBuf {
+    let tool = dir.join("systemctl");
+    write_executable(
+        &tool,
+        format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\nexit {code}\n",
+            dir.join("calls").display()
+        ),
+        0o755,
+    );
+    tool
+}
+
+/// What the `systemctl` of the world was asked, one call per line.
+fn systemctl_calls(world: &World) -> String {
+    fs::read_to_string(world.dir.path().join("calls")).unwrap_or_default()
+}
+
+/// Run the step of `env` in `world` and check that it ended the session the
+/// way every hidden session ends: it asked PID 1 to power off at once, then
+/// the kernel, and, as neither took it here, returned [`Outcome::Ended`],
+/// whose exit code fails the service. Returns why.
+fn ends(world: &World, env: &Env) -> String {
+    let before = kernel_asked();
+    let outcome = run(env);
+    assert_eq!(kernel_asked(), before + 1, "{outcome:?}");
+    assert!(
+        systemctl_calls(world)
+            .lines()
+            .any(|call| call == "--force poweroff"),
+        "{outcome:?}: {}",
+        systemctl_calls(world)
+    );
+    assert_eq!(outcome.exit_code(), 1);
+    let Outcome::Ended(why) = outcome else {
+        panic!("expected the session's end, got {outcome:?}");
+    };
+    why
+}
+
+/// Run the step of `env` and check that it asked for no power-off.
+fn goes_on(world: &World, env: &Env) -> Outcome {
+    let before = kernel_asked();
+    let outcome = run(env);
+    assert_eq!(kernel_asked(), before, "{outcome:?}");
+    assert!(
+        !systemctl_calls(world).contains("poweroff"),
+        "{outcome:?}: {}",
+        systemctl_calls(world)
+    );
+    assert_eq!(outcome.exit_code(), 0);
+    outcome
 }
 
 fn armed(direction: Direction) -> Plan {
@@ -128,23 +198,57 @@ fn armed(direction: Direction) -> Plan {
     plan
 }
 
+/// A plan the entry has recorded: the hidden session's, armed for nothing.
+fn in_session() -> Plan {
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    plan.entered_at = Some(900);
+    plan
+}
+
+/// An entry ready to go in `world`: the plan armed for it and the hidden
+/// init in the next root.
+fn ready_entry(world: &World) -> Plan {
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    plan
+}
+
 #[test]
-fn without_a_plan_or_a_mounted_nextroot_nothing_happens() {
+fn without_a_plan_nothing_happens_whatever_is_mounted() {
+    for mounted in [true, false] {
+        let world = World::new();
+        assert_eq!(
+            goes_on(&world, &world.env(mounted, 1_000)),
+            Outcome::NothingToDo
+        );
+        let world = World::new();
+        let mut env = world.env(mounted, 1_000);
+        env.mounts = None;
+        assert_eq!(goes_on(&world, &env), Outcome::NothingToDo);
+    }
+}
+
+/// A plan armed for nothing and no next root: a plain soft-reboot, which in
+/// the hidden session starts the hidden userspace again.
+#[test]
+fn a_plan_armed_for_nothing_without_a_next_root_lets_a_plain_soft_reboot_go_on() {
     let world = World::new();
-    assert_eq!(run(&world.env(true, 1_000)), Outcome::NothingToDo);
-    world.write_plan(&armed(Direction::Enter));
-    assert_eq!(run(&world.env(false, 1_000)), Outcome::NothingToDo);
+    world.write_plan(&in_session());
+    assert_eq!(
+        goes_on(&world, &world.env(false, 1_000)),
+        Outcome::NothingToDo
+    );
     assert!(world.runtime().join(PLAN_NAME).exists());
 }
 
 #[test]
 fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
     let world = World::new();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
+    ready_entry(&world);
 
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
 
     assert_eq!(
         world.current_system(),
@@ -163,40 +267,11 @@ fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
     let after = world.plan();
     assert_eq!(after.armed, None);
     assert_eq!(after.entered_at, Some(1_010));
-}
-
-#[test]
-fn entering_drops_the_stored_streams_and_keeps_the_listening_journal_sockets() {
-    let world = World::new();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    let calls = world.dir.path().join("calls");
-    let systemctl = world.dir.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> {}\n\
-             [ \"$1\" = list-units ] && \
-             echo 'systemd-journald-dev-log.socket loaded active listening Journal Socket'\n\
-             exit 0\n",
-            calls.display()
-        ),
-        0o755,
-    );
-    let mut env = world.env(true, 1_010);
-    env.systemctl = Some(systemctl);
-
-    assert_eq!(run(&env), Outcome::Entered);
-
-    let made = fs::read_to_string(&calls).unwrap();
-    let made: Vec<&str> = made.lines().collect();
-    assert_eq!(made[0], "clean --what=fdstore systemd-journald.service");
-    assert!(made[1].starts_with("list-units "), "{made:?}");
-    assert_eq!(
-        fs::read_to_string(world.runtime().join(tail::SOCKETS_NAME)).unwrap(),
-        "systemd-journald-dev-log.socket\n"
-    );
+    // Nothing of the way back: no record of the decoy's /run records, no
+    // journald work, no process-number counter.
+    assert!(!world.runtime().join(plan::RECORDS_NAME).exists());
+    assert_eq!(systemctl_calls(&world), "");
+    assert_eq!(after.pids, Default::default());
 }
 
 #[test]
@@ -208,9 +283,7 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     // ID joins whatever is mounted at its target later with its source and
     // root, as the next userspace mounts /run/wrappers.
     let world = World::new();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
+    ready_entry(&world);
     let utab = world.run().join("mount/utab");
     fs::write(
         &utab,
@@ -224,15 +297,18 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     .unwrap();
     let mut env = world.env(true, 1_010);
     let next = world.nextroot();
-    env.mounts.extend(parse_mountinfo(&format!(
-        "62 1 8:0 / / rw - ext4 /dev/vda rw\n\
-         85 62 0:50 / /nix/store rw - overlay overlay rw\n\
-         70 62 0:51 / /run/wrappers rw - tmpfs wrappers rw\n\
-         63 40 254:0 / {}/mnt/data rw - ext4 /dev/mapper/data rw\n",
-        next.display()
-    )));
+    env.mounts
+        .as_mut()
+        .unwrap()
+        .extend(parse_mountinfo(&format!(
+            "62 1 8:0 / / rw - ext4 /dev/vda rw\n\
+             85 62 0:50 / /nix/store rw - overlay overlay rw\n\
+             70 62 0:51 / /run/wrappers rw - tmpfs wrappers rw\n\
+             63 40 254:0 / {}/mnt/data rw - ext4 /dev/mapper/data rw\n",
+            next.display()
+        )));
 
-    assert_eq!(run(&env), Outcome::Entered);
+    assert_eq!(goes_on(&world, &env), Outcome::Entered);
     assert_eq!(
         fs::read_to_string(&utab).unwrap(),
         "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
@@ -240,60 +316,122 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     );
 }
 
+/// A plan that exists but cannot be read is no plain soft-reboot: the step
+/// cannot tell what it would let PID 1 switch into.
 #[test]
-fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
+fn a_plan_that_cannot_be_read_ends_the_session() {
+    for (text, what) in [
+        ("{not json", "session plan corrupt"),
+        (r#"{"version":999}"#, "format version 999"),
+    ] {
+        let world = World::new();
+        fs::write(world.runtime().join(PLAN_NAME), text).unwrap();
+        let why = ends(&world, &world.env(true, 1_000));
+        assert!(why.starts_with("the session plan cannot be read"), "{why}");
+        assert!(why.contains(what), "{why}");
+    }
+    // A plan path that is no file.
+    let world = World::new();
+    fs::create_dir(world.runtime().join(PLAN_NAME)).unwrap();
+    let why = ends(&world, &world.env(false, 1_000));
+    assert!(why.starts_with("the session plan cannot be read"), "{why}");
+}
+
+/// Without the mount table the step cannot tell whether PID 1 would switch
+/// into `/run/nextroot`.
+#[test]
+fn a_mount_table_that_cannot_be_read_ends_the_session() {
+    for plan in [armed(Direction::Enter), in_session()] {
+        let world = World::new();
+        world.write_plan(&plan);
+        let mut env = world.env(true, 1_000);
+        env.mounts = None;
+        assert_eq!(ends(&world, &env), "the mount table cannot be read");
+    }
+}
+
+/// Nothing of this build arms the way back, and a plan armed for it ends the
+/// session: a hidden session never goes back to the decoy's kernel. PID 1
+/// stays in the hidden root, with its system, and the reason is kept in the
+/// runtime directory.
+#[test]
+fn a_plan_armed_for_the_way_back_ends_the_session() {
+    for mounted in [true, false] {
+        let world = World::new();
+        repoint_current_system(&world.run(), Path::new("/nix/store/bbb-nixos-system")).unwrap();
+        let mut plan = armed(Direction::Leave);
+        plan.entered_at = Some(900);
+        world.init_in_nextroot(&plan.decoy.init);
+        world.write_plan(&plan);
+
+        let why = ends(&world, &world.env(mounted, 1_000));
+
+        assert!(why.contains("a hidden session never goes back"), "{why}");
+        let kept = switch_refusal::read(&world.runtime()).expect("the reason is kept in /run");
+        assert_eq!(kept.reason, why);
+        assert_eq!(
+            world.current_system(),
+            Path::new("/nix/store/bbb-nixos-system"),
+            "the session's system stays"
+        );
+        assert!(world.run().join("decoy-state").exists(), "no scrub ran");
+    }
+}
+
+/// An entry armed with nothing at `/run/nextroot` would start the decoy's
+/// userspace again: it powers off instead.
+#[test]
+fn an_entry_armed_without_a_next_root_ends_the_session() {
+    let world = World::new();
+    ready_entry(&world);
+    let why = ends(&world, &world.env(false, 1_000));
+    assert_eq!(
+        why,
+        "the entry is armed, but nothing is mounted at /run/nextroot"
+    );
+}
+
+/// An arming that expired is no arming, and no leftover either: the switch
+/// was under way. Mounted or not, it powers off.
+#[test]
+fn an_arming_that_expired_ends_the_session() {
+    let late = 1_001 + crate::whole_root::plan::ARM_VALIDITY_SECS;
+    for mounted in [true, false] {
+        let world = World::new();
+        ready_entry(&world);
+        let why = ends(&world, &world.env(mounted, late));
+        assert_eq!(why, "the arming of the switch expired");
+    }
+}
+
+#[test]
+fn an_entry_whose_init_does_not_resolve_ends_the_session_instead_of_freezing_pid1() {
     let world = World::new();
     install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
     world.write_plan(&armed(Direction::Enter));
 
-    assert!(matches!(
-        run(&world.env(true, 1_000)),
-        Outcome::Disarmed(why) if why.contains("does not resolve")
-    ));
-    // The repoint is undone and nothing of the failed activation is left.
+    let why = ends(&world, &world.env(true, 1_000));
+
+    assert!(why.contains("does not resolve"), "{why}");
+    // The repoint is undone, and nothing of the entry's masks was written.
     assert_eq!(
         world.current_system(),
         Path::new("/nix/store/aaa-nixos-system")
     );
-    assert!(!world.runtime().exists());
-    assert!(!world.run().join(DROPIN_DIR).exists());
-    assert!(
-        !world
-            .run()
-            .join(stop_guard_dir("blk-availability.service"))
-            .exists()
-    );
     assert!(!world.run().join("systemd/system/dev-vda3.swap").exists());
 }
 
+/// A `current-system` that cannot be repointed ends the session.
 #[test]
-fn a_populated_nextroot_that_is_not_armed_is_never_entered() {
-    // The leftover guard: an activation died after building the tree, and a
-    // later plain reboot became a soft-reboot.
+fn an_entry_that_cannot_repoint_current_system_ends_the_session() {
     let world = World::new();
-    let mut plan = armed(Direction::Enter);
-    plan.armed = None;
-    world.write_plan(&plan);
-    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
-    assert!(!world.runtime().exists());
+    ready_entry(&world);
+    fs::remove_file(world.run().join("current-system")).unwrap();
+    fs::create_dir_all(world.run().join("current-system/keep")).unwrap();
 
-    // An arming that expired is no arming.
-    let world = World::new();
-    world.write_plan(&armed(Direction::Enter));
-    let late = 1_001 + crate::whole_root::plan::ARM_VALIDITY_SECS;
-    assert!(matches!(run(&world.env(true, late)), Outcome::Disarmed(_)));
-}
+    let why = ends(&world, &world.env(true, 1_000));
 
-#[test]
-fn an_unarmed_nextroot_in_the_hidden_session_keeps_the_plan() {
-    let world = World::new();
-    let mut plan = armed(Direction::Leave);
-    plan.armed = None;
-    plan.entered_at = Some(900);
-    world.write_plan(&plan);
-    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
-    assert!(world.runtime().join(PLAN_NAME).exists());
-    assert_eq!(switch_refusal::read(&world.runtime()), None);
+    assert!(why.starts_with("could not repoint current-system"), "{why}");
 }
 
 /// The mount table as the transition finds it: the decoy root, the next root
@@ -304,13 +442,13 @@ fn with_the_volume_s_bind(world: &World, env: &mut Env) -> PathBuf {
     let next = fs::canonicalize(world.nextroot()).unwrap();
     let volume = next.join("mnt/data");
     fs::create_dir_all(&volume).unwrap();
-    env.mounts = parse_mountinfo(&format!(
+    env.mounts = Some(parse_mountinfo(&format!(
         "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
          40 1 0:40 / {} rw - overlay overlay rw\n\
          63 40 254:0 / {} rw - ext4 /dev/mapper/data rw\n",
         next.display(),
         volume.display()
-    ));
+    )));
     env.nextroot = next;
     volume
 }
@@ -322,19 +460,18 @@ fn armed_on_the_volume(direction: Direction) -> Plan {
     plan
 }
 
+/// A refused entry keeps why on the hidden volume before it powers off, so
+/// `status` can say it once the volume is open again.
 #[test]
-fn a_refused_entry_keeps_its_reason_on_the_hidden_volume_through_the_next_root() {
+fn a_refused_entry_keeps_its_reason_on_the_hidden_volume_and_powers_off() {
     let world = World::new();
     world.write_plan(&armed_on_the_volume(Direction::Enter));
     let mut env = world.env(true, 1_000);
     let volume = with_the_volume_s_bind(&world, &mut env);
 
     // The hidden init is not in the next root: the check refuses the switch.
-    let outcome = run(&env);
+    let why = ends(&world, &env);
 
-    let Outcome::Disarmed(why) = outcome else {
-        panic!("expected a refused switch, got {outcome:?}");
-    };
     assert!(why.contains("does not resolve"), "{why}");
     assert_eq!(
         switch_refusal::read(&volume),
@@ -344,7 +481,346 @@ fn a_refused_entry_keeps_its_reason_on_the_hidden_volume_through_the_next_root()
         }),
         "the reason is on the hidden volume"
     );
-    assert!(!world.runtime().exists(), "nothing of the entry is left");
+}
+
+/// A unit mask that cannot be written ends the session: through a unit
+/// directory that is a link elsewhere, the mask would not reach the hidden
+/// systemd.
+#[test]
+fn an_entry_whose_masks_cannot_be_written_ends_the_session() {
+    let world = World::new();
+    fs::create_dir_all(world.run().join("systemd")).unwrap();
+    fs::write(world.run().join("systemd/system"), "not a directory").unwrap();
+    ready_entry(&world);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(why.starts_with("could not mask decoy units"), "{why}");
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system"),
+        "the repoint is undone before the power-off returns"
+    );
+}
+
+/// The generator every entry masks.
+const GPT_AUTO: &str = "systemd-gpt-auto-generator";
+
+/// The generator masks are written at the switch, where they rank above every
+/// other generator directory.
+#[test]
+fn the_generator_masks_are_written_at_the_switch() {
+    let world = World::new();
+    let generators = world.run().join(runtime_units::GENERATOR_DIR);
+    let mut plan = armed(Direction::Enter);
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    assert_eq!(
+        fs::read_link(generators.join(GPT_AUTO)).unwrap(),
+        Path::new("/dev/null")
+    );
+}
+
+/// A generator mask that cannot be written ends the session, as a unit mask
+/// does: through a generator directory that is a link into another
+/// directory, the mask would not be where PID 1 looks first.
+#[test]
+fn an_entry_whose_generator_masks_cannot_be_written_ends_the_session() {
+    let world = World::new();
+    let elsewhere = world.run().join("udev/elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::create_dir_all(world.run().join("systemd")).unwrap();
+    symlink(&elsewhere, world.run().join(runtime_units::GENERATOR_DIR)).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(why.starts_with("could not mask generators"), "{why}");
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+}
+
+/// An entry of the decoy at a generator mask's path that does not mask the
+/// generator ends the session: PID 1 would skip this directory and run the
+/// generator from the next one. The entry stays as the decoy left it.
+#[test]
+fn an_entry_whose_generator_path_holds_no_mask_ends_the_session() {
+    let world = World::new();
+    let taken = world
+        .run()
+        .join(runtime_units::GENERATOR_DIR)
+        .join(GPT_AUTO);
+    fs::create_dir_all(&taken).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(why.starts_with("could not mask generators"), "{why}");
+    assert!(taken.is_dir(), "the decoy's entry stays");
+}
+
+/// The skips of a disk local-fs.target requires, with its fsck, of an
+/// automount, and of a disk that is gone by the switch.
+fn skips(world: &World) -> Vec<crate::whole_root::plan::Skip> {
+    use crate::whole_root::plan::Skip;
+    let disk = world.dir.path().join("disk");
+    fs::write(&disk, "").unwrap();
+    vec![
+        Skip {
+            units: vec!["srv-data.mount".to_string()],
+            pulled: vec!["systemd-fsck@dev-vdb1.service".to_string()],
+            device: Some(disk),
+        },
+        Skip {
+            units: vec!["boot.automount".to_string()],
+            pulled: Vec::new(),
+            device: None,
+        },
+        Skip {
+            units: vec!["srv-gone.mount".to_string()],
+            pulled: vec!["systemd-fsck@dev-vdc1.service".to_string()],
+            device: Some(world.dir.path().join("gone")),
+        },
+    ]
+}
+
+/// The units a boot target requires are skipped at the switch, those they
+/// pull in with them, and the units of a disk gone by then masked instead.
+#[test]
+fn the_skips_are_written_at_the_switch() {
+    use crate::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT, dropin_dir};
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.skips = skips(&world);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+
+    let r = world.run();
+    for unit in [
+        "srv-data.mount",
+        "systemd-fsck@dev-vdb1.service",
+        "boot.automount",
+    ] {
+        let dropin = r.join(dropin_dir(unit)).join(SKIP_DROPIN_NAME);
+        assert_eq!(fs::read_to_string(&dropin).unwrap(), SKIP_TEXT, "{unit}");
+    }
+    let gone = r.join("systemd/system/srv-gone.mount");
+    assert_eq!(fs::read_link(&gone).unwrap(), Path::new("/dev/null"));
+    assert!(!r.join(dropin_dir("srv-gone.mount")).exists());
+    assert!(!r.join(dropin_dir("systemd-fsck@dev-vdc1.service")).exists());
+}
+
+/// A skip that cannot be written ends the session, as a mask does.
+#[test]
+fn an_entry_whose_skips_cannot_be_written_ends_the_session() {
+    use crate::whole_root::skips::dropin_dir;
+    let world = World::new();
+    let elsewhere = world.run().join("udev/elsewhere");
+    fs::create_dir_all(&elsewhere).unwrap();
+    fs::create_dir_all(world.run().join("systemd/system")).unwrap();
+    symlink(&elsewhere, world.run().join(dropin_dir("boot.automount"))).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.skips = skips(&world);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(why.starts_with("could not skip decoy units"), "{why}");
+    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
+}
+
+/// Without its own units (the watcher, the sleep guard) the hidden session
+/// would run unwatched: an entry that cannot install them ends the session.
+#[test]
+fn an_entry_whose_session_units_cannot_be_installed_ends_the_session() {
+    let world = World::new();
+    fs::create_dir_all(world.run().join("systemd/system")).unwrap();
+    fs::write(
+        world.run().join("systemd/system/multi-user.target.wants"),
+        "not a directory",
+    )
+    .unwrap();
+    ready_entry(&world);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(
+        why.starts_with("could not install the session's units"),
+        "{why}"
+    );
+}
+
+#[test]
+fn the_read_only_rule_is_installed_at_the_entry_where_it_is_opted_in() {
+    let world = World::new();
+    let rule = world
+        .run()
+        .join(disk_guard::RULE_DIR)
+        .join(disk_guard::RULE_NAME);
+    let mut plan = armed(Direction::Enter);
+    plan.read_only_disks = true;
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    let text = fs::read_to_string(&rule).unwrap();
+    let copy = world.runtime().join(BINARY_NAME);
+    assert!(
+        text.contains(&format!(
+            "RUN+=\"{} guard-device $devnode\"",
+            copy.display()
+        )),
+        "{text}"
+    );
+}
+
+/// The opted-in read-only rule for unused disks is part of the session's
+/// safety: an entry that cannot install it ends the session.
+#[test]
+fn an_entry_whose_opted_in_read_only_rule_cannot_be_installed_ends_the_session() {
+    let world = World::new();
+    fs::write(world.run().join("udev/rules.d"), "not a directory").unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.read_only_disks = true;
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    let why = ends(&world, &world.env(true, 1_010));
+
+    assert!(
+        why.starts_with("could not install the read-only rule for unused disks"),
+        "{why}"
+    );
+}
+
+#[test]
+fn without_the_opt_in_no_rule_is_installed() {
+    let world = World::new();
+    ready_entry(&world);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    assert!(!world.run().join(disk_guard::RULE_DIR).exists());
+}
+
+/// The masks of the units the hidden root does not need are best effort: a
+/// mask that cannot be written leaves the entry as it is.
+#[test]
+fn the_boot_loader_masks_are_best_effort() {
+    let world = World::new();
+    let taken = world
+        .run()
+        .join(runtime_units::RUNTIME_CONTROL_DIR)
+        .join("systemd-boot-random-seed.service");
+    fs::create_dir_all(taken.join("held")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    assert!(taken.is_dir(), "the mask could not be written");
+
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    let mask = world
+        .run()
+        .join(runtime_units::RUNTIME_CONTROL_DIR)
+        .join("systemd-boot-random-seed.service");
+    assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
+}
+
+/// The plan records the entry; a plan that cannot be written would leave it
+/// armed for the entry inside the hidden session, so the entry ends the
+/// session instead.
+#[test]
+fn an_entry_that_cannot_record_itself_ends_the_session() {
+    if rustix::process::geteuid().is_root() {
+        // Root writes into a directory without write permission.
+        return;
+    }
+    let world = World::new();
+    ready_entry(&world);
+    let env = world.env(true, 1_010);
+    let runtime = world.runtime();
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o555)).unwrap();
+
+    let before = kernel_asked();
+    let outcome = run(&env);
+
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(kernel_asked(), before + 1);
+    let Outcome::Ended(why) = outcome else {
+        panic!("expected the session's end, got {outcome:?}");
+    };
+    assert!(why.starts_with("could not record the entry"), "{why}");
+    assert!(systemctl_calls(&world).contains("--force poweroff"));
+}
+
+/// The leftover guard: an activation died after building the tree, and a
+/// later plain reboot became a soft-reboot. Nothing of a hidden session ran
+/// in this boot, and the tree goes with the runtime pieces: PID 1 starts the
+/// decoy's userspace again in place.
+#[test]
+fn a_populated_nextroot_that_is_not_armed_is_never_entered() {
+    let world = World::new();
+    install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    world.write_plan(&plan);
+
+    let outcome = goes_on(&world, &world.env(true, 1_000));
+
+    assert!(matches!(outcome, Outcome::Disarmed(_)), "{outcome:?}");
+    assert!(!world.runtime().exists());
+    assert!(!world.run().join(DROPIN_DIR).exists());
+    assert!(
+        !world
+            .run()
+            .join(stop_guard_dir(SWITCH_TIMEOUT_UNIT))
+            .exists()
+    );
+}
+
+/// In the hidden session a next root someone mounted is detached and the
+/// session goes on, with its plan.
+#[test]
+fn an_unarmed_nextroot_in_the_hidden_session_keeps_the_plan() {
+    let world = World::new();
+    world.write_plan(&in_session());
+    let outcome = goes_on(&world, &world.env(true, 1_000));
+    assert!(matches!(outcome, Outcome::Disarmed(_)), "{outcome:?}");
+    assert!(world.runtime().join(PLAN_NAME).exists());
+    assert_eq!(switch_refusal::read(&world.runtime()), None);
+}
+
+/// A next root that stays mounted after the detach would be entered: on
+/// either side, the step ends the session instead.
+#[test]
+fn a_next_root_that_stays_mounted_after_the_detach_ends_the_session() {
+    let mut leftover = armed(Direction::Enter);
+    leftover.armed = None;
+    for plan in [leftover, in_session()] {
+        let world = World::new();
+        world.write_plan(&plan);
+        let mut env = world.env(true, 1_000);
+        env.detach = stuck;
+        let why = ends(&world, &env);
+        assert_eq!(
+            why,
+            "not armed for this transition, and /run/nextroot stays mounted after the detach"
+        );
+    }
 }
 
 #[test]
@@ -356,573 +832,79 @@ fn a_reboot_that_meets_an_unarmed_tree_records_nothing_on_the_volume() {
     let mut env = world.env(true, 1_000);
     let volume = with_the_volume_s_bind(&world, &mut env);
 
-    assert!(matches!(run(&env), Outcome::Disarmed(_)));
+    assert!(matches!(goes_on(&world, &env), Outcome::Disarmed(_)));
 
     assert!(!switch_refusal::refusal_path(&volume).exists());
 }
 
-#[test]
-fn a_refused_way_back_keeps_its_reason_in_the_runtime_directory() {
-    // In the hidden session the next root is the decoy's: whatever is mounted
-    // there, the reason never goes into it. PID 1 stays in the hidden root,
-    // and `/run` with it.
-    let world = World::new();
-    repoint_current_system(&world.run(), Path::new("/nix/store/bbb-nixos-system")).unwrap();
-    let mut plan = armed_on_the_volume(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.write_plan(&plan);
-    let mut env = world.env(true, 1_000);
-    let in_next_root = with_the_volume_s_bind(&world, &mut env);
-
-    // The decoy's init is not in the next root: the check refuses the way back.
-    let outcome = run(&env);
-
-    let Outcome::Disarmed(why) = outcome else {
-        panic!("expected a refused switch, got {outcome:?}");
-    };
-    assert!(why.contains("does not resolve"), "{why}");
-    let kept = switch_refusal::read(&world.runtime()).expect("the reason is kept in /run");
-    assert_eq!((kept.reason.as_str(), kept.at), (why.as_str(), 1_000));
-    assert!(!switch_refusal::refusal_path(&in_next_root).exists());
-    // The session goes on, on its own system, with its plan for a later way
-    // back.
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/bbb-nixos-system")
-    );
-    assert!(world.runtime().join(PLAN_NAME).exists());
+/// A file that stands for the kernel's module loader path: the decoy's
+/// value recorded, then the session's written over it.
+fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
+    let modprobe = world.dir.path().join("modprobe");
+    fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+    let recorded = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
+    fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
+    recorded
 }
 
+/// A reboot met a next root the activation left unarmed: the decoy gets back
+/// its kernel paths and loses the session's masks of every kind, and a mask
+/// the decoy had before stays.
 #[test]
-fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
+fn a_disarmed_next_root_gives_the_decoy_back_its_kernel_paths_and_units() {
     let world = World::new();
-    let r = world.run();
-    // In the decoy, just before entering: the snapshot and the utab copy.
-    let snapshot = Snapshot::take(&r);
-    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
-    // The decoy's copy: a line for the mount that is the next root now (ID 40
-    // in the world's mount table), and one for a decoy mount the entry's
-    // switch left behind, whose ID the kernel may have handed on since.
+    let control = world.run().join(runtime_units::RUNTIME_CONTROL_DIR);
+    fs::create_dir_all(&control).unwrap();
+    symlink("/dev/null", control.join("grub-common.service")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    plan.boot_masks = vec![
+        "systemd-boot-random-seed.service".to_string(),
+        "grub-common.service".to_string(),
+    ];
+    plan.generator_masks = vec![GPT_AUTO.to_string()];
+    plan.kernel_settings = repointed_modprobe(&world);
+    world.write_plan(&plan);
     fs::write(
-        world.runtime().join(UTAB_NAME),
-        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n\
-         ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n",
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
     )
     .unwrap();
-    // The hidden session.
-    repoint_current_system(&r, Path::new("/nix/store/bbb-nixos-system")).unwrap();
-    fs::write(r.join("hidden-probe"), "x").unwrap();
-    fs::write(r.join("mount/utab"), "ID=1 decoy\nID=77 /mnt/hidden-only\n").unwrap();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
-    fs::write(world.kmsg(), "6,500,1,-;hidden record\n6,501,2,-;later\n").unwrap();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
+    let mut masks = runtime_units::mask_units(&world.run(), &plan.masks).unwrap();
+    masks.extend(runtime_units::mask_units_best_effort(
+        &world.run(),
+        &plan.boot_masks[..1],
+    ));
+    masks.extend(runtime_units::mask_generators(&world.run(), &plan.generator_masks).unwrap());
 
-    // A hidden unit not ordered before the shutdown is still stopping when
-    // the transition runs, logs to the kernel once more on its way out and
-    // unmounts, so libmount writes its copy of utab: the cursor and the
-    // decoy's utab must come after it.
-    let late = world.dir.path().join("late-stopped");
-    let calls = world.dir.path().join("reset-failed-calls");
-    let all_calls = world.dir.path().join("all-calls");
-    plan.failed_at_entry = vec!["decoy-before.service".to_string()];
-    world.write_plan(&plan);
-    let systemctl = world.dir.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$@\" >> {all_calls}\n\
-             if [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
-             if [ \"$1\" = list-units ] && [ \"$4\" = --state=active ]; then\n\
-               echo 'systemd-journald.socket loaded active running Journal Sockets'\n\
-               exit 0\n\
-             fi\n\
-             if [ \"$1\" = list-units ]; then\n\
-               echo 'overlay-runtime-monitor.service loaded failed failed watcher'\n\
-               echo 'nscd.service loaded failed failed Name Service Cache Daemon'\n\
-               echo 'decoy-before.service loaded failed failed failed before the session'\n\
-               exit 0\n\
-             fi\n\
-             echo '7 soft-reboot.target start waiting'\n\
-             if [ ! -e {late} ]; then\n\
-               echo '12 late.service stop running'\n\
-               printf '6,502,3,-;late hidden record\\n' >> {kmsg}\n\
-               printf 'ID=77 /mnt/hidden-only\\n' > {utab}\n\
-               : > {late}\n\
-             fi\n",
-            late = late.display(),
-            kmsg = world.kmsg().display(),
-            utab = r.join("mount/utab").display(),
-            calls = calls.display(),
-            all_calls = all_calls.display()
-        ),
-        0o755,
-    );
-    // The entry kept which of journald's sockets the decoy had listening.
-    fs::write(
-        world.runtime().join(tail::SOCKETS_NAME),
-        "systemd-journald.socket\nsystemd-journald-dev-log.socket\n",
-    )
-    .unwrap();
-    let mut env = world.env(true, 1_000);
-    env.systemctl = Some(systemctl);
-
-    let outcome = run(&env);
-    assert!(
-        matches!(outcome, Outcome::Returned { failed: 0, .. }),
-        "{outcome:?}"
-    );
-
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/aaa-nixos-system")
-    );
-    assert!(!r.join("hidden-probe").exists());
-    assert!(
-        !world.runtime().exists(),
-        "the runtime directory is scrubbed"
-    );
-    assert!(!r.join(DROPIN_DIR).exists(), "the drop-in is scrubbed");
-    assert!(
-        !r.join(stop_guard_dir("blk-availability.service")).exists(),
-        "the stop guard is scrubbed, so the decoy's own shutdown is unchanged"
-    );
-    assert!(
-        !r.join(stop_guard_dir("network-addresses-.service"))
-            .exists(),
-        "the address guard is scrubbed too"
-    );
-    assert_eq!(
-        fs::read_to_string(r.join("mount/utab")).unwrap(),
-        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n",
-        "the hidden session's line and the stale decoy line are gone"
-    );
-    assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
-    let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
-    assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 503);
-    // The decoy's start removes the empty /run/nextroot the switch leaves,
-    // through a line the scrub did not take away.
-    assert_eq!(
-        fs::read_to_string(r.join(tail::TMPFILES_DIR).join(tail::TMPFILES_NAME)).unwrap(),
-        tail::tmpfiles_text(true)
-    );
-    // journald's store went and the /dev/log socket, which the decoy had at
-    // the entry and which no longer listens, was started again, after the
-    // wait for the late unit: the last calls before the cursor. Nothing
-    // stopped journald's socket, which listens.
-    let settle: Vec<String> = std::iter::once(tail::active_sockets_call().join(" "))
-        .chain(
-            tail::journal_socket_calls(
-                &[
-                    "systemd-journald.socket".into(),
-                    "systemd-journald-dev-log.socket".into(),
-                ],
-                &["systemd-journald.socket".into()],
-            )
-            .iter()
-            .map(|args| args.join(" ")),
-        )
-        .collect();
-    assert_eq!(
-        settle.last().map(String::as_str),
-        Some("start systemd-journald-dev-log.socket")
-    );
-    let every_call = fs::read_to_string(&all_calls).unwrap();
-    let every_call: Vec<&str> = every_call.lines().collect();
-    assert!(
-        every_call.ends_with(&settle.iter().map(String::as_str).collect::<Vec<_>>()),
-        "{every_call:?}"
-    );
-    assert!(
-        !every_call
-            .iter()
-            .any(|call| call.starts_with("stop systemd-journald")),
-        "{every_call:?}"
-    );
-    let first_settle = every_call.len() - settle.len();
-    assert!(
-        every_call[..first_settle]
-            .iter()
-            .any(|call| call.starts_with("list-jobs")),
-        "{every_call:?}"
-    );
-    // An emergency's SIGKILL left units failed (the session's own, a decoy
-    // unit caught stopping); the decoy must not inherit that record, but keeps
-    // the failure it had before the session.
-    // journald's own failure goes too, so that PID 1 drops its store.
-    assert_eq!(
-        fs::read_to_string(&calls).unwrap(),
-        "reset-failed overlay-runtime-monitor.service nscd.service\n\
-         reset-failed systemd-journald.service\n"
-    );
-    let Outcome::Returned { journal, .. } = outcome else {
-        unreachable!()
-    };
-    assert!(journal.is_empty(), "{journal:?}");
-}
-
-/// A process the session leaves running, in the unit `unit`, under the fake
-/// procfs `proc`, with a number no process can have, so nothing signals a
-/// real one.
-fn leftover(proc: &Path, unit: &str) -> u32 {
-    leftover_at(proc, 4_194_400, unit)
-}
-
-/// [`leftover`] with the number `pid`, which must be above the kernel's
-/// highest (`PID_MAX_LIMIT`, 4194304).
-fn leftover_at(proc: &Path, pid: u32, unit: &str) -> u32 {
-    assert!(pid > 4_194_304);
-    let dir = proc.join(pid.to_string());
-    fs::create_dir_all(&dir).unwrap();
-    let mut fields = vec!["S", "1", "1", "1", "0", "-1", "0"];
-    fields.extend(std::iter::repeat_n("0", 12));
-    fields.push("4242");
-    fs::write(
-        dir.join("stat"),
-        format!("{pid} (sleep) {}\n", fields.join(" ")),
-    )
-    .unwrap();
-    fs::write(dir.join("status"), "Name:\tsleep\nUid:\t0\t0\t0\t0\n").unwrap();
-    fs::write(dir.join("cmdline"), b"sleep\0infinity\0").unwrap();
-    fs::write(dir.join("cgroup"), format!("0::/system.slice/{unit}\n")).unwrap();
-    pid
-}
-
-#[test]
-fn the_session_s_leftovers_end_before_the_scrub_takes_what_their_stop_wrote() {
-    // A unit of the session the shutdown does not stop still runs at the way
-    // back. Its stop command writes to /run as its stop job runs: the way
-    // back ends it before the scrub, which then removes what it wrote.
-    let world = World::new();
-    let r = world.run();
-    let snapshot = Snapshot::take(&r);
-    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let places = tail::Places {
-        proc: world.dir.path().join("fake-proc"),
-        sys_dev_block: world.dir.path().join("sys/dev/block"),
-        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
-        journal_holder: 1,
-        journal_run: world.dir.path().join("run-systemd"),
-    };
-    let pid = leftover(&places.proc, "lngr.service");
-    let all_calls = world.dir.path().join("all-calls");
-    let systemctl = world.dir.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> {all_calls}\n\
-             if [ \"$1 $2\" = 'stop --no-block' ]; then\n\
-               rm -r {proc}/{pid}\n\
-               echo stopped > {run}/lngr-stopped\n\
-             fi\n",
-            all_calls = all_calls.display(),
-            proc = places.proc.display(),
-            run = r.display(),
-        ),
-        0o755,
-    );
-    let mut env = world.env(true, 1_000);
-    env.systemctl = Some(systemctl);
-    env.tail = Some(places);
-
-    let outcome = run(&env);
-
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-    let every_call = fs::read_to_string(&all_calls).unwrap();
-    assert_eq!(
-        every_call
-            .lines()
-            .filter(|call| call.starts_with("stop --no-block"))
-            .collect::<Vec<_>>(),
-        ["stop --no-block -- lngr.service"],
-        "{every_call}"
-    );
-    assert!(
-        !r.join("lngr-stopped").exists(),
-        "what the leftover's stop wrote to /run is scrubbed"
-    );
-}
-
-#[test]
-fn the_way_back_waits_for_the_shutdown_s_stops_and_leaves_udevd_to_pid_1() {
-    // udevd still runs at the way back (the soft-reboot of Debian 13 and
-    // Ubuntu 24.04 leaves it until PID 1's final kill), and so does a unit of the session the shutdown
-    // does not stop, while another unit is still stopping. The way back
-    // lets that stop end before it ends anything, and leaves udevd running
-    // for the events its network restore causes.
-    let world = World::new();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let places = tail::Places {
-        proc: world.dir.path().join("fake-proc"),
-        sys_dev_block: world.dir.path().join("sys/dev/block"),
-        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
-        journal_holder: 1,
-        journal_run: world.dir.path().join("run-systemd"),
-    };
-    let pid = leftover_at(&places.proc, 4_194_400, "lngr.service");
-    leftover_at(&places.proc, 4_194_401, "systemd-udevd.service");
-    let all_calls = world.dir.path().join("all-calls");
-    let stopping = world.dir.path().join("still-stopping");
-    fs::write(&stopping, "").unwrap();
-    let systemctl = world.dir.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> {all_calls}\n\
-             if [ \"$1\" = list-jobs ]; then\n\
-               echo '7 soft-reboot.target start waiting'\n\
-               [ -e {stopping} ] && echo '12 slow.service stop running' && rm {stopping}\n\
-               exit 0\n\
-             fi\n\
-             if [ \"$1 $2\" = 'stop --no-block' ]; then\n\
-               rm -r {proc}/{pid}\n\
-             fi\n",
-            all_calls = all_calls.display(),
-            stopping = stopping.display(),
-            proc = places.proc.display(),
-        ),
-        0o755,
-    );
-    let mut env = world.env(true, 1_000);
-    env.systemctl = Some(systemctl);
-    env.tail = Some(places);
-
-    let outcome = run(&env);
-
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-    let every_call = fs::read_to_string(&all_calls).unwrap();
-    let stops: Vec<&str> = every_call
-        .lines()
-        .filter(|call| call.starts_with("stop --no-block"))
-        .collect();
-    assert_eq!(stops, ["stop --no-block -- lngr.service"], "{every_call}");
-    // Two job listings come before the first stop: the one that still saw
-    // the shutdown's stop and the one that found it done.
-    let first_stop = every_call
-        .lines()
-        .position(|call| call.starts_with("stop --no-block"))
-        .unwrap();
-    assert_eq!(
-        every_call
-            .lines()
-            .take(first_stop)
-            .filter(|call| call.starts_with("list-jobs"))
-            .count(),
-        2,
-        "{every_call}"
-    );
-}
-
-#[test]
-fn the_drain_of_journald_s_sockets_is_the_last_step_before_the_cursor() {
-    // Something may reach journald's sockets while the last step waits for
-    // the units of the mounts the scrub detached, ends the leftovers again,
-    // settles journald's socket units and quiets the hidden ext4 filesystem.
-    // Here every systemctl call of those steps, and the quiet's read of the
-    // filesystem's message interval, returns only once a datagram reached
-    // journald's native socket: the drain has to come after all of them, so
-    // the socket holds nothing when the step is done.
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    use std::os::unix::net::UnixDatagram;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let world = World::new();
-    let mut plan = armed(Direction::Leave);
-    let journal_run = world.dir.path().join("run-systemd");
-    fs::create_dir_all(journal_run.join("journal")).unwrap();
-    let native_path = journal_run.join("journal/socket");
-    let native = UnixDatagram::bind(&native_path).unwrap();
-    // The hidden volume is an ext4 filesystem on sdb2, whose message interval
-    // is a FIFO: its writer opens it once the quiet opens it to read, sends a
-    // datagram and only then gives the interval.
-    plan.hidden_dev = Some("8:18".to_string());
-    let sys_dev_block = world.dir.path().join("sys/dev/block");
-    fs::create_dir_all(&sys_dev_block).unwrap();
-    symlink("../../devices/sdb/sdb2", sys_dev_block.join("8:18")).unwrap();
-    let ext4 = world.dir.path().join("sys/fs/ext4/sdb2");
-    fs::create_dir_all(&ext4).unwrap();
-    fs::write(ext4.join("msg_ratelimit_burst"), "10\n").unwrap();
-    let interval = ext4.join("msg_ratelimit_interval_ms");
-    rustix::fs::mknodat(
-        rustix::fs::CWD,
-        &interval,
-        rustix::fs::FileType::Fifo,
-        rustix::fs::Mode::from_raw_mode(0o600),
-        0,
-    )
-    .unwrap();
-    let quiet_sender = {
-        let (interval, native_path) = (interval.clone(), native_path.clone());
-        std::thread::spawn(move || {
-            let mut fifo = fs::OpenOptions::new().write(true).open(&interval).unwrap();
-            UnixDatagram::unbound()
-                .unwrap()
-                .send_to(b"during the quiet", &native_path)
-                .unwrap();
-            fifo.write_all(b"5000\n").unwrap();
-        })
-    };
-    // A procfs that shows only this process, which holds the socket: the
-    // second pass ends nothing, and the drain takes this process's
-    // descriptors.
-    let own = std::process::id();
-    let proc = world.dir.path().join("fake-proc");
-    fs::create_dir_all(&proc).unwrap();
-    symlink(format!("/proc/{own}"), proc.join(own.to_string())).unwrap();
-    let calls = world.dir.path().join("calls");
-    let sent = world.dir.path().join("sent");
-    fs::write(&calls, "").unwrap();
-    fs::write(&sent, "").unwrap();
-    let systemctl = world.dir.path().join("systemctl");
-    write_executable(
-        &systemctl,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> {calls}\n\
-             n=$(wc -l < {calls})\n\
-             i=0\n\
-             while [ \"$(wc -l < {sent})\" -lt \"$n\" ] && [ \"$i\" -lt 2000 ]; do\n\
-               i=$((i + 1))\n\
-             done\n",
-            calls = calls.display(),
-            sent = sent.display(),
-        ),
-        0o755,
-    );
-    let stop = std::sync::Arc::new(AtomicBool::new(false));
-    let sender = {
-        let (stop, calls, sent, native_path) = (
-            stop.clone(),
-            calls.clone(),
-            sent.clone(),
-            native_path.clone(),
-        );
-        std::thread::spawn(move || {
-            let client = UnixDatagram::unbound().unwrap();
-            let mut done = 0;
-            while !stop.load(Ordering::SeqCst) {
-                let asked = fs::read_to_string(&calls).unwrap().lines().count();
-                while done < asked {
-                    client
-                        .send_to(format!("during call {done}").as_bytes(), &native_path)
-                        .unwrap();
-                    done += 1;
-                    writeln!(fs::OpenOptions::new().append(true).open(&sent).unwrap()).unwrap();
-                }
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            done
-        })
-    };
-    let mut env = world.env(true, 1_000);
-    env.systemctl = Some(systemctl);
-    env.tail = Some(tail::Places {
-        proc,
-        sys_dev_block,
-        sys_fs_ext4: world.dir.path().join("sys/fs/ext4"),
-        journal_holder: own,
-        journal_run,
-    });
-    let detached = [world.run().join("initramfs")];
-
-    let journal = finish_tail(&env, &plan, None, &detached);
-
-    stop.store(true, Ordering::SeqCst);
-    let sent = sender.join().unwrap();
-    // A writer still waiting for a reader is let go, and its datagram then
-    // stays.
-    let _reader = fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(&interval)
-        .unwrap();
-    quiet_sender.join().unwrap();
-    assert_eq!(
-        fs::read_to_string(ext4.join("msg_ratelimit_burst")).unwrap(),
-        "0",
-        "the hidden ext4 filesystem was quieted"
-    );
-    let every_call = fs::read_to_string(&calls).unwrap();
-    assert_eq!(sent, every_call.lines().count(), "{every_call}");
-    assert!(
-        every_call
-            .lines()
-            .any(|call| call == tail::MOUNT_UNITS.join(" ")),
-        "the wait for the detached mount's unit ran: {every_call}"
-    );
-    assert!(
-        every_call
-            .lines()
-            .any(|call| call == tail::DROP_STREAMS.join(" ")),
-        "the sockets were settled: {every_call}"
-    );
-    assert!(journal.is_empty(), "{journal:?}");
-    native.set_nonblocking(true).unwrap();
-    let mut buf = [0_u8; 32];
-    assert_eq!(
-        native.recv(&mut buf).map_err(|e| e.kind()),
-        Err(std::io::ErrorKind::WouldBlock),
-        "nothing sent during the steps before the drain stays: {every_call}"
-    );
-}
-
-#[test]
-fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
-    // The decoy's initrd lines name its root and store by the IDs they had at
-    // entry. The way back mounts the decoy root and binds the store it carried
-    // again, under new IDs (the hidden volume has the root's old one now): the
-    // lines follow their mounts there, so the decoy keeps them as initrd
-    // mounts. The tmpfs the session did not carry gets no line.
-    let world = World::new();
-    fs::write(
-        world.runtime().join(UTAB_NAME),
-        "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
-         ID=68 SRC=tmpfs TARGET=/sysroot/nix/.rw-store ROOT=/ OPTS=x-initrd.mount\n\
-         ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n",
-    )
-    .unwrap();
-    fs::write(
-        world.runtime().join(UTAB_MOUNTS_NAME),
-        "62 1 253:0 / / rw - ext4 /dev/vda rw\n\
-         68 62 0:31 / /nix/.rw-store rw - tmpfs tmpfs rw\n\
-         85 62 0:32 / /nix/store ro - overlay overlay rw\n",
-    )
-    .unwrap();
-    fs::write(world.run().join("mount/utab"), "ID=112 hidden\n").unwrap();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let mut env = world.env(true, 1_000);
-    let next = world.nextroot();
-    env.mounts = parse_mountinfo(&format!(
-        "140 1 0:50 / / rw - overlay overlay rw\n\
-         62 140 254:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
-         150 140 253:0 / {next} rw - ext4 /dev/vda rw\n\
-         152 150 0:32 / {next}/nix/store ro - overlay overlay rw\n",
-        next = next.display()
+    assert!(matches!(
+        goes_on(&world, &world.env(true, 1_000)),
+        Outcome::Disarmed(_)
     ));
 
-    assert!(matches!(run(&env), Outcome::Returned { .. }));
     assert_eq!(
-        fs::read_to_string(world.run().join("mount/utab")).unwrap(),
-        "ID=150 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
-         ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
+        fs::read_to_string(world.dir.path().join("modprobe")).unwrap(),
+        "/nix/store/decoy-kmod/bin/modprobe"
+    );
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
+    assert_eq!(
+        fs::read_link(control.join("grub-common.service")).unwrap(),
+        Path::new("/dev/null"),
+        "the decoy's own mask stays"
     );
 }
 
 #[test]
-fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
+fn the_dropin_runs_the_ram_copy_with_its_output_discarded_and_fails_closed() {
     let text = dropin_text(Path::new("/run/overlay-runtime/control"));
-    assert!(text.contains("ExecStart=-/run/overlay-runtime/control transition\n"));
+    assert!(text.contains("\nExecStart=/run/overlay-runtime/control transition\n"));
+    assert!(
+        !text.contains("ExecStart=-"),
+        "a failure must not be ignored"
+    );
+    assert!(text.starts_with("[Unit]\nFailureAction=poweroff-force\n[Service]\n"));
     assert!(text.contains("StandardOutput=null"));
     assert!(text.contains("StandardError=null"));
     assert!(text.contains("Type=oneshot"));
@@ -931,15 +913,22 @@ fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
 }
 
 #[test]
+fn only_the_session_s_end_fails_the_service() {
+    assert_eq!(Outcome::NothingToDo.exit_code(), 0);
+    assert_eq!(Outcome::Entered.exit_code(), 0);
+    assert_eq!(Outcome::Disarmed("x".to_string()).exit_code(), 0);
+    assert_eq!(Outcome::Ended("x".to_string()).exit_code(), 1);
+}
+
+#[test]
 fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin() {
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path();
     install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
     // blkdeactivate -u would unmount the hidden volume below /run/nextroot on
-    // the way in, and a LUKS or LVM decoy root below it on the way back.
-    // Debian's and Ubuntu's copy of the unit has its stop as its only
-    // command: the guard gives it a start that does nothing, or systemd would
-    // refuse to load it.
+    // the way in. Debian's and Ubuntu's copy of the unit has its stop as its
+    // only command: the guard gives it a start that does nothing, or systemd
+    // would refuse to load it.
     let guard = run
         .join(stop_guard_dir("blk-availability.service"))
         .join(STOP_GUARD_NAME);
@@ -1011,7 +1000,7 @@ fn the_timeout_guard_powers_off_a_switch_that_hangs_and_goes_with_the_dropin() {
         fs::read_to_string(&guard).unwrap(),
         "[Unit]\nJobTimeoutAction=poweroff-force\n"
     );
-    assert_eq!(SWITCH_TIMEOUT_ACTION, "poweroff-force");
+    assert_eq!(SWITCH_TIMEOUT_ACTION, session_end().emergency_action());
     assert!(
         SWITCH_TIMEOUT_TEXT
             .lines()
@@ -1029,57 +1018,31 @@ fn the_timeout_guard_powers_off_a_switch_that_hangs_and_goes_with_the_dropin() {
     assert!(!run.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
 }
 
-/// The timeout guard lives from the entry to the way back: the switch into
-/// the session keeps it for the hidden PID 1, whose way back it covers too, a
-/// switch the hidden session refuses keeps it for the session that goes on,
-/// and the way back removes it. A switch refused on the decoy removes it too.
+/// The timeout guard stays for the whole session: the switch into it keeps
+/// it for the hidden PID 1, and a soft-reboot the hidden session refuses
+/// keeps it for the session that goes on.
 #[test]
-fn the_timeout_guard_covers_both_switches_and_goes_with_the_way_back() {
+fn the_timeout_guard_stays_for_the_whole_session() {
     let world = World::new();
     let r = world.run();
     let guard = r
         .join(stop_guard_dir(SWITCH_TIMEOUT_UNIT))
         .join(STOP_GUARD_NAME);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&r).to_text(),
-    )
-    .unwrap();
     install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    assert!(guard.exists(), "the hidden PID 1 loads it for the way back");
+    ready_entry(&world);
+    assert_eq!(goes_on(&world, &world.env(true, 1_010)), Outcome::Entered);
+    assert!(guard.exists(), "the hidden PID 1 loads it");
 
-    // A plain soft-reboot in the session that meets a next root nobody
-    // armed: the session goes on, its guard with it.
-    let mut plan = world.plan();
-    plan.armed = None;
-    world.write_plan(&plan);
-    assert!(matches!(run(&world.env(true, 1_015)), Outcome::Disarmed(_)));
+    assert!(matches!(
+        goes_on(&world, &world.env(true, 1_015)),
+        Outcome::Disarmed(_)
+    ));
     assert!(guard.exists());
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-    assert!(!r.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
-
-    // On the decoy, a reboot that meets an entry nobody armed.
-    let world = World::new();
-    let r = world.run();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
-    let mut plan = armed(Direction::Enter);
-    plan.armed = None;
-    world.write_plan(&plan);
-    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
-    assert!(!r.join(stop_guard_dir(SWITCH_TIMEOUT_UNIT)).exists());
+    assert_eq!(
+        goes_on(&world, &world.env(false, 1_020)),
+        Outcome::NothingToDo
+    );
+    assert!(guard.exists());
 }
 
 #[test]
@@ -1100,62 +1063,21 @@ fn the_dropins_are_readable_by_all_so_pid1_never_names_them_in_the_kernel_log() 
 }
 
 #[test]
-fn a_dropin_directory_the_decoy_had_keeps_its_own_files_and_loses_the_guard() {
-    let world = World::new();
-    let r = world.run();
-    let decoy_dir = r.join(stop_guard_dir("blk-availability.service"));
-    fs::create_dir_all(&decoy_dir).unwrap();
-    fs::write(decoy_dir.join("10-local.conf"), "[Unit]\n").unwrap();
-    let empty_dir = r.join(stop_guard_dir("dbus.service"));
-    fs::create_dir_all(&empty_dir).unwrap();
-    // The entry: the snapshot first, then the drop-ins.
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&r).to_text(),
-    )
-    .unwrap();
-    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(
-        matches!(outcome, Outcome::Returned { failed: 0, .. }),
-        "{outcome:?}"
-    );
-
-    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists(), "the guard goes");
-    assert_eq!(
-        fs::read_to_string(decoy_dir.join("10-local.conf")).unwrap(),
-        "[Unit]\n"
-    );
-    assert!(fs::read_dir(&empty_dir).unwrap().next().is_none());
-    for unit in ["dbus.socket", "network-addresses-.service"] {
-        assert!(!r.join(stop_guard_dir(unit)).exists(), "{unit}");
-    }
-    assert!(!r.join(DROPIN_DIR).exists());
-}
-
-#[test]
 fn a_rollback_removes_the_guards_and_only_the_directories_it_made() {
     let dir = tempfile::tempdir().unwrap();
     let run = dir.path();
     let decoy_dir = run.join(stop_guard_dir("dbus.service"));
     fs::create_dir_all(&decoy_dir).unwrap();
+    fs::write(decoy_dir.join("10-local.conf"), "[Unit]\n").unwrap();
     let kept = Snapshot::take(run);
     install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
     remove_dropin(run, &kept);
     assert!(decoy_dir.is_dir());
     assert!(!decoy_dir.join(STOP_GUARD_NAME).exists());
+    assert_eq!(
+        fs::read_to_string(decoy_dir.join("10-local.conf")).unwrap(),
+        "[Unit]\n"
+    );
     assert!(!run.join(stop_guard_dir("dbus.socket")).exists());
     assert!(!run.join(DROPIN_DIR).exists());
 }
@@ -1224,930 +1146,4 @@ fn the_quieting_dropin_goes_with_the_other_dropins() {
         fs::read_to_string(theirs.join(STOP_GUARD_NAME)).unwrap(),
         "[Mount]\nLogLevelMax=debug\n"
     );
-}
-
-#[test]
-fn a_decoy_service_s_pid_file_the_hidden_session_wrote_again_goes_on_the_way_back() {
-    // The decoy's avahi wrote its PID file and removed it when the switch
-    // stopped it; the hidden avahi wrote it again and was killed by an
-    // emergency, so nothing removed it. The decoy's avahi must not find it.
-    let world = World::new();
-    let r = world.run();
-    fs::create_dir_all(r.join("avahi-daemon")).unwrap();
-    fs::write(r.join("avahi-daemon/pid"), "100\n").unwrap();
-    // At activation, with the decoy's services still running.
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&r).to_text(),
-    )
-    .unwrap();
-    // The decoy's own shutdown, then the switch.
-    fs::remove_file(r.join("avahi-daemon/pid")).unwrap();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    // The hidden session, ended by a kill.
-    fs::write(r.join("avahi-daemon/pid"), "200\n").unwrap();
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(
-        matches!(outcome, Outcome::Returned { failed: 0, .. }),
-        "{outcome:?}"
-    );
-
-    assert!(!r.join("avahi-daemon/pid").exists());
-    assert!(
-        r.join("avahi-daemon").is_dir(),
-        "kept through the decoy's shutdown"
-    );
-    assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
-}
-
-#[test]
-fn the_decoy_s_name_server_records_are_put_back_on_the_way_back() {
-    let world = World::new();
-    let r = world.run();
-    let key = r.join("resolvconf/keys/NetworkManager");
-    fs::create_dir_all(key.parent().unwrap()).unwrap();
-    fs::write(&key, "nameserver 10.0.2.3\n").unwrap();
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&r).to_text(),
-    )
-    .unwrap();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    // The hidden NetworkManager rewrites its record and leaves it at its stop.
-    fs::write(&key, "search hidden.example\nnameserver 10.213.77.53\n").unwrap();
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(
-        matches!(outcome, Outcome::Returned { failed: 0, .. }),
-        "{outcome:?}"
-    );
-    assert_eq!(fs::read_to_string(&key).unwrap(), "nameserver 10.0.2.3\n");
-}
-
-#[test]
-fn the_boot_loader_masks_are_written_where_they_outrank_etc_and_go_with_the_session() {
-    let world = World::new();
-    let mut plan = armed(Direction::Enter);
-    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    let mask = world
-        .run()
-        .join(runtime_units::RUNTIME_CONTROL_DIR)
-        .join("systemd-boot-random-seed.service");
-    assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    assert!(matches!(
-        run(&world.env(true, 1_030)),
-        Outcome::Returned { .. }
-    ));
-    assert!(
-        fs::symlink_metadata(&mask).is_err(),
-        "the decoy runs the unit again"
-    );
-}
-
-/// A switch that fails after the entry transition leaves the decoy running
-/// with the session's masks in `/run`. Removing them on the decoy side (a
-/// rollback, `nails recover`, an emergency there) takes only what the entry
-/// wrote: a mask the decoy had before stays.
-#[test]
-fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
-    let world = World::new();
-    let control = world.run().join(runtime_units::RUNTIME_CONTROL_DIR);
-    fs::create_dir_all(&control).unwrap();
-    symlink("/dev/null", control.join("grub-common.service")).unwrap();
-    let mut plan = armed(Direction::Enter);
-    plan.boot_masks = vec![
-        "systemd-boot-random-seed.service".to_string(),
-        "grub-common.service".to_string(),
-    ];
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    let kept = Snapshot::take(&world.run());
-    fs::write(world.runtime().join(SNAPSHOT_NAME), kept.to_text()).unwrap();
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    let swap = world.run().join("systemd/system/dev-vda3.swap");
-    let seed = control.join("systemd-boot-random-seed.service");
-    let generators = world.run().join(runtime_units::GENERATOR_DIR);
-    assert!(fs::symlink_metadata(&swap).is_ok() && fs::symlink_metadata(&seed).is_ok());
-    assert!(fs::symlink_metadata(generators.join(GPT_AUTO)).is_ok());
-
-    // The switch failed: the decoy userspace runs again over the same /run.
-    let plan = world.plan();
-    runtime_units::remove_masks(
-        &world.run(),
-        &plan.masks,
-        &plan.boot_masks,
-        &plan.generator_masks,
-        &kept,
-    );
-    assert!(
-        fs::symlink_metadata(&swap).is_err(),
-        "the decoy swap is masked"
-    );
-    assert!(
-        fs::symlink_metadata(&seed).is_err(),
-        "the seed unit is masked"
-    );
-    assert!(!generators.exists(), "the decoy's generators are masked");
-    assert_eq!(
-        fs::read_link(control.join("grub-common.service")).unwrap(),
-        Path::new("/dev/null"),
-        "the decoy's own mask stays"
-    );
-}
-
-/// The generator every entry masks.
-const GPT_AUTO: &str = "systemd-gpt-auto-generator";
-
-/// The generator masks are written at the switch, where they rank above every
-/// other generator directory, and go with the session's `/run` on the way
-/// back: the whole directory when the decoy had none, and only the session's
-/// mask when the decoy keeps one of its own.
-#[test]
-fn the_generator_masks_are_written_at_the_switch_and_go_with_the_session() {
-    for decoy_has_generators in [false, true] {
-        let world = World::new();
-        let generators = world.run().join(runtime_units::GENERATOR_DIR);
-        if decoy_has_generators {
-            fs::create_dir_all(&generators).unwrap();
-            symlink("/dev/null", generators.join("zram-generator")).unwrap();
-        }
-        let mut plan = armed(Direction::Enter);
-        plan.generator_masks = vec![GPT_AUTO.to_string()];
-        world.init_in_nextroot(&plan.hidden.init);
-        world.write_plan(&plan);
-        fs::write(
-            world.runtime().join(SNAPSHOT_NAME),
-            Snapshot::take(&world.run()).to_text(),
-        )
-        .unwrap();
-        assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-        let mask = generators.join(GPT_AUTO);
-        assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
-
-        let mut plan = world.plan();
-        plan.armed = Some(Arm {
-            direction: Direction::Leave,
-            at: 1_020,
-        });
-        world.init_in_nextroot(&plan.decoy.init);
-        world.write_plan(&plan);
-        let outcome = run(&world.env(true, 1_030));
-        assert!(
-            matches!(outcome, Outcome::Returned { failed: 0, .. }),
-            "{outcome:?}"
-        );
-        assert!(
-            fs::symlink_metadata(&mask).is_err(),
-            "the decoy runs the generator again"
-        );
-        if decoy_has_generators {
-            assert_eq!(
-                fs::read_link(generators.join("zram-generator")).unwrap(),
-                Path::new("/dev/null"),
-                "the decoy's own mask stays"
-            );
-        } else {
-            assert!(!generators.exists());
-        }
-    }
-}
-
-/// A generator mask that cannot be written refuses the switch, as a unit mask
-/// does: through a generator directory that is a link into a directory the
-/// scrub never enters, the mask would outlive the session on the decoy.
-#[test]
-fn an_entry_whose_generator_masks_cannot_be_written_is_refused() {
-    let world = World::new();
-    let elsewhere = world.run().join("udev/elsewhere");
-    fs::create_dir_all(&elsewhere).unwrap();
-    fs::create_dir_all(world.run().join("systemd")).unwrap();
-    symlink(&elsewhere, world.run().join(runtime_units::GENERATOR_DIR)).unwrap();
-    let mut plan = armed(Direction::Enter);
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-
-    let outcome = run(&world.env(true, 1_010));
-    assert!(
-        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not mask generators")),
-        "{outcome:?}"
-    );
-    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
-    assert!(
-        fs::symlink_metadata(world.run().join("systemd/system/dev-vda3.swap")).is_err(),
-        "the decoy units are unmasked again"
-    );
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/aaa-nixos-system")
-    );
-}
-
-/// An entry of the decoy at a generator mask's path that does not mask the
-/// generator refuses the switch: PID 1 would skip this directory and run the
-/// generator from the next one. The entry stays as the decoy left it.
-#[test]
-fn an_entry_whose_generator_path_holds_no_mask_is_refused() {
-    let world = World::new();
-    let taken = world
-        .run()
-        .join(runtime_units::GENERATOR_DIR)
-        .join(GPT_AUTO);
-    fs::create_dir_all(&taken).unwrap();
-    let mut plan = armed(Direction::Enter);
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-
-    let outcome = run(&world.env(true, 1_010));
-    assert!(
-        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not mask generators")),
-        "{outcome:?}"
-    );
-    assert!(taken.is_dir(), "the decoy's entry stays");
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/aaa-nixos-system")
-    );
-}
-
-/// The skips of a disk local-fs.target requires, with its fsck, of an
-/// automount, and of a disk that is gone by the switch.
-fn skips(world: &World) -> Vec<crate::whole_root::plan::Skip> {
-    use crate::whole_root::plan::Skip;
-    let disk = world.dir.path().join("disk");
-    fs::write(&disk, "").unwrap();
-    vec![
-        Skip {
-            units: vec!["srv-data.mount".to_string()],
-            pulled: vec!["systemd-fsck@dev-vdb1.service".to_string()],
-            device: Some(disk),
-        },
-        Skip {
-            units: vec!["boot.automount".to_string()],
-            pulled: Vec::new(),
-            device: None,
-        },
-        Skip {
-            units: vec!["srv-gone.mount".to_string()],
-            pulled: vec!["systemd-fsck@dev-vdc1.service".to_string()],
-            device: Some(world.dir.path().join("gone")),
-        },
-    ]
-}
-
-/// The units a boot target requires are skipped at the switch, those they
-/// pull in with them, and the units of a disk gone by then masked instead;
-/// the way back removes all of it.
-#[test]
-fn the_skips_are_written_at_the_switch_and_go_with_the_session() {
-    use crate::whole_root::skips::{SKIP_DROPIN_NAME, SKIP_TEXT, dropin_dir};
-    let world = World::new();
-    let mut plan = armed(Direction::Enter);
-    plan.skips = skips(&world);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-
-    let r = world.run();
-    for unit in [
-        "srv-data.mount",
-        "systemd-fsck@dev-vdb1.service",
-        "boot.automount",
-    ] {
-        let dropin = r.join(dropin_dir(unit)).join(SKIP_DROPIN_NAME);
-        assert_eq!(fs::read_to_string(&dropin).unwrap(), SKIP_TEXT, "{unit}");
-    }
-    let gone = r.join("systemd/system/srv-gone.mount");
-    assert_eq!(fs::read_link(&gone).unwrap(), Path::new("/dev/null"));
-    assert!(!r.join(dropin_dir("srv-gone.mount")).exists());
-    assert!(!r.join(dropin_dir("systemd-fsck@dev-vdc1.service")).exists());
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(
-        matches!(outcome, Outcome::Returned { failed: 0, .. }),
-        "{outcome:?}"
-    );
-    for unit in [
-        "srv-data.mount",
-        "systemd-fsck@dev-vdb1.service",
-        "boot.automount",
-    ] {
-        assert!(!r.join(dropin_dir(unit)).exists(), "{unit}");
-    }
-    assert!(fs::symlink_metadata(&gone).is_err());
-}
-
-/// A skip that cannot be written refuses the switch, as a mask does: through
-/// a drop-in directory that is a link into a directory the scrub never
-/// enters, the drop-in would outlive the session on the decoy. What the
-/// switch wrote before is gone again.
-#[test]
-fn an_entry_whose_skips_cannot_be_written_is_refused() {
-    use crate::whole_root::skips::dropin_dir;
-    let world = World::new();
-    let elsewhere = world.run().join("udev/elsewhere");
-    fs::create_dir_all(&elsewhere).unwrap();
-    fs::create_dir_all(world.run().join("systemd/system")).unwrap();
-    symlink(&elsewhere, world.run().join(dropin_dir("boot.automount"))).unwrap();
-    let mut plan = armed(Direction::Enter);
-    plan.skips = skips(&world);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-
-    let outcome = run(&world.env(true, 1_010));
-    assert!(
-        matches!(&outcome, Outcome::Disarmed(why) if why.starts_with("could not skip decoy units")),
-        "{outcome:?}"
-    );
-    assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
-    let r = world.run();
-    assert!(
-        !r.join(dropin_dir("srv-data.mount")).exists(),
-        "skipped again"
-    );
-    assert!(
-        fs::symlink_metadata(r.join("systemd/system/dev-vda3.swap")).is_err(),
-        "the decoy units are unmasked again"
-    );
-    assert_eq!(
-        world.current_system(),
-        Path::new("/nix/store/aaa-nixos-system")
-    );
-}
-
-/// A file that stands for the kernel's module loader path: the decoy's
-/// value recorded, then the session's written over it.
-fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
-    let modprobe = world.dir.path().join("modprobe");
-    fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
-    let recorded = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
-    fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
-    recorded
-}
-
-fn modprobe_now(world: &World) -> String {
-    fs::read_to_string(world.dir.path().join("modprobe")).unwrap()
-}
-
-/// The entry's snapshot of `/run`, then the masks the entry transition
-/// writes: the decoy units in the runtime unit and control directories, the
-/// units the hidden root does not need in the control directory, the
-/// generators in the generator directory.
-fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
-    fs::write(
-        world.runtime().join(SNAPSHOT_NAME),
-        Snapshot::take(&world.run()).to_text(),
-    )
-    .unwrap();
-    let mut masks = runtime_units::mask_units(&world.run(), &plan.masks).unwrap();
-    masks.extend(runtime_units::mask_units_best_effort(
-        &world.run(),
-        &plan.boot_masks,
-    ));
-    masks.extend(runtime_units::mask_generators(&world.run(), &plan.generator_masks).unwrap());
-    assert_eq!(
-        masks.len(),
-        2 * plan.masks.len() + plan.boot_masks.len() + plan.generator_masks.len()
-    );
-    masks
-}
-
-/// A reboot met a next root the activation left unarmed, after an entry
-/// transition whose switch failed: the decoy gets back its kernel paths and
-/// loses the session's masks of every kind.
-#[test]
-fn a_disarmed_next_root_gives_the_decoy_back_its_kernel_paths_and_units() {
-    let world = World::new();
-    let mut plan = armed(Direction::Enter);
-    plan.armed = None;
-    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    plan.kernel_settings = repointed_modprobe(&world);
-    world.write_plan(&plan);
-    let masks = masked_after_snapshot(&world, &plan);
-
-    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
-
-    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
-    for mask in masks {
-        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
-    }
-}
-
-#[test]
-fn the_way_back_gives_the_decoy_back_its_kernel_paths_and_units() {
-    let world = World::new();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    plan.kernel_settings = repointed_modprobe(&world);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let masks = masked_after_snapshot(&world, &plan);
-
-    let outcome = run(&world.env(true, 1_000));
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-
-    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
-    for mask in masks {
-        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
-    }
-}
-
-/// A way back whose snapshot of `/run` is gone still removes the session's
-/// masks of every kind. The scrub then keeps whatever it cannot judge, the
-/// masks among it, and the decoy would start with its units and generators
-/// masked.
-#[test]
-fn a_way_back_without_its_snapshot_still_removes_the_masks() {
-    let world = World::new();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    plan.boot_masks = vec!["systemd-remount-fs.service".to_string()];
-    plan.generator_masks = vec![GPT_AUTO.to_string()];
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let masks = masked_after_snapshot(&world, &plan);
-    // Something in the hidden session deleted the snapshot.
-    fs::remove_file(world.runtime().join(SNAPSHOT_NAME)).unwrap();
-
-    let outcome = run(&world.env(true, 1_000));
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-
-    for mask in masks {
-        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
-    }
-    assert_eq!(
-        fs::read_to_string(world.run().join("decoy-state")).unwrap(),
-        "keep",
-        "the decoy's own state stays"
-    );
-}
-
-#[test]
-fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
-    let world = World::new();
-    let rule = world
-        .run()
-        .join(disk_guard::RULE_DIR)
-        .join(disk_guard::RULE_NAME);
-    let mut plan = armed(Direction::Enter);
-    plan.read_only_disks = true;
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    let snapshot = Snapshot::take(&world.run());
-    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
-
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    let text = fs::read_to_string(&rule).unwrap();
-    let copy = world.runtime().join(BINARY_NAME);
-    assert!(
-        text.contains(&format!(
-            "RUN+=\"{} guard-device $devnode\"",
-            copy.display()
-        )),
-        "{text}"
-    );
-
-    let mut plan = world.plan();
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_020,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&world.env(true, 1_030));
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-    assert!(!rule.exists(), "the decoy's udevd must never load the rule");
-    assert!(world.run().join("udev/data").is_dir());
-}
-
-/// An FHS decoy with a classic wtmp, left by a session whose plan records
-/// `label`: the binary copy in the runtime directory and the decoy init in
-/// the next root. Returns where the way back leaves its copy for the decoy's
-/// first start.
-fn fhs_way_back(world: &World, label: Option<&str>) -> PathBuf {
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    plan.decoy.system = None;
-    plan.decoy.init = PathBuf::from("/usr/lib/systemd/systemd");
-    plan.program_label = label.map(str::to_string);
-    world.init_in_nextroot(&plan.decoy.init);
-    fs::create_dir_all(world.nextroot().join("var/log")).unwrap();
-    fs::write(world.nextroot().join("var/log/wtmp"), [0u8; 384]).unwrap();
-    fs::write(world.runtime().join(BINARY_NAME), b"\x7fELF-not-really").unwrap();
-    world.write_plan(&plan);
-    world
-        .run()
-        .join(boot_records::FIXUP_DIR)
-        .join(boot_records::FIXUP_BINARY)
-}
-
-/// Where the plan records no label, the copy for the decoy's first start is
-/// left without asking SELinux anything; where it records one, the copy takes
-/// it; and where the copy does not take it, the way back leaves every piece
-/// of that fix out, so the decoy's PID 1 starts nothing from `/run` in its
-/// own domain.
-#[test]
-fn the_copy_for_the_decoy_s_first_start_takes_the_plan_s_label_or_stays_out() {
-    use crate::test_support::FakeSelinux;
-    let unit = |world: &World| {
-        world
-            .run()
-            .join("systemd/system")
-            .join(boot_records::FIXUP_UNIT)
-    };
-
-    let world = World::new();
-    let copy = fhs_way_back(&world, None);
-    let untouched = FakeSelinux {
-        write_error: Some(libc::EPERM),
-        ..FakeSelinux::targeted()
-    }
-    .leak();
-    let mut env = world.env(true, 1_000);
-    env.selinux = untouched;
-    assert!(matches!(run(&env), Outcome::Returned { .. }));
-    assert!(copy.is_file() && unit(&world).is_file());
-    assert!(untouched.labels_written().is_empty());
-    assert!(untouched.questions().is_empty(), "no question either");
-
-    let world = World::new();
-    let copy = fhs_way_back(&world, Some(program_label::PROGRAM_LABEL));
-    let selinux = FakeSelinux::targeted().leak();
-    let mut env = world.env(true, 1_000);
-    env.selinux = selinux;
-    assert!(matches!(run(&env), Outcome::Returned { .. }));
-    assert!(copy.is_file() && unit(&world).is_file());
-    assert_eq!(
-        selinux.labels_written(),
-        [b"system_u:object_r:bin_t:s0\0".to_vec()]
-    );
-
-    let world = World::new();
-    let copy = fhs_way_back(&world, Some(program_label::PROGRAM_LABEL));
-    let refused = FakeSelinux {
-        write_error: Some(libc::EACCES),
-        ..FakeSelinux::targeted()
-    }
-    .leak();
-    let mut env = world.env(true, 1_000);
-    env.selinux = refused;
-    assert!(matches!(run(&env), Outcome::Returned { .. }));
-    assert!(!copy.exists(), "no copy for the decoy's first start");
-    assert!(!unit(&world).exists(), "nor the unit that would start it");
-    assert!(!world.run().join(boot_records::FIXUP_DIR).exists());
-}
-
-#[test]
-fn without_the_opt_in_no_rule_is_installed() {
-    let world = World::new();
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
-    assert!(!world.run().join(disk_guard::RULE_DIR).exists());
-}
-
-#[test]
-fn the_way_back_numbers_the_decoy_s_units_from_its_own_boot_again() {
-    // The last step sets the process-number counter to just below the floor
-    // the entry recorded, once everything else is done; without a floor, or
-    // on the way in, it stays.
-    let world = World::new();
-    let namespace = world.dir.path().join("pid-ns");
-    fs::write(&namespace, "").unwrap();
-    let places = fresh_pids::Places {
-        ns_last_pid: world.dir.path().join("ns_last_pid"),
-        own_namespace: namespace.clone(),
-        init_namespace: namespace,
-    };
-    let with_places = |now: u64| Env {
-        pid_places: Some(places.clone()),
-        ..world.env(true, now)
-    };
-
-    let mut plan = armed(Direction::Enter);
-    plan.pids.floor = Some(388);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    fs::write(&places.ns_last_pid, "1625\n").unwrap();
-    assert_eq!(run(&with_places(1_000)), Outcome::Entered);
-    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "1625\n");
-    // The entry's switch records where the hidden start begins numbering.
-    let mut plan = world.plan();
-    assert_eq!(plan.pids.at_switch, Some(1625));
-
-    // Without a measured counter the way back goes to just below the floor.
-    plan.armed = Some(Arm {
-        direction: Direction::Leave,
-        at: 1_000,
-    });
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    let outcome = run(&with_places(1_000));
-    assert!(
-        matches!(
-            outcome,
-            Outcome::Returned {
-                pids: fresh_pids::Lowered::Set(387),
-                ..
-            }
-        ),
-        "{outcome:?}"
-    );
-    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "387");
-
-    // A measured counter wins over the floor.
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    plan.pids.floor = Some(388);
-    plan.pids.counter = Some(470);
-    fs::create_dir_all(world.runtime()).unwrap();
-    world.write_plan(&plan);
-    fs::write(&places.ns_last_pid, "9031\n").unwrap();
-    let outcome = run(&with_places(1_000));
-    assert!(
-        matches!(
-            outcome,
-            Outcome::Returned {
-                pids: fresh_pids::Lowered::Set(470),
-                ..
-            }
-        ),
-        "{outcome:?}"
-    );
-
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    fs::create_dir_all(world.runtime()).unwrap();
-    world.write_plan(&plan);
-    fs::write(&places.ns_last_pid, "1625\n").unwrap();
-    let outcome = run(&with_places(1_000));
-    assert!(
-        matches!(
-            outcome,
-            Outcome::Returned {
-                pids: fresh_pids::Lowered::NoRecord,
-                ..
-            }
-        ),
-        "{outcome:?}"
-    );
-    assert_eq!(fs::read_to_string(&places.ns_last_pid).unwrap(), "1625\n");
-}
-
-#[test]
-fn the_way_back_resets_a_zram_swap_area_out_of_use_and_the_entry_does_not() {
-    // zram0 holds a swap area no swap uses, as a stop whose reset failed
-    // leaves it: the way back resets it, so the decoy's start can set it up
-    // again; the way in leaves it to the hidden root.
-    let world = World::new();
-    let places = zram::Places {
-        page_size: 4096,
-        ..zram::Places::under(world.dir.path())
-    };
-    let sys = places.sys_block.join("zram0");
-    fs::create_dir_all(&sys).unwrap();
-    fs::create_dir_all(&places.dev).unwrap();
-    fs::create_dir_all(places.swaps.parent().unwrap()).unwrap();
-    fs::write(sys.join("initstate"), "1\n").unwrap();
-    fs::write(&places.swaps, "Filename Type Size Used Priority\n").unwrap();
-    let mut area = vec![0u8; 8192];
-    area[4086..4096].copy_from_slice(b"SWAPSPACE2");
-    fs::write(places.dev.join("zram0"), &area).unwrap();
-    let with_places = |now: u64| Env {
-        zram: Some(places.clone()),
-        ..world.env(true, now)
-    };
-
-    let plan = armed(Direction::Enter);
-    world.init_in_nextroot(&plan.hidden.init);
-    world.write_plan(&plan);
-    assert_eq!(run(&with_places(1_000)), Outcome::Entered);
-    assert!(!sys.join("reset").exists());
-
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    fs::create_dir_all(world.runtime()).unwrap();
-    world.write_plan(&plan);
-    let outcome = run(&with_places(1_000));
-    let Outcome::Returned { zram, .. } = &outcome else {
-        panic!("{outcome:?}");
-    };
-    assert_eq!(zram, &[("zram0".to_string(), zram::Reset::Done)]);
-    assert_eq!(fs::read_to_string(sys.join("reset")).unwrap(), "1");
-}
-
-/// A fake `systemctl` in `dir` that logs its arguments and exits `code`.
-fn fake_systemctl(dir: &Path, code: i32) -> PathBuf {
-    let tool = dir.join("systemctl");
-    write_executable(
-        &tool,
-        format!(
-            "#!/bin/sh\necho \"$*\" >> '{}'\nexit {code}\n",
-            dir.join("calls").display()
-        ),
-        0o755,
-    );
-    tool
-}
-
-/// The way back asks PID 1 to power off at once and, should it still run
-/// after the grace, asks the kernel.
-#[test]
-fn powering_off_instead_asks_pid_1_and_then_the_kernel() {
-    let dir = tempfile::tempdir().unwrap();
-    let systemctl = fake_systemctl(dir.path(), 0);
-    let kernel = std::cell::Cell::new(false);
-
-    let taken = power_off_instead(Some(&systemctl), std::time::Duration::ZERO, || {
-        kernel.set(true);
-        false
-    });
-
-    assert!(taken);
-    assert!(
-        kernel.get(),
-        "the kernel is asked when this process still runs"
-    );
-    assert_eq!(
-        fs::read_to_string(dir.path().join("calls")).unwrap(),
-        "--force poweroff\n"
-    );
-}
-
-/// When PID 1 refuses, or there is no `systemctl`, the kernel is asked at once.
-#[test]
-fn powering_off_instead_asks_the_kernel_when_pid_1_cannot_be_asked() {
-    let dir = tempfile::tempdir().unwrap();
-    let refusing = fake_systemctl(dir.path(), 1);
-    for systemctl in [Some(refusing.as_path()), None] {
-        let kernel = std::cell::Cell::new(false);
-        let taken = power_off_instead(systemctl, std::time::Duration::from_secs(3600), || {
-            kernel.set(true);
-            false
-        });
-        assert!(!taken, "{systemctl:?}");
-        assert!(kernel.get(), "{systemctl:?}");
-    }
-}
-
-/// The kernel's power-off in every test: it refuses, so no test powers its
-/// host off, whatever the code under test decides.
-fn refused_power_off() -> bool {
-    false
-}
-
-/// Add link `name` with interface index `index` to the fake `/sys/class/net`
-/// at `sys_class_net`, virtual as the kernel lists a link it made (no
-/// `device` entry).
-fn add_virtual_link(sys_class_net: &Path, name: &str, index: u32) {
-    let dir = sys_class_net.join(name);
-    fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
-}
-
-/// A way back armed in `world`, with the record entry took of the network
-/// state the world's fake kernel has now (its loopback link and a hostname)
-/// and a `systemctl` that logs each call ([`systemctl_calls`]).
-fn way_back_with_a_network_record(world: &World) -> Env {
-    let mut env = world.env(true, 1_000);
-    fs::create_dir_all(env.network.proc_hostname.parent().unwrap()).unwrap();
-    fs::write(&env.network.proc_hostname, "decoy-host\n").unwrap();
-    add_virtual_link(&env.network.sys_class_net, "lo", 1);
-    let record = network::NetworkRecord::capture(
-        &env.network,
-        &crate::test_support::FakeNetKernel::offline(),
-    );
-    fs::write(world.runtime().join(network::RECORD_NAME), record.encode()).unwrap();
-    let mut plan = armed(Direction::Leave);
-    plan.entered_at = Some(900);
-    world.init_in_nextroot(&plan.decoy.init);
-    world.write_plan(&plan);
-    env.systemctl = Some(fake_systemctl(world.dir.path(), 0));
-    env
-}
-
-/// What the `systemctl` of [`way_back_with_a_network_record`] was asked, one
-/// call per line.
-fn systemctl_calls(world: &World) -> String {
-    fs::read_to_string(world.dir.path().join("calls")).unwrap_or_default()
-}
-
-/// A way back that cannot undo what the session did to the network state
-/// powers off instead of returning: the link the session made is still there
-/// (this way back's kernel takes no change), so it asks PID 1 to power off at
-/// once.
-#[test]
-fn a_way_back_that_cannot_put_the_network_state_back_powers_off() {
-    let world = World::new();
-    let env = way_back_with_a_network_record(&world);
-    add_virtual_link(&env.network.sys_class_net, "wg0", 9);
-
-    let outcome = run(&env);
-
-    let calls = systemctl_calls(&world);
-    assert!(
-        calls.lines().any(|call| call == "--force poweroff"),
-        "{calls}"
-    );
-    // The stand-in kernel refused, so the way back returned after all, with
-    // the link that stayed.
-    let Outcome::Returned { network, .. } = outcome else {
-        panic!("{outcome:?}");
-    };
-    assert_eq!(network.links, ["wg0"]);
-}
-
-/// A way back that puts the network state back returns and never asks for a
-/// power-off: here its kernel deletes the link the session made.
-#[test]
-fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
-    let world = World::new();
-    let mut env = way_back_with_a_network_record(&world);
-    let sys = env.network.sys_class_net.clone();
-    add_virtual_link(&sys, "wg0", 9);
-    // Deletes the link from the fake sysfs, as the kernel does.
-    env.network_kernel = Some(std::sync::Arc::new(
-        crate::test_support::FakeNetKernel::new(
-            Some(&sys),
-            crate::test_support::FakeNet::default(),
-        ),
-    ));
-
-    let outcome = run(&env);
-
-    assert!(!sys.join("wg0").exists(), "the way back deleted the link");
-    let calls = systemctl_calls(&world);
-    assert!(!calls.contains("poweroff"), "{calls}");
-    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
 }

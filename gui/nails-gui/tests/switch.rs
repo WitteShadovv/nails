@@ -140,19 +140,19 @@ fn a_hidden_session_that_does_not_end_points_to_the_emergency_in_a_minute() {
         .find_with(text::DEACTIVATE, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.update(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-        poweroff: false,
+        poweroff: true,
         warnings: vec![],
         powers_off_instead: None,
         token: "0".repeat(32),
     })));
     screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.update(Update::Running(Kind::Apply));
     screen.update(answered(
         Kind::Apply,
         json!({"schema_version": 2, "command": "deactivate", "ok": true,
-            "data": {"status": "return_requested"}}),
+            "data": {"status": "poweroff_requested"}}),
     ));
     screen.wait_ms(30_000);
     assert!(!screen.shows(text::ENDING_LATE));
@@ -172,7 +172,7 @@ fn a_new_switch_is_timed_from_its_own_start() {
     screen.update(status("hidden"));
     let plan = || {
         Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-            poweroff: false,
+            poweroff: true,
             warnings: vec![],
             powers_off_instead: None,
             token: "0".repeat(32),
@@ -184,7 +184,7 @@ fn a_new_switch_is_timed_from_its_own_start() {
         .invoke_accessible_default_action();
     screen.update(plan());
     screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.wait_ms(50_000);
     screen.update(answered(
@@ -200,7 +200,7 @@ fn a_new_switch_is_timed_from_its_own_start() {
         .invoke_accessible_default_action();
     screen.update(plan());
     screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.wait_ms(20_000);
     assert!(screen.shows(text::ENDING));

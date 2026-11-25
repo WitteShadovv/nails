@@ -106,11 +106,7 @@ fn read_request(helper: &UnixStream) -> Request {
 
 /// The request of each finish: the engine's emergency with the flags of
 /// `nails emergency` for it.
-const FINISHES: [(Finish, &str); 3] = [
-    (
-        Finish::Return,
-        "{\"v\":1,\"id\":0,\"op\":{\"emergency\":{\"poweroff\":false,\"reboot\":false}}}\n",
-    ),
+const FINISHES: [(Finish, &str); 2] = [
     // The bytes the VM test `session-window-emergency` sends the real helper.
     (
         Finish::PowerOff,
@@ -137,11 +133,6 @@ fn the_request_of_each_finish_is_one_the_helper_takes_with_the_clis_flags() {
         assert_eq!(request.id, EMERGENCY_ID);
         assert_eq!(request.op, Op::Emergency(finish.args()), "{finish:?}");
     }
-    assert_eq!(
-        Finish::Return.args(),
-        EmergencyArgs::default(),
-        "the way back is `nails emergency` without a flag"
-    );
 }
 
 #[test]
@@ -158,7 +149,7 @@ fn firing_waits_for_nothing_and_fires_once() {
     );
     assert!(emergency.fired());
     assert!(!emergency.fire(Finish::PowerOff), "once");
-    assert!(!emergency.clone().fire(Finish::Return), "a clone shares it");
+    assert!(!emergency.clone().fire(Finish::Reboot), "a clone shares it");
     assert_eq!(next(&heard), Outcome::PowerOffAsked);
 }
 
@@ -178,7 +169,7 @@ fn the_helper_gets_the_request_and_a_window_still_here_after_the_grace_powers_of
         );
         assert_eq!(next(&heard), Outcome::HelperAsked);
         // The engine's emergency would have ended this window by now. The
-        // window has no way back of its own: whatever the finish, it powers
+        // window has no restart of its own: whatever the finish, it powers
         // off.
         assert_eq!(next(&heard), Outcome::PowerOffAsked, "{finish:?}");
         assert_eq!(fake.calls(), ["poweroff --no-ask-password"], "{finish:?}");
@@ -191,62 +182,21 @@ fn only_the_first_firings_finish_is_asked_for() {
     let (emergency, heard) = started(fake.fallback());
     let (line, helper) = pipe();
     emergency.open(line);
-    assert!(emergency.fire(Finish::Return));
-    assert!(!emergency.fire(Finish::Reboot));
+    assert!(emergency.fire(Finish::Reboot));
+    assert!(!emergency.fire(Finish::PowerOff));
     assert_eq!(
         read_request(&helper).op,
-        Op::Emergency(Finish::Return.args())
+        Op::Emergency(Finish::Reboot.args())
     );
     assert_eq!(next(&heard), Outcome::HelperAsked);
 }
 
 #[test]
-fn every_firing_comes_back_from_its_flag() {
+fn every_finish_comes_back_from_its_flag() {
     for (finish, _) in FINISHES {
-        let firing = Firing::from(finish);
-        assert_eq!(firing.finish(), finish);
-        assert!(!firing.at_once(), "{finish:?}: a grace after the request");
-        assert_ne!(firing.code(), NOT_FIRED);
-        assert_eq!(Firing::of_code(firing.code()), firing, "{finish:?}");
+        assert_ne!(finish.code(), NOT_FIRED);
+        assert_eq!(Finish::of_code(finish.code()), finish, "{finish:?}");
     }
-    let at_once = Firing::POWER_OFF_AT_ONCE;
-    assert_eq!(
-        (at_once.finish(), at_once.at_once()),
-        (Finish::PowerOff, true)
-    );
-    assert_ne!(at_once.code(), NOT_FIRED);
-    assert_eq!(Firing::of_code(at_once.code()), at_once);
-}
-
-#[test]
-fn a_power_off_at_once_asks_the_helper_and_then_the_system_without_the_grace() {
-    let fake = FakePowerOff::new("exit 0");
-    let mut fallback = fake.fallback();
-    fallback.grace = Duration::from_secs(10);
-    let (tell, heard) = channel();
-    let emergency = Emergency::start(fallback, move |outcome| {
-        let _ = tell.send((outcome, Instant::now()));
-    });
-    let (line, helper) = pipe();
-    emergency.open(line);
-    let fired = Instant::now();
-    assert!(emergency.fire(Firing::POWER_OFF_AT_ONCE));
-    assert!(!emergency.fire(Finish::Return), "once");
-    let request = read_request(&helper);
-    assert_eq!(
-        (request.id, request.op),
-        (EMERGENCY_ID, Op::Emergency(Finish::PowerOff.args()))
-    );
-    let (asked, _) = heard.recv_timeout(PATIENCE).expect("a report");
-    assert_eq!(asked, Outcome::HelperAsked);
-    let (off, at) = heard.recv_timeout(PATIENCE).expect("a report");
-    assert_eq!(off, Outcome::PowerOffAsked);
-    assert!(
-        at - fired < Duration::from_secs(5),
-        "no grace after the request: {:?}",
-        at - fired
-    );
-    assert_eq!(fake.calls(), ["poweroff --no-ask-password"]);
 }
 
 #[test]

@@ -380,30 +380,39 @@ fn a_hidden_session_says_how_long_it_has_run() {
 }
 
 #[test]
-fn a_hidden_session_without_a_way_back_names_the_power_button() {
+fn a_hidden_session_without_its_plan_is_ended_with_power_off() {
     // The reason as the engine's status gives it for a hidden root without
     // a plan.
     let mut model = connected();
     model.apply(status(json!({"place": "hidden", "attention": "no_way_back",
-        "reason": "in the hidden root without a way back: no session plan in /run (upper /mnt/data/root/upper)"})));
+        "reason": "in the hidden root without its session plan: no session plan in /run (upper /mnt/data/root/upper)",
+        "remediation": "Power off to end the session"})));
     let page = model.page();
-    assert_eq!(page.heading, "No Way Back");
-    assert_eq!(page.description, "Hidden session without a way back.");
+    assert_eq!(page.heading, "Session Plan Missing");
+    assert_eq!(page.description, "Hidden session without its session plan.");
     assert_eq!(
         page.note,
         "No session plan in /run (upper /mnt/data/root/upper)."
     );
     assert_eq!(
         format!("{} {}", page.description, page.note)
-            .matches("without a way back")
+            .matches("without its session plan")
             .count(),
         1,
         "the page says it once"
     );
-    assert_eq!(page.fix, text::HOLD_POWER_BUTTON);
+    // Deactivate powers off, which needs no plan.
+    assert_eq!(page.fix, text::END_WITH_POWER_OFF);
+    assert!(page.fix.contains(text::POWER_OFF));
     assert!(page.urgent);
-    assert_eq!(page.action, None, "no way back to deactivate with");
+    assert_eq!(page.action, Some(text::DEACTIVATE));
     assert_eq!(page.facts[0].0, text::FACT_EMERGENCY, "what Emergency does");
+    assert_eq!(
+        model.action(),
+        Some(Effect::Ask(Ask::Plan(Plan::Deactivate(
+            nails_api::protocol::DeactivateArgs { poweroff: true }
+        ))))
+    );
 }
 
 #[test]

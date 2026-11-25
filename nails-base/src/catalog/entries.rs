@@ -34,8 +34,8 @@ pub const REHEARSE_GUIDE_PLANT_INACTIVE: Message = Message {
 /// this very session: deactivate, mount again, then scan.
 pub const REHEARSE_GUIDE_SCAN_NEXT_SESSION: Message = Message {
     id: "rehearse.guide.scan-next-session",
-    text: "Step 2 of 3: deactivate as usual (`{deactivate}`, it soft-reboots back to the decoy), \
-           then unlock and mount the hidden volume again and run `{scan}`.",
+    text: "Step 2 of 3: deactivate as usual (`{deactivate}`, it powers off), then start the \
+           decoy, unlock and mount the hidden volume again and run `{scan}`.",
     note: "Rehearsal guidance after the canary was planted in the current session. \
            {deactivate} is the full `sudo <path> deactivate` line; {scan} is the full \
            `sudo <path> rehearse scan` line. Both use the real binary path.",

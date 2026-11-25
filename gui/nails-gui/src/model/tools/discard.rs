@@ -287,7 +287,6 @@ pub(crate) fn question(data: &DiscardPlanData) -> (Question, Option<String>) {
                 .as_deref()
                 .map(|target| text::discard_type(target, home)),
             locked: word.is_some(),
-            alternative: None,
         },
         word,
     )

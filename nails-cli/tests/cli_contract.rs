@@ -588,7 +588,7 @@ fn status_json_degraded_matches_schema_and_snapshot() {
     let harness = Harness::new();
     harness.write_state(SystemState::Degraded {
         since: fixed_instant(),
-        reason: "in the hidden root without a way back".to_string(),
+        reason: "in the hidden root without its session plan".to_string(),
     });
     let (code, value) = run_json(&harness.config, &["status"]);
     // The place comes from the live view (the plain decoy here); a degraded
@@ -996,7 +996,7 @@ fn emergency_json_without_a_session_is_its_schema() {
     let harness = Harness::new();
     let schema = load_schema("emergency");
     for (args, requested) in [
-        (&["emergency"][..], "return_to_decoy"),
+        (&["emergency"][..], "default"),
         (&["emergency", "--poweroff"], "poweroff"),
     ] {
         let (code, value) = run_json(&harness.config, args);

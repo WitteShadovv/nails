@@ -5,32 +5,24 @@
 //!
 //! In the hidden session the fastest safe path is:
 //!
-//! 1. prepare the way back: the decoy root at `/run/nextroot`, `/run` bound into
-//!    it, the init checked ([`crate::whole_root::ret`]), and where the plan
-//!    records a label for the RAM copy of the binary, the copy given that
-//!    label again and PID 1's start of it checked against the loaded policy
-//!    ([`crate::whole_root::program_label::ready`]), so the way back's last
-//!    step does not run in PID 1's own domain;
-//! 2. mark the hidden backend for deferred removal;
-//! 3. arm the plan for the way back;
-//! 4. SIGKILL every interactive shell, the newest first, so none writes its
+//! 1. SIGKILL every interactive shell, the newest first, so none writes its
 //!    history on the session stop, nor on a hangup the kernel sends it as
 //!    another one dies;
-//! 5. enqueue `soft-reboot.target` (or the requested power action) directly
-//!    with PID 1, with every other job replaced;
-//! 6. `cgroup.kill` every unit that can hold a hidden program, sparing
+//! 2. enqueue the session's end ([`session_end`]: `poweroff.target`), or the
+//!    full reboot asked for, directly with PID 1, with every other job
+//!    replaced;
+//! 3. `cgroup.kill` every unit that can hold a hidden program, sparing
 //!    `init.scope` and the service manager's own machinery, and in the cgroup
 //!    of this invocation SIGKILL every process but its command chain
 //!    ([`Invocation`], [`crate::whole_root::kill`]), so the orderly shutdown
-//!    has little left to stop. Nothing the kill takes can stop the switch:
+//!    has little left to stop. Nothing the kill takes can stop the power-off:
 //!    PID 1 has it queued by then.
 //!
-//! When the way back cannot be prepared, it powers off instead: a soft-reboot
-//! without `/run/nextroot` would restart the hidden userspace in place, and a
-//! last step in PID 1's own domain, which a targeted policy confines, could
-//! not take the kernel log's cursor, so the decoy's journal would take in the
-//! hidden session's kernel log. When even the power action cannot be
-//! enqueued, it asks the kernel directly.
+//! A hidden session never goes back to the decoy's kernel, so the emergency
+//! without a flag ([`Finish::Default`]) powers off there. When even the power
+//! action cannot be enqueued, it asks the kernel directly.
+//!
+//! [`session_end`]: crate::whole_root::session_end::session_end
 //!
 //! On the decoy side (an activation was interrupted after building the next
 //! root) it signals the activation, detaches `/run/nextroot` and removes the
@@ -54,8 +46,7 @@ use crate::mountinfo::read_mountinfo;
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
-use crate::whole_root::plan::{BINARY_NAME, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
-use crate::whole_root::program_label;
+use crate::whole_root::plan::{Plan, RUNTIME_DIR, SNAPSHOT_NAME};
 use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::tools;
@@ -67,9 +58,10 @@ use std::time::{Duration, Instant};
 /// How the emergency ends.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Finish {
-    /// Soft-reboot back to the decoy (the default in the hidden session; on
-    /// the decoy side nothing beyond the cleanup).
-    Return,
+    /// No ending asked for: in the hidden session the session's end, a
+    /// power-off ([`Finish::session_end`]); on the decoy side nothing beyond
+    /// the cleanup, as no hidden session ran there; without a plan nothing.
+    Default,
     /// A full reboot.
     Reboot,
     /// Power off: RAM decays, the strongest answer to the threat model.
@@ -77,11 +69,20 @@ pub enum Finish {
 }
 
 impl Finish {
+    /// The finish every hidden session ends with
+    /// ([`crate::whole_root::session_end`]).
+    pub fn session_end() -> Self {
+        match crate::whole_root::session_end::session_end() {
+            crate::whole_root::session_end::SessionEnd::PowerOff => Finish::Poweroff,
+        }
+    }
+
     fn target(self) -> &'static str {
         match self {
-            Finish::Return => "soft-reboot.target",
+            Finish::Default | Finish::Poweroff => {
+                crate::whole_root::session_end::session_end().target()
+            }
             Finish::Reboot => "reboot.target",
-            Finish::Poweroff => "poweroff.target",
         }
     }
 }
@@ -113,9 +114,9 @@ pub struct Host {
     pub protected_pids: Vec<u32>,
     /// Whether to act on the host at all.
     pub act: bool,
-    /// What gives the RAM copy of the binary the label the plan records
-    /// before the way back ([`Plan::program_label`]): the running kernel's
-    /// SELinux, or a test's stand-in. It is asked whether `act` is on or off.
+    /// The running kernel's SELinux, or a test's stand-in. Nothing asks it
+    /// since the way back is gone (it gave the RAM copy of the binary its
+    /// label again before the way back); it goes with the way back's code.
     pub selinux: &'static dyn Selinux,
 }
 
@@ -131,10 +132,6 @@ impl Host {
             act: true,
             selinux: &selinux::KERNEL,
         }
-    }
-
-    fn plan_path(&self) -> PathBuf {
-        self.runtime_dir.join(PLAN_NAME)
     }
 }
 
@@ -198,18 +195,23 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     if host.act {
         tools::survive_session_stop();
     }
-    let entries = read_mountinfo().unwrap_or_default();
-    let side = match &plan {
-        Some(p) if ret::in_hidden_root(&entries, p) => Side::Hidden,
-        Some(_) => Side::Decoy,
-        None => Side::None,
+    // A mount table that cannot be read cannot tell the hidden root from the
+    // decoy: with a plan, the emergency then takes the hidden session's end,
+    // which is safe on either side, where the decoy side's cleanup would let
+    // a hidden session run on.
+    let entries = read_mountinfo().ok();
+    let side = match (&plan, &entries) {
+        (Some(_), None) => Side::Hidden,
+        (Some(p), Some(entries)) if ret::in_hidden_root(entries, p) => Side::Hidden,
+        (Some(_), Some(_)) => Side::Decoy,
+        (None, _) => Side::None,
     };
     let mut report = HotReport::new(side, requested);
     match (side, plan) {
-        (Side::Hidden, Some(mut plan)) => hidden(&mut plan, host, &mut report),
+        (Side::Hidden, Some(plan)) => hidden(&plan, host, &mut report),
         (Side::Decoy, Some(plan)) => decoy_side(&plan, host, requested, &mut report),
         _ => {
-            if requested != Finish::Return {
+            if requested != Finish::Default {
                 dispatch_without_plan(host, requested, &mut report);
             }
         }
@@ -230,11 +232,11 @@ fn decoy_side(plan: &Plan, host: &Host, requested: Finish, report: &mut HotRepor
         }
     });
     let mut pending = logind::Pending::Nothing;
-    if requested == Finish::Return {
+    if requested == Finish::Default {
         pending = drop_switch(plan, host, report);
     }
     let unloaded = decoy(plan, host, report);
-    if requested != Finish::Return {
+    if requested != Finish::Default {
         dispatch(plan, host, requested, report);
         pending = drop_switch(plan, host, report);
     }
@@ -274,7 +276,7 @@ fn decoy_escape(requested: Finish, pending: logind::Pending) -> Option<(Finish, 
         logind::Pending::Started => "PID 1 has started the entry's soft-reboot",
     };
     let finish = match requested {
-        Finish::Return => Finish::Poweroff,
+        Finish::Default => Finish::Poweroff,
         asked => asked,
     };
     let what = if finish == Finish::Reboot {
@@ -313,51 +315,13 @@ fn force(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
     });
 }
 
-fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
-    let mut finish = report.requested;
-    if finish == Finish::Return {
-        let prepared = report.timed("prepare-return", |_| {
-            if !host.act {
-                return Ok(());
-            }
-            ret::mount_decoy_root(plan, &host.nextroot, &host.run)
-        });
-        if let Err(e) = prepared {
-            report.fallback = Some(format!("{e}; powering off instead"));
-            finish = Finish::Poweroff;
-        }
-    }
-    if finish == Finish::Return
-        && let Some(label) = plan.program_label.as_deref()
-    {
-        let copy = host.runtime_dir.join(BINARY_NAME);
-        let ready = report.timed("label-program", |_| {
-            program_label::ready(host.selinux, &copy, label)
-        });
-        if let Err(not_ready) = ready {
-            report.fallback = Some(format!(
-                "{}; powering off instead",
-                program_label::not_ready_text(&copy, label, &not_ready)
-            ));
-            nextroot_cleanup(host);
-            finish = Finish::Poweroff;
-        }
-    }
-    if finish == Finish::Return {
-        report.deferred = report.timed("close-backend", |_| {
-            if host.act {
-                ret::close_backend_deferred(plan)
-            } else {
-                Vec::new()
-            }
-        });
-        let armed = report.timed("arm", |_| ret::arm_leave(plan, &host.plan_path()));
-        if let Err(e) = armed {
-            report.fallback = Some(format!("{e}; powering off instead"));
-            nextroot_cleanup(host);
-            finish = Finish::Poweroff;
-        }
-    }
+/// The hidden session: its end, or the full reboot asked for, enqueued, and
+/// every hidden program killed.
+fn hidden(plan: &Plan, host: &Host, report: &mut HotReport) {
+    let finish = match report.requested {
+        Finish::Default => Finish::session_end(),
+        asked => asked,
+    };
     // Read before the shells are killed: a killed shell takes its terminal
     // from every process of its session, and its jobs go to PID 1.
     let invocation = host.act.then(|| {
@@ -370,12 +334,6 @@ fn hidden(plan: &mut Plan, host: &Host, report: &mut HotReport) {
         Some(invocation) => kill::kill_userspace(&host.cgroup_root, invocation),
         None => KillReport::default(),
     });
-}
-
-fn nextroot_cleanup(host: &Host) {
-    if host.act {
-        nextroot::detach_tree(&host.nextroot);
-    }
 }
 
 /// Enqueue `finish`, falling back to a power-off and then to the kernel.

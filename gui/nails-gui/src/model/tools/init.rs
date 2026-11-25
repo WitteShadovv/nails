@@ -258,6 +258,5 @@ pub(crate) fn question(data: &InitPlanData) -> Question {
         destructive: false,
         prompt: None,
         locked: false,
-        alternative: None,
     }
 }

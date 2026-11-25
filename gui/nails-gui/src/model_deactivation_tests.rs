@@ -1,10 +1,9 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-only
 
-//! The deactivation through the model: the plan of a return and its
-//! question with both endings, the plan of a power-off applied without a
-//! second question, the page while the session ends, and the answers that
-//! bring the session's page back.
+//! The deactivation through the model: the plan of a power-off and its
+//! question, the apply on Power Off, the page while the session ends, and
+//! the answers that bring the session's page back.
 
 use super::*;
 use crate::client::Answer;
@@ -15,23 +14,9 @@ fn answered(kind: Kind, envelope: Value) -> Update {
     Update::Answered(kind, Answer { exit: 0, envelope })
 }
 
-/// What `nails deactivate` warns of before it asks on a hidden session whose
-/// way back cannot set the process-number counter back, and on one whose
-/// way back finds no getty or logind to measure by (the engine's own words).
-const NO_PIDS: &str = "The return cannot number the decoy's processes from where its own \
-    boot numbered them, so where the decoy keeps classic wtmp, its getty and login records \
-    carry process numbers that continue from this boot. `sudo /mnt/data/nails deactivate \
-    --poweroff` leaves none of them.";
-const UNMEASURED: &str = "The return finds no getty or logind to measure the decoy's process \
-    numbers by, so it numbers the decoy's processes from just below the lowest number its own \
-    userspace held when the session began, and where the decoy keeps classic wtmp, its getty \
-    and login records can carry process numbers that a fresh boot would not give them. `sudo \
-    /mnt/data/nails deactivate --poweroff` leaves none of them.";
-/// The warning of an engine whose way back powers off instead of returning:
-/// the session made a link the kernel keeps.
-const POWERS_OFF_INSTEAD: &str = "The way back cannot delete tunl0, which the kernel keeps, so \
-    the machine powers off instead of returning to the decoy. `sudo /mnt/data/nails deactivate \
-    --poweroff` powers off at once.";
+/// A warning of the engine's, in its own words, for a plan that has one: the
+/// window shows any it gets.
+const WARNING: &str = "A program still holds `/mnt/data/work`: it closes with the session.";
 
 fn status(attention: Value) -> Update {
     answered(
@@ -66,16 +51,16 @@ fn plan(poweroff: bool, warnings: &[&str]) -> Update {
     }))
 }
 
-/// `model` with Deactivate… pressed and the plan of a return holding.
+/// `model` with Deactivate… pressed and the plan of the power-off holding.
 fn asked(model: &mut Model, warnings: &[&str]) {
     assert_eq!(
         model.action(),
         Some(Effect::Ask(Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: false
+            poweroff: true
         }))))
     );
     model.apply(Update::Running(Kind::Plan));
-    assert!(model.apply(plan(false, warnings)).is_empty());
+    assert!(model.apply(plan(true, warnings)).is_empty());
 }
 
 fn enqueued(status: &str, warnings: Value, left_open: Value) -> Update {
@@ -87,14 +72,14 @@ fn enqueued(status: &str, warnings: Value, left_open: Value) -> Update {
 }
 
 #[test]
-fn a_hidden_session_deactivates_but_not_without_a_way_back_or_its_volume() {
+fn a_hidden_session_deactivates_but_not_without_its_volume() {
     let model = hidden();
     let page = model.page();
     assert_eq!(page.heading, text::HIDDEN_SESSION);
     assert_eq!(page.action, Some(text::DEACTIVATE));
     assert_eq!(page.fix, "", "no terminal line");
     for (attention, action) in [
-        ("no_way_back", None),
+        ("no_way_back", Some(text::DEACTIVATE)),
         ("volume_lost", None),
         ("volume_covered", Some(text::DEACTIVATE)),
         ("almost_full", Some(text::DEACTIVATE)),
@@ -105,180 +90,78 @@ fn a_hidden_session_deactivates_but_not_without_a_way_back_or_its_volume() {
     }
 }
 
-/// The plan of a return the helper gave on a hidden session's tree whose way
-/// back is bound to power off: recorded where the session made a link the
-/// kernel keeps (`deactivate-plan-powers-off`), and the contract's other
-/// case, a power-off that something before the way back may still avoid
-/// (`deactivate-plan-may-power-off`, `certain` false), written by hand: this
-/// engine sends no such reason now, and the window must still say it right.
-fn recorded_plan(name: &str) -> Update {
-    let text = match name {
-        "deactivate-plan-powers-off" => {
-            include_str!("../tests/fixtures/deactivate-plan-powers-off.json")
-        }
-        "deactivate-plan-may-power-off" => {
-            include_str!("../tests/fixtures/deactivate-plan-may-power-off.json")
-        }
-        other => panic!("no fixture {other}"),
-    };
-    let recorded: Value = serde_json::from_str(text).unwrap();
-    Update::Planned(PlanData::Deactivate(
-        serde_json::from_value(recorded["data"].clone()).unwrap(),
-    ))
-}
-
-/// Where the way back powers off whatever happens before it runs, the
-/// question says the session ends with a power-off, in the CLI's words, and
-/// offers no Return to Decoy: Power Off plans and applies a power-off.
+/// The plan as the helper gives it now (`deactivate-plan`): a power-off,
+/// with nothing to warn of.
 #[test]
-fn a_return_that_powers_off_anyway_offers_only_the_power_off() {
+fn the_question_says_the_computer_powers_off_and_offers_only_that() {
+    let recorded: Value =
+        serde_json::from_str(include_str!("../tests/fixtures/deactivate-plan.json")).unwrap();
     let mut model = hidden();
     model.action();
     model.apply(Update::Running(Kind::Plan));
     assert!(
         model
-            .apply(recorded_plan("deactivate-plan-powers-off"))
+            .apply(Update::Planned(PlanData::Deactivate(
+                serde_json::from_value(recorded["data"].clone()).unwrap()
+            )))
             .is_empty()
     );
-    let question = model.page().question.expect("a question");
-    let lines: Vec<&str> = question.body.lines().collect();
-    assert_eq!(
-        lines[0],
-        "This ends the hidden session now, and the machine powers off instead of returning to \
-         the decoy."
-    );
-    assert_eq!(lines[1], text::DEACTIVATE_CONSEQUENCE);
-    assert!(
-        lines[2].starts_with("The way back cannot delete tunl0, which the kernel keeps"),
-        "{lines:?}"
-    );
-    assert_eq!(question.confirm, text::POWER_OFF);
-    assert_eq!(question.alternative, None, "no return to offer");
-    assert_eq!(model.alternative(), None);
-    assert_eq!(
-        model.answer(true),
-        Some(Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: true
-        })))
-    );
-}
-
-/// Where the way back powers off unless that changes before it runs, the
-/// question says so, in the CLI's words, and keeps both endings.
-#[test]
-fn a_return_that_may_power_off_says_so_and_keeps_both_endings() {
-    let mut model = hidden();
-    model.action();
-    model.apply(recorded_plan("deactivate-plan-may-power-off"));
-    let question = model.page().question.expect("a question");
-    assert_eq!(
-        question.body.lines().next(),
-        Some(
-            "This ends the hidden session now, and unless that changes before it runs, the \
-             machine powers off instead of returning to the decoy."
-        )
-    );
-    assert_eq!(question.alternative.as_deref(), Some(text::RETURN_TO_DECOY));
-    assert_eq!(model.alternative(), Some(Ask::Apply));
-}
-
-/// After Return to Decoy on a plan whose return may power off instead, the
-/// page says what the CLI says once it has asked: the machine powers off
-/// unless that changes, not that it returns. It still says so once the
-/// apply is answered, which does not repeat why.
-#[test]
-fn a_return_that_may_power_off_says_so_while_the_session_ends() {
-    let said = "The way back may find veth0 still there: unless that changes before it runs, \
-        the machine powers off in a few seconds instead of returning to the decoy.";
-    let mut model = hidden();
-    model.action();
-    model.apply(Update::Running(Kind::Plan));
-    model.apply(recorded_plan("deactivate-plan-may-power-off"));
-    assert_eq!(model.alternative(), Some(Ask::Apply));
-    let page = model.page();
-    assert_eq!(page.heading, text::ENDING);
-    assert_eq!(page.description, said);
-    assert!(page.urgent && page.no_input);
-
-    model.apply(Update::Running(Kind::Apply));
-    assert!(
-        model
-            .apply(enqueued("return_requested", json!([]), json!([])))
-            .is_empty()
-    );
-    assert_eq!(model.page().description, said);
-
-    // Cancelled, the question keeps nothing for a later plain return.
-    let mut model = hidden();
-    model.action();
-    model.apply(recorded_plan("deactivate-plan-may-power-off"));
-    assert_eq!(model.answer(false), Some(Ask::Withdraw));
-    model.apply(Update::Withdrawn);
-    asked(&mut model, &[UNMEASURED]);
-    assert_eq!(model.alternative(), Some(Ask::Apply));
-    assert_eq!(model.page().description, text::RETURNING);
-}
-
-#[test]
-fn the_question_names_what_the_return_leaves_and_offers_both_endings() {
-    let mut model = hidden();
-    asked(&mut model, &[NO_PIDS, UNMEASURED]);
     let question = model.page().question.expect("a question");
     assert_eq!(question.heading, text::DEACTIVATE_QUESTION);
-    let lines: Vec<&str> = question.body.lines().collect();
-    assert_eq!(lines.len(), 3, "{lines:?}");
-    assert_eq!(lines[0], text::DEACTIVATE_CONSEQUENCE);
-    assert!(
-        lines[1].starts_with("The return cannot number the decoy's processes"),
-        "the engine's words, its code quotes dropped: {lines:?}"
-    );
-    assert!(lines[2].ends_with("sudo /mnt/data/nails deactivate --poweroff leaves none of them."));
+    assert_eq!(question.body, text::DEACTIVATE_CONSEQUENCE);
+    assert!(question.body.contains("powers off the computer"));
     assert_eq!(question.confirm, text::POWER_OFF);
-    assert!(
-        !question.destructive,
-        "the safer ending is the suggested one"
-    );
-    assert_eq!(question.alternative.as_deref(), Some(text::RETURN_TO_DECOY));
+    assert!(!question.destructive, "the suggested button");
     assert!(question.prompt.is_none());
+    let shown = format!("{question:?}").to_lowercase();
+    for word in ["return", "way back", "login screen"] {
+        assert!(!shown.contains(word), "{word}: {shown}");
+    }
 }
 
 #[test]
-fn a_return_that_would_power_off_instead_is_said_before_the_choice() {
+fn the_question_names_the_engines_warnings_after_the_consequence() {
     let mut model = hidden();
-    asked(&mut model, &[POWERS_OFF_INSTEAD]);
-    let body = model.page().question.expect("a question").body;
-    assert!(
-        body.contains("the machine powers off instead of returning to the decoy"),
-        "{body}"
+    asked(&mut model, &[WARNING]);
+    let question = model.page().question.expect("a question");
+    let lines: Vec<&str> = question.body.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            text::DEACTIVATE_CONSEQUENCE,
+            "A program still holds /mnt/data/work: it closes with the session."
+        ],
+        "the engine's words, its code quotes dropped"
     );
 }
 
 #[test]
-fn return_to_decoy_applies_the_plan_and_the_page_ends_with_the_session() {
+fn power_off_applies_the_plan_and_the_page_ends_with_the_session() {
     let mut model = hidden();
-    asked(&mut model, &[NO_PIDS]);
-    assert_eq!(model.alternative(), Some(Ask::Apply));
+    asked(&mut model, &[]);
+    assert_eq!(model.answer(true), Some(Ask::Apply), "no second plan");
     let page = model.page();
     assert!(page.question.is_none());
     assert_eq!(page.heading, text::ENDING);
-    assert_eq!(page.description, text::RETURNING);
+    assert_eq!(page.description, text::POWERING_OFF);
     assert!(page.urgent && page.no_input && page.action.is_none());
 
     model.apply(Update::Running(Kind::Apply));
     let device = "cargo-hidden";
     let asks = model.apply(enqueued(
-        "return_requested",
-        json!([NO_PIDS, format!("The hidden backend device {device} could not be marked to close: it stays open after the switch, its key in RAM, until power-off")]),
+        "poweroff_requested",
+        json!([format!("The hidden backend device {device} could not be marked to close: it stays open after the switch, its key in RAM, until power-off")]),
         json!([device]),
     ));
     assert!(asks.is_empty());
     let page = model.page();
     assert_eq!(page.heading, text::ENDING);
+    assert_eq!(page.description, text::POWERING_OFF);
     assert_eq!(page.note, text::BACKEND_LEFT_OPEN);
     let shown = format!("{page:?}");
     assert!(!shown.contains(device), "no device is named: {shown}");
 
-    // The switch ends the window with the session.
+    // The power-off ends the window with the session.
     assert!(
         model
             .apply(Update::Ended(Failure::Lost { in_flight: false }))
@@ -287,33 +170,28 @@ fn return_to_decoy_applies_the_plan_and_the_page_ends_with_the_session() {
     assert_eq!(model.page().heading, text::ENDING);
 }
 
+/// An older engine's answer that names the return it enqueued reads as the
+/// power-off the window asked for: the page never promises a return.
 #[test]
-fn power_off_asks_for_its_own_plan_and_applies_it_without_a_second_question() {
-    let mut model = hidden();
-    asked(&mut model, &[NO_PIDS]);
-    assert_eq!(
-        model.answer(true),
-        Some(Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: true
-        })))
-    );
-    let page = model.page();
-    assert!(page.question.is_none());
-    assert_eq!(page.heading, text::ENDING);
-    assert_eq!(page.description, text::POWERING_OFF);
-
-    model.apply(Update::Running(Kind::Plan));
-    assert_eq!(model.apply(plan(true, &[])), vec![Ask::Apply]);
-    assert!(model.page().question.is_none(), "no second question");
-    model.apply(Update::Running(Kind::Apply));
-    assert!(
-        model
-            .apply(enqueued("poweroff_requested", json!([]), json!([])))
-            .is_empty()
-    );
-    let page = model.page();
-    assert_eq!(page.description, text::POWERING_OFF);
-    assert_eq!(page.note, "");
+fn any_switch_an_answer_names_reads_as_the_power_off() {
+    for status in ["return_requested", "something_else"] {
+        let mut model = hidden();
+        asked(&mut model, &[]);
+        model.answer(true);
+        model.apply(Update::Running(Kind::Apply));
+        assert!(
+            model
+                .apply(enqueued(status, json!([]), json!([])))
+                .is_empty()
+        );
+        let page = model.page();
+        assert_eq!(
+            (page.heading.as_str(), page.description.as_str()),
+            (text::ENDING, text::POWERING_OFF),
+            "{status}"
+        );
+        assert_eq!(page.note, "");
+    }
 }
 
 #[test]
@@ -332,12 +210,12 @@ fn cancel_withdraws_the_plan_and_the_session_page_comes_back() {
 fn a_failed_apply_brings_the_session_back_with_the_engines_words() {
     let mut model = hidden();
     asked(&mut model, &[]);
-    model.alternative();
+    model.answer(true);
     model.apply(Update::Running(Kind::Apply));
     let asks = model.apply(answered(
         Kind::Apply,
         json!({"schema_version": 2, "command": "deactivate", "ok": false, "error": {
-            "code": "invalid_state", "message": "systemctl could not enqueue soft-reboot.target",
+            "code": "invalid_state", "message": "systemctl could not enqueue poweroff.target",
             "next": {"command": "emergency"}}}),
     ));
     assert_eq!(asks, vec![Ask::Status]);
@@ -346,7 +224,7 @@ fn a_failed_apply_brings_the_session_back_with_the_engines_words() {
     assert_eq!(page.heading, text::HIDDEN_SESSION);
     assert!(
         page.note
-            .starts_with("Systemctl could not enqueue soft-reboot.target."),
+            .starts_with("Systemctl could not enqueue poweroff.target."),
         "{}",
         page.note
     );
@@ -355,36 +233,29 @@ fn a_failed_apply_brings_the_session_back_with_the_engines_words() {
 
 #[test]
 fn a_plan_that_settles_switches_nothing_and_says_why() {
-    let settled = || {
-        answered(
+    let mut model = hidden();
+    model.action();
+    model.apply(Update::Running(Kind::Plan));
+    assert_eq!(
+        model.apply(answered(
             Kind::Plan,
             json!({"schema_version": 2, "command": "deactivate", "ok": false, "error": {
                 "code": "invalid_state", "message": "not in a hidden session; nothing to deactivate",
                 "next": {"command": "recover"}}}),
-        )
-    };
-    // The plan of a return.
-    let mut model = hidden();
-    model.action();
-    model.apply(Update::Running(Kind::Plan));
-    assert_eq!(model.apply(settled()), vec![Ask::Status]);
+        )),
+        vec![Ask::Status]
+    );
     assert!(model.page().question.is_none());
     assert_eq!(
         model.page().note,
         "Not in a hidden session; nothing to deactivate."
     );
-    // The plan of a power-off, once Power Off was chosen.
-    let mut model = hidden();
-    asked(&mut model, &[]);
-    model.answer(true);
-    model.apply(Update::Running(Kind::Plan));
-    assert_eq!(model.apply(settled()), vec![Ask::Status]);
     model.apply(status(Value::Null));
     assert_eq!(model.page().heading, text::HIDDEN_SESSION);
 }
 
 #[test]
-fn a_lost_session_before_the_choice_is_a_failure_and_after_it_is_the_switch() {
+fn a_lost_session_before_the_choice_is_a_failure_and_after_it_is_the_power_off() {
     let mut model = hidden();
     asked(&mut model, &[]);
     model.apply(Update::Ended(Failure::Lost { in_flight: false }));
@@ -392,7 +263,7 @@ fn a_lost_session_before_the_choice_is_a_failure_and_after_it_is_the_switch() {
 
     let mut model = hidden();
     asked(&mut model, &[]);
-    model.alternative();
+    model.answer(true);
     model.apply(Update::Running(Kind::Apply));
     model.apply(Update::Ended(Failure::Lost { in_flight: true }));
     assert_eq!(model.page().heading, text::ENDING);
@@ -402,20 +273,17 @@ fn a_lost_session_before_the_choice_is_a_failure_and_after_it_is_the_switch() {
 fn a_refused_token_drops_the_deactivation() {
     let mut model = hidden();
     asked(&mut model, &[]);
-    model.alternative();
+    model.answer(true);
     model.apply(Update::Withdrawn);
     assert_eq!(model.page().heading, text::HIDDEN_SESSION);
 }
 
 #[test]
-fn only_a_deactivations_question_has_a_second_action() {
-    let mut model = hidden();
-    assert_eq!(model.alternative(), None, "no question");
-    asked(&mut model, &[]);
-    // A plan of another ending than the one asked for is dropped.
+fn a_plan_that_does_not_power_off_is_dropped() {
     let mut model = hidden();
     model.action();
-    assert_eq!(model.apply(plan(true, &[])), vec![Ask::Withdraw]);
+    assert_eq!(model.apply(plan(false, &[])), vec![Ask::Withdraw]);
     assert!(model.page().question.is_none());
-    assert_eq!(model.alternative(), None);
+    model.apply(Update::Withdrawn);
+    assert_eq!(model.page().heading, text::HIDDEN_SESSION);
 }

@@ -9,8 +9,9 @@ nails \- Run a hidden session on a decoy Linux system
 Run a hidden session on a decoy Linux system.
 .PP
 NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
-decoy root, with every change kept on the hidden volume, entered and left with
-`systemctl soft\-reboot` (systemd 254 or newer). The binary and its
+decoy root, with every change kept on the hidden volume, entered with
+`systemctl soft\-reboot` (systemd 254 or newer). A hidden session never goes
+back to the decoy: it ends in a power\-off. The binary and its
 configuration live on the hidden volume, so you run it by its
 full path from the mounted volume (e.g. `sudo /mnt/data/nails status`),
 never from a copy on the decoy disk.
@@ -21,9 +22,9 @@ The workflow has four steps:
   3. `activate` to soft\-reboot into the hidden session. You are logged out;
      the hidden session starts at its own login screen (a display manager set
      to log an account in automatically logs it in again, as at boot).
-  4. `deactivate` to soft\-reboot back to the plain decoy, or `emergency` to
-     kill the hidden session at once and return (or power off). If an
-     activation was interrupted, `recover` removes what it left behind.
+  4. `deactivate` to end the session and power off, or `emergency` to kill
+     the hidden session at once and power off (or reboot). If an activation
+     was interrupted, `recover` removes what it left behind.
 .SH OPTIONS
 .TP
 \fB\-c\fR, \fB\-\-config\fR \fI<PATH>\fR
@@ -70,10 +71,10 @@ nails\-activate(1)
 Soft\-reboot into the hidden session (whole\-root overlay on the hidden volume)
 .TP
 nails\-deactivate(1)
-Soft\-reboot from the hidden session back to the plain decoy
+End the hidden session and power off
 .TP
 nails\-emergency(1)
-Kill the hidden session at once and soft\-reboot back to the decoy (or power off)
+Kill the hidden session at once and power off (or reboot)
 .TP
 nails\-recover(1)
 Remove what an interrupted activation left in /run
@@ -107,8 +108,8 @@ EXAMPLES:
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
   sudo /mnt/data/nails activate         Soft\-reboot into the hidden session
   sudo /mnt/data/nails status \-\-json    Machine\-readable state and uptime
-  sudo /mnt/data/nails deactivate       Soft\-reboot back to the decoy
-  sudo /mnt/data/nails emergency        Kill the hidden session and return now
+  sudo /mnt/data/nails deactivate       End the hidden session and power off
+  sudo /mnt/data/nails emergency        Kill the hidden session and power off now
   source <(/mnt/data/nails completions bash)   Load completions in the session
 
 EXIT STATUS:

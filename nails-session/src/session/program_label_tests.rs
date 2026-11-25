@@ -446,19 +446,12 @@ fn the_copy_takes_the_label_again_before_the_way_back_is_armed() {
     );
 }
 
-/// `deactivate`'s way back asks before it prepares anything: a labelled
-/// return the policy or the hidden session's PID 1 would keep from the
-/// unconfined service domain is refused with the plan unarmed, nothing
-/// mounted and nothing enqueued. A power-off asks nothing and goes on.
+/// `deactivate` ends a labelled session in a power-off and asks SELinux and
+/// PID 1 nothing about the RAM copy's label: no last step of a way back will
+/// start from it.
 #[test]
-fn a_labelled_return_is_refused_before_the_way_back_prepares_anything() {
-    use super::super::layout::Paths;
-    use super::super::leave::{LeaveTo, leave};
-    let dir = tempfile::tempdir().unwrap();
-    let paths = Paths {
-        root: dir.path().join("root"),
-        run: dir.path().join("run"),
-    };
+fn a_labelled_session_ends_in_a_power_off_without_asking_about_the_label() {
+    use super::super::leave::leave;
     for host in [
         Pid1 {
             context: Some(""),
@@ -471,17 +464,8 @@ fn a_labelled_return_is_refused_before_the_way_back_prepares_anything() {
         pid1(Some("system_u:system_r:unconfined_service_t:s0")),
         pid1(None),
     ] {
-        let mut plan = plan_with(Some(PROGRAM_LABEL));
-        let error = leave(&paths, &mut plan, LeaveTo::Decoy, &host).unwrap_err();
-        assert!(!refused(&error).0.is_empty());
-        assert!(plan.armed.is_none());
-        assert!(host.started.borrow().is_empty());
-        assert!(!paths.nextroot().exists());
-        assert!(
-            host.selinux.labels_written().is_empty(),
-            "nothing labelled yet"
-        );
-        leave(&paths, &mut plan, LeaveTo::Poweroff, &host).unwrap();
+        leave(&host).unwrap();
         assert_eq!(*host.started.borrow(), ["poweroff.target"]);
+        assert!(host.selinux.labels_written().is_empty());
     }
 }

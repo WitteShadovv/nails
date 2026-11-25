@@ -13,11 +13,8 @@ use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::decoy_mounts::{self, Record, Why};
-use nails_teardown::whole_root::plan::{
-    Arm, CarriedMount, DecoyMount, Direction, PLAN_NAME, Plan, UTAB_MOUNTS_NAME, UTAB_NAME,
-};
+use nails_teardown::whole_root::plan::{CarriedMount, DecoyMount, Plan};
 use nails_teardown::whole_root::ret::{self, ReturnError};
-use nails_teardown::whole_root::transition::{self, Env, Outcome};
 use nails_teardown::whole_root::{carry, nextroot};
 use nix::mount::MsFlags;
 use std::path::{Path, PathBuf};
@@ -270,104 +267,6 @@ fn a_directory_reached_through_another_mount_is_refused() {
         assert_eq!(error.kind(), std::io::ErrorKind::CrossesDevices, "{error}");
         assert!(error.to_string().contains("/nix/store"), "{error}");
         assert!(nextroot::detach_tree(&nextroot).is_empty());
-    });
-}
-
-/// The `utab` line libmount writes for `mount`, by its ID when `id` is set.
-fn utab_line(mount: &MountEntry, target: &str, id: bool) -> String {
-    let id = if id {
-        format!("ID={} ", mount.mount_id)
-    } else {
-        String::new()
-    };
-    format!(
-        "{id}SRC={} TARGET={target} ROOT={} OPTS=x-initrd.mount\n",
-        mount.source.display(),
-        mount.root.display()
-    )
-}
-
-#[test]
-fn the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place() {
-    // The ESP's two layers share their place, source and root: by place, the
-    // bottom's line would take the top's new ID, and libmount would join both
-    // lines to the top.
-    let _ = Rerun::new(test_path!(
-        the_transition_gives_each_utab_line_the_mount_made_in_its_mount_s_place
-    ))
-    .in_user_mount_ns()
-    .run(|| {
-        let decoy = Decoy::new();
-        let carried = vec![decoy.carry_boot()];
-        let record = decoy.record(&carried);
-        let before = tree(&decoy.root());
-        let named: String = before
-            .iter()
-            .map(|m| {
-                format!(
-                    "{} 1 {} {} {} {} - {} {} rw\n",
-                    m.mount_id,
-                    m.dev,
-                    m.root.display(),
-                    m.mount_point.display(),
-                    m.mount_opts,
-                    m.fstype,
-                    m.source.display()
-                )
-            })
-            .collect();
-        let (root, store, boot) = (&before[0], &before[1], &before[2]);
-        let saved = utab_line(root, "/sysroot", true)
-            + &utab_line(boot, "/sysroot/boot", true)
-            + &utab_line(store, "/nix/store", false);
-        let run = decoy.run.path().canonicalize().unwrap();
-        let runtime = run.join("overlay-runtime");
-        std::fs::write(runtime.join(UTAB_NAME), &saved).unwrap();
-        std::fs::write(runtime.join(UTAB_MOUNTS_NAME), named).unwrap();
-        std::fs::write(run.join("mount/utab"), "ID=1 hidden\n").unwrap();
-
-        let nextroot = decoy.nextroot();
-        nextroot::bind(&decoy.root(), &nextroot, false).unwrap();
-        let mut plan = decoy.plan(carried, record.mounts);
-        decoy_mounts::restore(&mut plan.decoy_mounts, &plan.carried, &nextroot).unwrap();
-        nextroot::bind(&run, &nextroot.join("run"), false).unwrap();
-        plan.armed = Some(Arm::now(Direction::Leave));
-        plan.entered_at = Some(1);
-        plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
-        let now = |i: usize| plan.decoy_mounts[i].restored.unwrap();
-
-        let outcome = transition::run(&Env {
-            run: run.clone(),
-            nextroot: nextroot.clone(),
-            runtime_dir: runtime,
-            kmsg: run.join("no-kmsg"),
-            systemctl: None,
-            pid_places: None,
-            zram: None,
-            now: nails_teardown::whole_root::plan::unix_now(),
-            mounts: read_mountinfo().unwrap(),
-            network: nails_teardown::whole_root::network::Places::system(&run),
-            network_kernel: None,
-            power_off: transition::PowerOff {
-                grace: std::time::Duration::ZERO,
-                kernel: || false,
-            },
-            tail: None,
-            selinux: &nails_teardown::whole_root::selinux::KERNEL,
-            start: nails_teardown::whole_root::program_label::Started::by_hand(),
-        });
-        assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-        let rekeyed = |mount: &MountEntry, id: i32, target: &str| {
-            utab_line(mount, target, false).replacen("SRC=", &format!("ID={id} SRC="), 1)
-        };
-        assert_eq!(
-            std::fs::read_to_string(run.join("mount/utab")).unwrap(),
-            rekeyed(root, now(0), "/sysroot")
-                + &rekeyed(boot, now(2), "/sysroot/boot")
-                + &utab_line(store, "/nix/store", false)
-        );
-        assert_ne!(now(2), now(3));
-        nextroot::detach_tree(&nextroot);
     });
 }
 

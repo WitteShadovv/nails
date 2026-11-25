@@ -51,7 +51,7 @@ fn past_the_point() -> Model {
     model
 }
 
-/// A hidden session's window with a return to the decoy under way.
+/// A hidden session's window with a deactivation's power-off under way.
 fn ending() -> Model {
     let mut model = model();
     model.apply(Update::Connected(crate::client::ours()));
@@ -62,12 +62,12 @@ fn ending() -> Model {
     ));
     model.action();
     model.apply(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-        poweroff: false,
+        poweroff: true,
         warnings: vec![],
         powers_off_instead: None,
         token: "0".repeat(32),
     })));
-    assert_eq!(model.alternative(), Some(Ask::Apply));
+    assert_eq!(model.answer(true), Some(Ask::Apply));
     assert!(model.switch_pending());
     model
 }
@@ -152,7 +152,7 @@ fn a_deactivation_that_does_not_end_points_to_the_emergency() {
     model.apply(answered(
         Kind::Apply,
         json!({"schema_version": 2, "command": "deactivate", "ok": true,
-            "data": {"status": "return_requested", "backend_left_open": ["x"]}}),
+            "data": {"status": "poweroff_requested", "backend_left_open": ["x"]}}),
     ));
     model.set_switch_overdue(true);
     let page = model.page();

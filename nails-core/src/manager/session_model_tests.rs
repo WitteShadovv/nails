@@ -26,7 +26,7 @@
 //! - `activate`: the refusal of an unreadable record, the no-op in the hidden
 //!   root, the session-state gate, and the record the activation commits before
 //!   its soft-reboot (`record_entry`);
-//! - `deactivate --poweroff`: the way back (`leave_session_on`);
+//! - `deactivate`: the session's end, a power-off (`leave_session_on`);
 //! - `emergency --poweroff`: the emergency hot path, judging the plan without
 //!   acting on the host, and the record it leaves (`record_inactive`);
 //! - `recover`: `recover_session_on`.
@@ -117,7 +117,7 @@ struct Model {
 enum Op {
     /// `nails activate`, up to the soft-reboot it enqueues.
     Activate,
-    /// `nails deactivate --poweroff`.
+    /// `nails deactivate`, which powers off.
     Deactivate,
     /// `nails emergency --poweroff`.
     Emergency,
@@ -183,10 +183,10 @@ impl ReferenceStateMachine for Model {
                 state.spot = Spot::Entering;
                 state.record = Record::Active;
             }
-            // The way back records the session inactive first, then powers
-            // off; the next boot is the plain decoy. Without its plan, or
-            // outside the hidden root, it refuses.
-            (Op::Deactivate, Spot::Hidden) => {
+            // Deactivation records the session inactive first, then powers
+            // off; the next boot is the plain decoy. It needs no plan; outside
+            // the hidden root it refuses.
+            (Op::Deactivate, Spot::Hidden | Spot::HiddenNoPlan) => {
                 state.spot = Spot::Decoy;
                 state.record = Record::Inactive;
             }
@@ -260,7 +260,7 @@ impl Model {
     fn accepts(self, op: Op) -> Option<bool> {
         match op {
             Op::Activate => Some(self.spot == Spot::Decoy && self.record != Record::Corrupt),
-            Op::Deactivate => Some(self.spot == Spot::Hidden),
+            Op::Deactivate => Some(matches!(self.spot, Spot::Hidden | Spot::HiddenNoPlan)),
             Op::Emergency => Some(true),
             Op::Recover => Some(matches!(self.spot, Spot::Decoy | Spot::Interrupted)),
             Op::Switch | Op::SwitchRefused | Op::Killed | Op::PlanLost | Op::PowerLoss => None,
@@ -287,7 +287,7 @@ impl Model {
         let (reason, advice) = match self.spot {
             Spot::Interrupted => (Some("an interrupted activation left"), Some("recover")),
             Spot::HiddenNoPlan => (
-                Some("in the hidden root without a way back"),
+                Some("in the hidden root without its session plan"),
                 Some("Power off"),
             ),
             // A loaded active record next to the plain decoy is stale: status
@@ -298,7 +298,7 @@ impl Model {
             ),
             // Wherever the machine is, an unreadable record is no guide for
             // the next activation: unless the place needs the operator first
-            // (the interrupted entry and the hidden root without a way back
+            // (the interrupted entry and the hidden root without its plan
             // above), status points at verify, also while an entry is under
             // way and in the hidden root.
             _ if self.record == Record::Corrupt => (None, Some("verify")),
@@ -545,19 +545,16 @@ impl World {
         true
     }
 
-    /// `nails deactivate --poweroff`: the real way back records the session
+    /// `nails deactivate`: the real session's end records the session
     /// inactive and enqueues the power-off, and the next boot is the plain
-    /// decoy. (The way back to the decoy without a power-off mounts the decoy
-    /// root, which needs privileges.) Returns whether it left.
+    /// decoy. Returns whether it left.
     fn deactivate(&mut self) -> bool {
         let target = FakeTarget::default();
-        let left = self
-            .manager()
-            .leave_session_on(&self.machine, LeaveTo::Poweroff, &target);
+        let left = self.manager().leave_session_on(&self.machine, &target);
         if left.is_err() {
             assert!(
                 target.started.borrow().is_empty(),
-                "a refused way back enqueues nothing"
+                "a refused deactivation enqueues nothing"
             );
             return false;
         }

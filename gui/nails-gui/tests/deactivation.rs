@@ -2,10 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! Deactivating from the window, on Slint's headless platform: Deactivate…
-//! on a hidden session's page, the question with the engine's warnings and
-//! both endings, Return to Decoy applying the plan, Power Off planning again
-//! and applying without a second question, Cancel and Escape withdrawing,
-//! and the page while the session ends.
+//! on a hidden session's page, the question that says the computer powers
+//! off, Power Off applying the plan, Cancel and Escape withdrawing, and the
+//! page while the session ends.
 
 mod screen;
 mod support;
@@ -19,11 +18,9 @@ use screen::Screen;
 use serde_json::{Value, json};
 use slint::platform::Key;
 
-/// The warning of a way back that powers off instead of returning, in the
-/// engine's words: the session made a link the kernel keeps.
-const POWERS_OFF_INSTEAD: &str = "The way back cannot delete tunl0, which the kernel keeps, so \
-    the machine powers off instead of returning to the decoy. `sudo /mnt/data/nails deactivate \
-    --poweroff` powers off at once.";
+/// A warning of the engine's, in its own words: the window shows any it
+/// gets.
+const WARNING: &str = "A program still holds `/mnt/data/work`: it closes with the session.";
 
 fn answered(kind: Kind, envelope: Value) -> Update {
     Update::Answered(kind, Answer { exit: 0, envelope })
@@ -43,9 +40,9 @@ fn hidden() -> Screen {
     screen
 }
 
-fn plan(poweroff: bool, warnings: &[&str]) -> Update {
+fn plan(warnings: &[&str]) -> Update {
     Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-        poweroff,
+        poweroff: true,
         warnings: warnings.iter().map(|w| (*w).to_string()).collect(),
         powers_off_instead: None,
         token: "0".repeat(32),
@@ -60,11 +57,12 @@ fn asked(screen: &Screen, warnings: &[&str]) {
     assert_eq!(
         screen.asks(),
         vec![Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: false
+            poweroff: true
         }))]
     );
     screen.update(Update::Running(Kind::Plan));
-    screen.update(plan(false, warnings));
+    screen.update(plan(warnings));
+    assert!(screen.window.get_question_open());
 }
 
 fn enqueued(status: &str) -> Update {
@@ -77,13 +75,13 @@ fn enqueued(status: &str) -> Update {
 
 /// The page while the session ends takes no input from the page or the
 /// window's Close.
-fn assert_ending(screen: &Screen, description: &str) {
+fn assert_ending(screen: &Screen) {
     let heading = screen.find_with(text::ENDING, AccessibleRole::Text);
     assert_eq!(
         heading.accessible_live_region(),
         Some(AccessibleLiveness::Assertive)
     );
-    assert!(screen.shows(description));
+    assert!(screen.shows(text::POWERING_OFF));
     let close = screen.find_with("Close", AccessibleRole::Button);
     assert_eq!(close.accessible_enabled(), Some(false));
     assert!(!screen.shows(text::DEACTIVATE));
@@ -98,23 +96,32 @@ fn assert_ending(screen: &Screen, description: &str) {
 }
 
 #[test]
-fn a_hidden_session_deactivates_through_a_question_with_both_endings() {
+fn a_hidden_session_deactivates_through_a_question_that_says_it_powers_off() {
     let screen = hidden();
     assert!(screen.shows(text::HIDDEN_SESSION));
-    asked(&screen, &[POWERS_OFF_INSTEAD]);
+    asked(&screen, &[WARNING]);
     let dialog = screen.find_with(text::DEACTIVATE_QUESTION, AccessibleRole::Groupbox);
     let body = dialog.accessible_description().unwrap_or_default();
     let lines: Vec<&str> = body.lines().collect();
-    assert_eq!(lines[0], text::DEACTIVATE_CONSEQUENCE);
-    // The engine's warning, its code quotes dropped: here, that the return
-    // would power off instead.
-    assert!(
-        lines[1].contains("the machine powers off instead of returning to the decoy"),
-        "{body}"
+    assert_eq!(
+        lines,
+        [
+            text::DEACTIVATE_CONSEQUENCE,
+            "A program still holds /mnt/data/work: it closes with the session."
+        ],
+        "the engine's warning, its code quotes dropped"
     );
-    assert!(lines[1].ends_with("sudo /mnt/data/nails deactivate --poweroff powers off at once."));
     screen.find_with(text::POWER_OFF, AccessibleRole::Button);
-    screen.find_with(text::RETURN_TO_DECOY, AccessibleRole::Button);
+    let buttons: Vec<String> = screen
+        .with_role(AccessibleRole::Button)
+        .iter()
+        .filter_map(|button| button.accessible_label())
+        .map(|label| label.to_string())
+        .collect();
+    assert!(
+        !buttons.iter().any(|label| label.contains("Decoy")),
+        "Power Off is the only ending: {buttons:?}"
+    );
     assert_eq!(screen.focused(), "Cancel", "the focus starts on Cancel");
     // Return on Cancel withdraws the plan.
     screen.press(Key::Return);
@@ -123,63 +130,33 @@ fn a_hidden_session_deactivates_through_a_question_with_both_endings() {
 }
 
 #[test]
-fn the_keyboard_walks_the_three_answers_and_the_emergency_and_nothing_else() {
+fn the_keyboard_walks_the_two_answers_and_the_emergency_and_nothing_else() {
     let screen = hidden();
     asked(&screen, &[]);
-    let walk = screen.walk(Key::Tab, 4);
-    assert_eq!(
-        walk,
-        [
-            text::EMERGENCY,
-            text::POWER_OFF,
-            text::RETURN_TO_DECOY,
-            "Cancel"
-        ]
-    );
+    let walk = screen.walk(Key::Tab, 3);
+    assert_eq!(walk, [text::POWER_OFF, text::EMERGENCY, "Cancel"]);
     let back = screen.walk(Key::Backtab, 2);
-    assert_eq!(back, [text::RETURN_TO_DECOY, text::POWER_OFF]);
+    assert_eq!(back, [text::EMERGENCY, text::POWER_OFF]);
     // Escape anywhere in the question cancels it.
     screen.press(Key::Escape);
     assert_eq!(screen.asks(), vec![Ask::Withdraw]);
 }
 
 #[test]
-fn return_to_decoy_applies_the_plan_and_the_session_ends() {
-    let screen = hidden();
-    asked(&screen, &[]);
-    screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
-        .invoke_accessible_default_action();
-    assert_eq!(screen.asks(), vec![Ask::Apply]);
-    assert!(!screen.window.get_question_open());
-    screen.update(Update::Running(Kind::Apply));
-    assert_ending(&screen, text::RETURNING);
-    screen.update(enqueued("return_requested"));
-    assert_ending(&screen, text::RETURNING);
-}
-
-#[test]
-fn power_off_plans_again_and_applies_without_asking_twice() {
+fn power_off_applies_the_plan_and_the_session_ends() {
     let screen = hidden();
     asked(&screen, &[]);
     while screen.focused() != text::POWER_OFF {
         screen.press(Key::Tab);
     }
     screen.press(Key::Space);
-    assert_eq!(
-        screen.asks(),
-        vec![Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: true
-        }))]
-    );
-    assert_ending(&screen, text::POWERING_OFF);
-    screen.update(Update::Running(Kind::Plan));
-    screen.update(plan(true, &[]));
-    assert_eq!(screen.asks(), vec![Ask::Apply]);
-    assert!(!screen.window.get_question_open(), "no second question");
+    assert_eq!(screen.asks(), vec![Ask::Apply], "no second plan");
+    assert!(!screen.window.get_question_open());
+    assert_ending(&screen);
     screen.update(Update::Running(Kind::Apply));
+    assert_ending(&screen);
     screen.update(enqueued("poweroff_requested"));
-    assert_ending(&screen, text::POWERING_OFF);
+    assert_ending(&screen);
 }
 
 #[test]
@@ -187,54 +164,43 @@ fn a_failed_deactivation_brings_the_session_page_back_with_why() {
     let screen = hidden();
     asked(&screen, &[]);
     screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.asks();
     screen.update(Update::Running(Kind::Apply));
     screen.update(answered(
         Kind::Apply,
         json!({"schema_version": 2, "command": "deactivate", "ok": false, "error": {
-            "code": "invalid_state", "message": "systemctl could not enqueue soft-reboot.target",
+            "code": "invalid_state", "message": "systemctl could not enqueue poweroff.target",
             "next": {"command": "emergency"}}}),
     ));
     assert_eq!(screen.asks(), vec![Ask::Status]);
-    assert!(screen.shows("Systemctl could not enqueue soft-reboot.target."));
+    assert!(screen.shows("Systemctl could not enqueue poweroff.target."));
     screen.find_with(text::DEACTIVATE, AccessibleRole::Button);
 }
 
-/// Where the way back powers off whatever happens before it runs, the
-/// question says the session ends with a power-off, in the CLI's words, and
-/// offers Power Off and Cancel alone: no Return to Decoy that would not
-/// happen.
+/// The plan as the helper gives it now (`deactivate-plan`): the question
+/// says the computer powers off, with nothing more to warn of.
 #[test]
-fn a_return_that_powers_off_anyway_has_no_return_to_offer() {
+fn the_helpers_plan_asks_only_whether_to_power_off() {
     let screen = hidden();
     screen
         .find_with(text::DEACTIVATE, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.asks();
-    let recorded = support::fixture("deactivate-plan-powers-off");
+    let recorded = support::fixture("deactivate-plan");
     screen.update(Update::Planned(PlanData::Deactivate(
         serde_json::from_value(recorded["data"].clone()).unwrap(),
     )));
     assert!(screen.window.get_question_open());
     let dialog = screen.find_with(text::DEACTIVATE_QUESTION, AccessibleRole::Groupbox);
-    let body = dialog.accessible_description().unwrap_or_default();
     assert_eq!(
-        body.lines().next(),
-        Some(text::powers_off_instead(true).as_str())
+        dialog.accessible_description().as_deref(),
+        Some(text::DEACTIVATE_CONSEQUENCE)
     );
-    screen.find_with(text::POWER_OFF, AccessibleRole::Button);
-    assert!(!screen.shows(text::RETURN_TO_DECOY));
     assert_eq!(screen.focused(), "Cancel");
-    // Power Off plans the power-off.
     screen
         .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
-    assert_eq!(
-        screen.asks(),
-        vec![Ask::Plan(Plan::Deactivate(DeactivateArgs {
-            poweroff: true
-        }))]
-    );
+    assert_eq!(screen.asks(), vec![Ask::Apply]);
 }

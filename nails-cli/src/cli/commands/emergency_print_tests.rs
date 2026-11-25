@@ -36,7 +36,7 @@ fn report(side: Side, remaining: &[&str]) -> HotReport {
         act: false,
         selinux: &nails_teardown::whole_root::selinux::KERNEL,
     };
-    let mut report = emergency::run(None, &host, Finish::Return);
+    let mut report = emergency::run(None, &host, Finish::Default);
     report.side = side;
     report.remaining = remaining.iter().map(PathBuf::from).collect();
     report.phases.clear();
@@ -55,11 +55,10 @@ fn degraded() -> HotReport {
     report(Side::Decoy, &["/run/nextroot/stuck"])
 }
 
-/// A return from the hidden root whose way back is enqueued (exit 0), but
-/// which could not mark a backend device to close: it stays open.
+/// A decoy-side cleanup (exit 0) that could not mark a backend device to
+/// close: it stays open.
 fn left_open() -> HotReport {
-    let mut report = report(Side::Hidden, &[]);
-    report.dispatched = Some(Finish::Return);
+    let mut report = report(Side::Decoy, &[]);
     report.deferred = vec![
         ("hidden-crypt".to_string(), false),
         ("hidden-loop".to_string(), true),
@@ -67,19 +66,11 @@ fn left_open() -> HotReport {
     report
 }
 
-/// A return from the hidden root whose way back is enqueued: exit 0.
-fn returned() -> HotReport {
+/// The end of a hidden session, its power-off enqueued: exit 0.
+fn ended() -> HotReport {
     let mut report = report(Side::Hidden, &[]);
-    report.dispatched = Some(Finish::Return);
+    report.dispatched = Some(Finish::Poweroff);
     report
-}
-
-/// Why a way back is bound to power off over the link `tunl0` the kernel
-/// keeps once a session loads `ipip`.
-fn bound_over_tunl0() -> Option<PowerOffReason> {
-    power_off_reason(&nails_teardown::whole_root::network::Foreseen {
-        kernel_kept: vec!["tunl0".to_string()],
-    })
 }
 
 fn quiet() -> OutputSettings {
@@ -103,12 +94,12 @@ fn subprocess_print_entrypoint() {
         "json-clean" => print_json(&clean()),
         "json-degraded" => print_json(&degraded()),
         "json-left-open" => print_json(&left_open()),
-        "human-clean" => render_human(&loud, &clean(), None),
-        "quiet-clean" => render_human(&quiet(), &clean(), None),
-        "quiet-degraded" => render_human(&quiet(), &degraded(), None),
-        "quiet-left-open" => render_human(&quiet(), &left_open(), None),
-        "human-return" => render_human(&loud, &returned(), None),
-        "human-return-bound" => render_human(&loud, &returned(), bound_over_tunl0().as_ref()),
+        "json-ended" => print_json(&ended()),
+        "human-clean" => render_human(&loud, &clean()),
+        "quiet-clean" => render_human(&quiet(), &clean()),
+        "quiet-degraded" => render_human(&quiet(), &degraded()),
+        "quiet-left-open" => render_human(&quiet(), &left_open()),
+        "human-ended" => render_human(&loud, &ended()),
         other => panic!("unknown emergency printer case: {other}"),
     }
     crate::cli::output::flush_stdio();
@@ -158,7 +149,7 @@ fn the_json_printer_reports_a_clean_run_as_ok() {
 }
 
 /// A degraded teardown (mounts left below `/run/nextroot`) is not `ok`: a
-/// reader that keys on `ok` must not take it for a clean way back.
+/// reader that keys on `ok` must not take it for a clean one.
 #[test]
 fn the_json_printer_reports_a_degraded_run_as_not_ok() {
     assert_eq!(app::exit_status(&degraded()), ExitStatus::DegradedReboot);
@@ -200,7 +191,7 @@ fn the_quiet_human_printer_still_reports_a_degraded_run() {
     );
 }
 
-/// A device left open does not make the way back fail: it is `ok`, and the
+/// A device left open does not make the cleanup fail: it is `ok`, and the
 /// data names the device apart from the one that is closing.
 #[test]
 fn the_json_printer_names_a_device_left_open() {
@@ -220,13 +211,13 @@ fn the_json_printer_names_a_device_left_open() {
 }
 
 /// `--quiet` never silences a run that left a backend device open, though
-/// its way back is enqueued and it exits 0: the device is still named.
+/// it exits 0: the device is still named.
 #[test]
 fn the_quiet_human_printer_still_names_a_device_left_open() {
     let lines = stdout_lines("quiet-left-open");
     assert_eq!(
         lines.first().map(String::as_str),
-        Some("[PASS] Returning to the decoy: hidden processes killed, soft-reboot under way"),
+        Some("[PASS] Removed what an interrupted activation left in /run"),
         "{lines:?}"
     );
     assert!(
@@ -238,29 +229,27 @@ fn the_quiet_human_printer_still_names_a_device_left_open() {
     );
 }
 
-/// A return ends with where the machine ends: at the decoy's login screen, or
-/// off when the way back cannot undo what it sets out to; off, and why, where
-/// it is bound to power off instead.
+/// The end of a hidden session says that the machine powers off, and the
+/// envelope names the request `default` and the power-off enqueued.
 #[test]
-fn the_human_printer_says_where_a_return_ends() {
-    let lines = stdout_lines("human-return");
+fn the_printers_say_a_hidden_session_ends_in_a_power_off() {
+    let lines = stdout_lines("human-ended");
+    assert_eq!(
+        lines.first().map(String::as_str),
+        Some("[PASS] Hidden processes killed, powering off"),
+        "{lines:?}"
+    );
     assert_eq!(
         lines.last().map(String::as_str),
         Some(
-            "  The decoy starts at its own login screen; log in there with the decoy password (a \
-             display manager set to log an account in automatically logs it in again, as at \
-             boot). The machine powers off instead if a link, MAC address, rule or table the way \
-             back sets out to undo is still the session's afterwards."
+            "  The machine powers off now. Leave it off for a few minutes before you hand it \
+             over."
         ),
         "{lines:?}"
     );
-    let lines = stdout_lines("human-return-bound");
-    assert_eq!(
-        lines.last().map(String::as_str),
-        Some(
-            "  The way back cannot delete tunl0, which the kernel keeps: the machine powers off \
-             instead of returning to the decoy."
-        ),
-        "{lines:?}"
-    );
+    let value = printed_envelope("json-ended");
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["side"], "hidden", "{value}");
+    assert_eq!(value["data"]["requested"], "default", "{value}");
+    assert_eq!(value["data"]["dispatched"], "poweroff", "{value}");
 }

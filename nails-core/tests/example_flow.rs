@@ -27,7 +27,7 @@ fn the_state_record_follows_forced_states() {
     manager
         .force_state(SystemState::Degraded {
             since: nails_core::time::Timestamp::now(),
-            reason: "in the hidden root without a way back".into(),
+            reason: "in the hidden root without its session plan".into(),
         })
         .unwrap();
     assert!(manager.current_state().unwrap().is_degraded());

@@ -1,38 +1,29 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Leaving the hidden root the orderly way (`nails deactivate`).
+//! Ending the hidden session the orderly way (`nails deactivate`).
 //!
-//! In the hidden session: unmount the disks the session mounted itself (a USB
-//! drive, a decoy partition mounted by hand), mount the decoy root at
-//! `/run/nextroot` with `/run` bound in, check its init, mark the hidden backend for deferred removal, arm
-//! the plan and enqueue `soft-reboot.target`. The orderly shutdown stops every
-//! hidden unit (applications flush, the hidden journal reaches the upper), the
-//! transition scrubs `/run` and writes the kmsg cursor, and PID 1 switches back
-//! into the plain decoy root. The hidden volume is detached with the old root
-//! and its mapping closes on its own, because it was marked for deferred
-//! removal: nothing of the hidden session survives the switch. `--poweroff`
-//! powers off instead, and needs no way back.
+//! A hidden session never goes back to the decoy's kernel: deactivation ends
+//! it the way every hidden session ends ([`session_end`]), with a power-off.
+//! Before it enqueues anything it refuses while a program blocks shutdown
+//! ([`may_leave`]): the power-off would cut it short. Then it enqueues
+//! `poweroff.target`: the orderly shutdown stops every hidden unit
+//! (applications flush, the hidden journal reaches the upper), and
+//! systemd-shutdown unmounts every filesystem, removes the device-mapper
+//! devices and powers off.
 //!
-//! Before it prepares anything it refuses while a program blocks shutdown,
-//! and a return to the decoy unless the hidden session's PID 1 still holds the
-//! two runtime guards the entry checked in the decoy's, the stop guard of
-//! `blk-availability.service` and the switch's timeout guard ([`may_leave`]):
-//! the hidden system's own configuration, or a change in the session, can
-//! undo one. Where the plan records a label for the RAM copy of the binary, a
-//! return is refused as well while the loaded policy would not start the way
-//! back's last step from that copy in the unconfined service domain, and the
-//! copy takes the label again right before the switch is armed
-//! ([`super::program_label`]).
+//! The way back to the decoy this module once prepared (the decoy root at
+//! `/run/nextroot`, the backend marked for deferred removal, the plan armed for
+//! a second soft-reboot) is gone; the [`RealTargetHost`] still asks logind for
+//! the entry's soft-reboot.
+//!
+//! [`session_end`]: nails_teardown::whole_root::session_end::session_end
 
 use super::guards::{self, GuardHost};
-use super::layout::Paths;
 use crate::error::{NailsError, Result};
-use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
-use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
-use nails_teardown::whole_root::{disk_guard, logind, network, ret, tools};
-use rustix::mount::UnmountFlags;
+use nails_teardown::whole_root::session_end::session_end;
+use nails_teardown::whole_root::{logind, tools};
 use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it. It asks PID 1 whether the
@@ -56,7 +47,7 @@ pub struct RealTargetHost {
     /// The session plan, which a soft-reboot waits on only while it is armed.
     plan: PathBuf,
     /// What kills the interactive shells around the soft-reboot: the entry's
-    /// does, the way back's does not.
+    /// does, a deactivation's does not (its power-off stops them).
     kill_shells: Option<fn()>,
 }
 
@@ -93,7 +84,7 @@ impl RealTargetHost {
         self
     }
 
-    /// The soft-reboot of the entry or of the way back, through logind as
+    /// The soft-reboot of the entry, through logind as
     /// `systemctl soft-reboot` does ([`logind::request_soft_reboot`]): the
     /// programs waiting for its shutdown signal end on it first. `Ok` once
     /// PID 1 holds the job. While it waits, an activation stays the plan's
@@ -190,200 +181,22 @@ impl TargetHost for RealTargetHost {
     }
 }
 
-/// How the session ends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LeaveTo {
-    /// Soft-reboot back into the plain decoy root.
-    Decoy,
-    /// Power off.
-    Poweroff,
+/// Whether the session may end now: not while a program blocks shutdown
+/// ([`TargetHost::may_switch`]), which the power-off would cut short.
+pub fn may_leave(host: &dyn TargetHost) -> Result<()> {
+    host.may_switch()
 }
 
-/// What [`leave`] did.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LeaveReport {
-    /// Device-mapper names marked for deferred removal, with the result.
-    pub deferred: Vec<(String, bool)>,
-    /// Disks mounted during the session that were unmounted (or, busy,
-    /// detached) before the way back.
-    pub unmounted: Vec<PathBuf>,
-}
-
-impl LeaveReport {
-    /// The hidden backend's device-mapper devices whose mark for deferred
-    /// removal did not take (no `dmsetup`, or it refused), top first: they
-    /// stay open after the switch, their key in RAM, until power-off.
-    pub fn left_open(&self) -> Vec<String> {
-        self.deferred
-            .iter()
-            .filter(|(_, marked)| !marked)
-            .map(|(name, _)| name.clone())
-            .collect()
-    }
-}
-
-/// The disks mounted during the session, deepest first: every mount under
-/// `paths.root` backed by a block device (`is_block`) that is not the
-/// session's own: its storage below the hidden root (the hidden volume, the
-/// carried decoy filesystems: [`Plan::is_hidden_storage`]), the decoy root at
-/// `/run/nextroot`, or a policy target such as the read-only ESP. A disk
-/// mounted below the hidden root, at `<root>/usb`, is one of them.
-pub fn session_disk_mounts(
-    paths: &Paths,
-    plan: &Plan,
-    mounts: &[MountEntry],
-    is_block: &dyn Fn(&MountEntry) -> bool,
-) -> Vec<PathBuf> {
-    let nextroot = paths.nextroot();
-    let policy: Vec<PathBuf> = plan
-        .policy_mounts
-        .iter()
-        .map(|m| paths.decoy(&m.target))
-        .collect();
-    let mut found: Vec<PathBuf> = mounts
-        .iter()
-        .filter(|m| {
-            m.mount_point.starts_with(&paths.root)
-                && m.mount_point != paths.root
-                && !m.mount_point.starts_with(&nextroot)
-                && !policy.contains(&m.mount_point)
-                && is_block(m)
-                && !plan.is_hidden_storage(m)
-        })
-        .map(|m| m.mount_point.clone())
-        .collect();
-    found.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
-    found.dedup();
-    found
-}
-
-/// Unmount the disks mounted during the session before the way back,
-/// so a filesystem the decoy mounts again is not still held, read-only, by the
-/// hidden session. A busy mount is detached instead; the soft-reboot ends its
-/// users.
-fn unmount_session_disks(paths: &Paths, plan: &Plan) -> Vec<PathBuf> {
-    let mounts = read_mountinfo().unwrap_or_default();
-    let is_block = |m: &MountEntry| disk_guard::mount_device(m).is_some();
-    session_disk_mounts(paths, plan, &mounts, &is_block)
-        .into_iter()
-        .filter(|target| {
-            rustix::mount::unmount(target, UnmountFlags::empty()).is_ok()
-                || rustix::mount::unmount(target, UnmountFlags::DETACH).is_ok()
-        })
-        .collect()
-}
-
-/// What the last step of the way back could not undo of the links in the
-/// tree at `root` (`/`, but in tests) as they are now ([`network::foresee`]):
-/// it reads the record entry took from the runtime directory. The step asks
-/// the kernel itself, over netlink, so there is no tool it could fail to
-/// find. The hidden session tells it before the switch, which the step
-/// cannot.
-pub fn way_back_foresees(root: &Path) -> network::Foreseen {
-    let below = |path: &str| root.join(path.trim_start_matches('/'));
-    let places = network::Places {
-        run: below("/run"),
-        sys_class_net: below(network::SYS_CLASS_NET),
-        proc_hostname: below(network::PROC_HOSTNAME),
-        proc_sys: below(network::PROC_SYS),
-    };
-    let record = std::fs::read(
-        below(nails_teardown::whole_root::plan::RUNTIME_DIR).join(network::RECORD_NAME),
-    )
-    .ok();
-    network::foresee(&places, record.as_deref())
-}
-
-/// Whether the way back `to` may start now: not while a program blocks
-/// shutdown ([`TargetHost::may_switch`]), and a return to the decoy not
-/// unless the guards the entry checked hold in the hidden session's PID 1,
-/// the stop guard of `blk-availability.service` and the switch's timeout
-/// guard ([`guards::check_way_back`]), so that a return that hangs until its
-/// job timeout powers off rather than going on by force without its last
-/// step. A power-off asks about neither: it goes through no soft-reboot, so
-/// nothing can force it into the decoy, and `poweroff.target` powers off by
-/// force at its own job timeout while service watchdogs are on.
-pub fn may_leave(to: LeaveTo, host: &dyn TargetHost) -> Result<()> {
-    host.may_switch()?;
-    if to == LeaveTo::Decoy {
-        guards::check_way_back(host)?;
-    }
-    Ok(())
-}
-
-/// Prepare the way back and enqueue the soft-reboot (or power off).
-pub fn leave(
-    paths: &Paths,
-    plan: &mut Plan,
-    to: LeaveTo,
-    host: &dyn TargetHost,
-) -> Result<LeaveReport> {
-    // Before anything is prepared for the switch, so a refusal leaves the
-    // session as it was.
-    may_leave(to, host)?;
-    if to == LeaveTo::Poweroff {
-        host.start_target("poweroff.target")?;
-        return Ok(LeaveReport::default());
-    }
-    super::program_label::check_way_back(plan, host)?;
-    let unmounted = unmount_session_disks(paths, plan);
-    let nextroot = paths.nextroot();
-    if let Err(e) = ret::mount_decoy_root(plan, &nextroot, &paths.run) {
-        return Err(still_unmounted(
-            NailsError::InvalidState(e.to_string()),
-            &unmounted,
-        ));
-    }
-    // Whatever the session did to the copy, it carries the label again when
-    // the way back's last step starts from it; a copy that does not leaves
-    // the backend as it is.
-    let ready =
-        super::program_label::ready_for_way_back(plan, host.selinux(), &paths.binary_copy());
-    let deferred = if ready.is_ok() {
-        ret::close_backend_deferred(plan)
-    } else {
-        Vec::new()
-    };
-    let armed = ready
-        .and_then(|()| {
-            ret::arm_leave(plan, &paths.plan()).map_err(|e| NailsError::InvalidState(e.to_string()))
-        })
-        .and_then(|()| host.start_target(tools::SOFT_REBOOT_TARGET));
-    if let Err(e) = armed {
-        nextroot::detach_tree(&nextroot);
-        plan.armed = None;
-        let _ = plan.write_atomic(&paths.plan());
-        return Err(still_unmounted(e, &unmounted));
-    }
-    Ok(LeaveReport {
-        deferred,
-        unmounted,
-    })
-}
-
-/// `error` of a way back that did not start, which leaves the session running
-/// without the disks it unmounted for the switch (`unmounted`): it says so,
-/// naming them.
-fn still_unmounted(error: NailsError, unmounted: &[PathBuf]) -> NailsError {
-    if unmounted.is_empty() {
-        return error;
-    }
-    let list: Vec<String> = unmounted.iter().map(|p| p.display().to_string()).collect();
-    let note = format!(
-        "The session goes on, but the disks it had mounted stay unmounted ({}): mount them \
-         again to use them",
-        list.join(", ")
-    );
-    match error {
-        NailsError::InvalidState(why) => NailsError::InvalidState(format!("{why}. {note}")),
-        other => NailsError::InvalidState(format!("{other}. {note}")),
-    }
+/// End the hidden session ([`session_end`]): refuse while a program blocks
+/// shutdown, then enqueue the power-off with PID 1.
+pub fn leave(host: &dyn TargetHost) -> Result<()> {
+    may_leave(host)?;
+    host.start_target(session_end().target())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_teardown::mountinfo::parse_mountinfo;
     use nails_teardown::whole_root::plan::{PolicyMount, PolicyMountKind};
 
     fn plan() -> Plan {
@@ -502,28 +315,6 @@ mod tests {
         assert_eq!(calls(dir.path()), ["--no-wall soft-reboot"]);
     }
 
-    /// A way back that did not start says that the disks it unmounted for the
-    /// switch stay unmounted.
-    #[test]
-    fn a_way_back_that_did_not_start_names_the_disks_it_unmounted() {
-        let error = NailsError::InvalidState("the soft-reboot was not started: no".into());
-        assert_eq!(
-            still_unmounted(error, &[]).to_string(),
-            "Invalid state: the soft-reboot was not started: no"
-        );
-        let error = NailsError::InvalidState("the soft-reboot was not started: no".into());
-        let named = still_unmounted(
-            error,
-            &[PathBuf::from("/mnt/usb/inner"), PathBuf::from("/mnt/usb")],
-        );
-        assert_eq!(
-            named.to_string(),
-            "Invalid state: the soft-reboot was not started: no. The session goes on, but the \
-             disks it had mounted stay unmounted (/mnt/usb/inner, /mnt/usb): mount them again \
-             to use them"
-        );
-    }
-
     /// A soft-reboot logind refuses is an error that says why, and nothing is
     /// enqueued in its place.
     #[test]
@@ -541,10 +332,10 @@ mod tests {
         assert_eq!(calls(dir.path()), ["--no-wall soft-reboot"]);
     }
 
-    /// A program that blocks shutdown outright refuses the way back before
-    /// anything is prepared for it: no plan armed, nothing enqueued.
+    /// A program that blocks shutdown outright refuses the session's end
+    /// before anything is enqueued.
     #[test]
-    fn a_program_that_blocks_shutdown_refuses_the_way_back_before_anything_is_prepared() {
+    fn a_program_that_blocks_shutdown_refuses_the_session_s_end() {
         let dir = tempfile::tempdir().unwrap();
         let mut host = real_host(dir.path(), "exit 0");
         let busctl = dir.path().join("busctl");
@@ -555,21 +346,13 @@ mod tests {
             0o755,
         );
         host.busctl = Some(busctl);
-        let paths = Paths {
-            root: dir.path().join("root"),
-            run: dir.path().join("run"),
-        };
-        let mut session = plan();
-        for to in [LeaveTo::Decoy, LeaveTo::Poweroff] {
-            let error = leave(&paths, &mut session, to, &host).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("apt blocks shutdown (Installing, PID 4242)"),
-                "{error}"
-            );
-        }
-        assert!(session.armed.is_none());
+        let error = leave(&host).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("apt blocks shutdown (Installing, PID 4242)"),
+            "{error}"
+        );
         assert!(calls(dir.path()).is_empty());
     }
 
@@ -658,189 +441,23 @@ mod tests {
         }
     }
 
-    /// A return goes on only when the guards it checks hold in the hidden
-    /// session's PID 1. Otherwise it is refused before anything is prepared,
-    /// with the plan unarmed, nothing mounted and nothing enqueued, and the
-    /// refusal names the power-off and the emergency. A power-off asks about
-    /// neither and goes on.
+    /// Deactivation ends the session in a power-off and prepares nothing
+    /// else: it asks none of the guards a switch needs, as no switch comes,
+    /// and enqueues `poweroff.target` alone.
     #[test]
-    fn a_return_is_refused_before_anything_is_prepared_unless_the_guards_hold() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = Paths {
-            root: dir.path().join("root"),
-            run: dir.path().join("run"),
-        };
-        assert!(may_leave(LeaveTo::Decoy, &Guarded::default()).is_ok());
-        for (property, value, check) in [
-            (
-                "ExecStop",
-                "{ path=/usr/sbin/blkdeactivate ; argv[]=/usr/sbin/blkdeactivate -u ; }",
-                "stop-guard",
-            ),
-            ("JobTimeoutAction", "soft-reboot-force", "switch-timeout"),
-            ("ServiceWatchdogs", "no", "switch-timeout"),
-            ("JobTimeoutUSec", "infinity", "switch-timeout"),
+    fn deactivation_ends_the_session_in_a_power_off_whatever_the_guards_say() {
+        for unheld in [
+            None,
+            Some(("JobTimeoutAction", "soft-reboot-force")),
+            Some(("ServiceWatchdogs", "no")),
         ] {
             let host = Guarded {
-                unheld: Some((property, value)),
+                unheld,
                 ..Guarded::default()
             };
-            let mut session = plan();
-            let error = leave(&paths, &mut session, LeaveTo::Decoy, &host).unwrap_err();
-            let NailsError::PreFlightCheckFailed(failures) = &error else {
-                panic!("{property}: {error}")
-            };
-            assert_eq!(failures.len(), 1, "{property}: {error}");
-            assert_eq!(failures[0].0, check, "{property}: {error}");
-            assert!(failures[0].1.contains(value), "{property}: {error}");
-            let fix = failures[0].2.as_deref().unwrap_or_default();
-            assert!(
-                fix.contains(" deactivate --poweroff`, which powers off, or with `sudo ")
-                    && fix.ends_with(" emergency`"),
-                "{property}: {fix}"
-            );
-            assert!(session.armed.is_none(), "{property}");
-            assert!(host.started.borrow().is_empty(), "{property}");
-            assert!(!paths.nextroot().exists(), "{property}");
-            leave(&paths, &mut session, LeaveTo::Poweroff, &host).unwrap();
-            assert_eq!(*host.started.borrow(), ["poweroff.target"], "{property}");
+            assert!(may_leave(&host).is_ok());
+            leave(&host).unwrap();
+            assert_eq!(*host.started.borrow(), ["poweroff.target"], "{unheld:?}");
         }
-    }
-
-    #[test]
-    fn only_the_disks_the_session_mounted_itself_are_unmounted_deepest_first() {
-        let mounts = parse_mountinfo(
-            "1 0 0:30 / / rw - overlay overlay rw\n\
-             2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
-             3 2 8:3 / /mnt/data/root/decoy/home rw - ext4 /dev/vda3 rw\n\
-             4 1 8:1 / /boot ro - vfat /dev/vda1 ro\n\
-             5 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n\
-             6 1 8:33 / /mnt/usb rw - vfat /dev/sdc1 rw\n\
-             7 6 8:34 / /mnt/usb/inner ro - ext4 /dev/sdc2 ro\n\
-             8 1 0:40 / /tmp rw - tmpfs tmpfs rw\n",
-        );
-        let is_block = |m: &MountEntry| m.source.starts_with("/dev/");
-        assert_eq!(
-            session_disk_mounts(&Paths::system(), &plan(), &mounts, &is_block),
-            vec![PathBuf::from("/mnt/usb/inner"), PathBuf::from("/mnt/usb")]
-        );
-    }
-
-    #[test]
-    fn a_disk_mounted_below_the_hidden_root_is_unmounted_and_the_session_s_own_are_not() {
-        // The hidden volume at /mnt, recorded by its device and bound there
-        // as entry records it, the decoy's /home carried below it, a folder
-        // of the volume bound below it, a USB disk at /mnt/usb and another
-        // disk over the root itself.
-        let mut session = plan();
-        session.hidden_root = PathBuf::from("/mnt");
-        session.hidden_dev = Some("253:0".to_string());
-        session.policy_mounts.push(PolicyMount {
-            target: PathBuf::from("/mnt"),
-            kind: PolicyMountKind::HiddenVolume,
-        });
-        session.carried = vec![nails_teardown::whole_root::plan::CarriedMount {
-            target: PathBuf::from("/home"),
-            at: PathBuf::from("/mnt/root/decoy/home"),
-            read_only: false,
-            dev: Some("8:3".to_string()),
-            root: Some(PathBuf::from("/")),
-        }];
-        let mounts = parse_mountinfo(
-            "1 0 0:30 / / rw - overlay overlay rw\n\
-             2 1 253:0 / /mnt rw - ext4 /dev/mapper/data rw\n\
-             3 2 8:3 / /mnt/root/decoy/home ro - ext4 /dev/vda3 rw\n\
-             4 2 253:0 /photos /mnt/photos rw - ext4 /dev/mapper/data rw\n\
-             5 2 8:33 / /mnt/usb rw - vfat /dev/sdc1 rw\n\
-             6 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n\
-             7 2 8:34 / /mnt rw - ext4 /dev/sdc2 rw\n",
-        );
-        let is_block = |m: &MountEntry| m.source.starts_with("/dev/");
-        // Nothing at the root itself is unmounted, so the hidden volume never
-        // is, a disk over it neither: deactivate refuses to begin while a
-        // disk covers the root, and the operator unmounts that one first.
-        assert_eq!(
-            session_disk_mounts(&Paths::system(), &session, &mounts, &is_block),
-            vec![PathBuf::from("/mnt/usb")]
-        );
-        // A plan written before the device was recorded leaves everything
-        // below the root mounted, as before.
-        session.hidden_dev = None;
-        assert!(session_disk_mounts(&Paths::system(), &session, &mounts, &is_block).is_empty());
-    }
-
-    #[test]
-    fn a_test_tree_only_sees_its_own_mounts() {
-        let paths = Paths {
-            root: PathBuf::from("/scratch/decoy"),
-            run: PathBuf::from("/scratch/run"),
-        };
-        let mounts = parse_mountinfo(
-            "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n\
-             2 1 8:3 / /home rw - ext4 /dev/vda3 rw\n\
-             3 1 8:33 / /scratch/decoy/mnt rw - vfat /dev/sdc1 rw\n",
-        );
-        let is_block = |m: &MountEntry| m.source.starts_with("/dev/");
-        assert_eq!(
-            session_disk_mounts(&paths, &plan(), &mounts, &is_block),
-            vec![PathBuf::from("/scratch/decoy/mnt")]
-        );
-    }
-
-    #[test]
-    fn a_device_whose_mark_did_not_take_is_left_open() {
-        let report = LeaveReport {
-            deferred: vec![
-                ("hidden-crypt".to_string(), false),
-                ("hidden-loop".to_string(), true),
-                ("hidden-base".to_string(), false),
-            ],
-            unmounted: Vec::new(),
-        };
-        assert_eq!(report.left_open(), ["hidden-crypt", "hidden-base"]);
-        assert!(LeaveReport::default().left_open().is_empty());
-    }
-
-    /// Make `name` a link below the tree's `/sys/class/net`, as the kernel
-    /// lists it: a hardware device with a Wi-Fi interface of radio `phy`
-    /// when one is given, else virtual.
-    fn link(root: &Path, name: &str, index: u32, phy: Option<&str>) {
-        let dir = root.join("sys/class/net").join(name);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("ifindex"), format!("{index}\n")).unwrap();
-        if let Some(phy) = phy {
-            std::fs::create_dir(dir.join("device")).unwrap();
-            std::os::unix::fs::symlink(format!("../../ieee80211/{phy}"), dir.join("phy80211"))
-                .unwrap();
-        }
-    }
-
-    /// The step's record and links are read below the tree's `/run` and
-    /// `/sys`. A fallback tunnel device counts; a Wi-Fi interface the session
-    /// added on a decoy radio does not, as the step deletes it.
-    #[test]
-    fn the_way_back_foresees_from_the_record_and_the_links_in_the_tree() {
-        let root = tempfile::tempdir().unwrap();
-        let root = root.path();
-        link(root, "lo", 1, None);
-        link(root, "wlan0", 3, Some("phy0"));
-        assert_eq!(way_back_foresees(root), network::Foreseen::default());
-        let places = network::Places {
-            run: root.join("run"),
-            sys_class_net: root.join("sys/class/net"),
-            proc_hostname: root.join("proc/sys/kernel/hostname"),
-            proc_sys: root.join("proc/sys"),
-        };
-        let offline = nails_teardown::test_support::FakeNetKernel::offline();
-        let record = network::NetworkRecord::capture(&places, &offline);
-        let at = root.join("run/overlay-runtime").join(network::RECORD_NAME);
-        std::fs::create_dir_all(at.parent().unwrap()).unwrap();
-        std::fs::write(at, record.encode()).unwrap();
-        assert!(!way_back_foresees(root).powers_off());
-        link(root, "tunl0", 7, None);
-        link(root, "wlan1", 9, Some("phy0"));
-        let foreseen = way_back_foresees(root);
-        assert_eq!(foreseen.kernel_kept, ["tunl0"]);
-        assert!(foreseen.powers_off());
     }
 }

@@ -163,52 +163,18 @@ pub fn mounts_stayed(mounts: &[String]) -> String {
 pub const DEACTIVATE: &str = "Deactivate\u{2026}";
 /// The question before a deactivation.
 pub const DEACTIVATE_QUESTION: &str = "Deactivate Hidden Session?";
-/// What a deactivation does to the hidden session.
-pub const DEACTIVATE_CONSEQUENCE: &str = "Every program closes. Unsaved work is lost.";
-/// The ending that powers off: the safer one, and the suggested button.
+/// What a deactivation does: every hidden session ends in a power-off.
+pub const DEACTIVATE_CONSEQUENCE: &str = "This ends the hidden session and powers off the \
+     computer now. Every program closes. Unsaved work is lost.";
+/// The button that confirms a deactivation.
 pub const POWER_OFF: &str = "Power Off";
-/// The ending that returns to the decoy.
-pub const RETURN_TO_DECOY: &str = "Return to Decoy";
 
-/// What a deactivation whose return powers off instead says first, as the
-/// CLI's question says it: whatever happens before the way back runs when
-/// `certain`, otherwise unless that changes.
-#[must_use]
-pub fn powers_off_instead(certain: bool) -> String {
-    let unless = if certain {
-        ""
-    } else {
-        "unless that changes before it runs, "
-    };
-    format!(
-        "This ends the hidden session now, and {unless}the machine powers off instead of \
-         returning to the decoy."
-    )
-}
 /// While a hidden session ends.
 pub const ENDING: &str = "Ending the Hidden Session";
-/// A deactivation that returns to the decoy.
-pub const RETURNING: &str = "Returning to the decoy's login screen in a few seconds.";
 
-/// A return to the decoy that powers off instead, as the CLI says it once it
-/// has asked: `what` the way back cannot undo, as the start of a sentence,
-/// whatever happens before it runs when `certain`, otherwise unless that
-/// changes.
-#[must_use]
-pub fn returning_powers_off(what: &str, certain: bool) -> String {
-    let unless = if certain {
-        ""
-    } else {
-        "unless that changes before it runs, "
-    };
-    format!(
-        "{what}: {unless}the machine powers off in a few seconds instead of returning to the \
-         decoy."
-    )
-}
 /// A deactivation that powers off.
 pub const POWERING_OFF: &str = "Powering off in a few seconds.";
-/// A device of the hidden volume the way back could not mark to close,
+/// A device of the hidden volume the deactivation could not mark to close,
 /// without its name.
 pub const BACKEND_LEFT_OPEN: &str = "A device of the hidden volume could not be marked to close: \
      its key stays in memory until the computer is off.";
@@ -222,9 +188,6 @@ pub const EMERGENCY: &str = "Emergency";
 #[must_use]
 pub fn emergency_how(finish: Finish) -> &'static str {
     match finish {
-        Finish::Return => {
-            "Press and hold to end the hidden session now and return to the decoy's login screen"
-        }
         Finish::PowerOff => "Press and hold to end the hidden session now and power off",
         Finish::Reboot => "Press and hold to end the hidden session now and restart the computer",
     }
@@ -240,22 +203,14 @@ pub const EMERGENCY_NOT_READ: &str = "until the window has read its setting";
 /// The settings could not be read, or the setting holds a value the window
 /// does not know.
 pub const EMERGENCY_UNREADABLE: &str = "as the window could not read its setting";
-/// A return in a hidden session without a way back.
-pub const EMERGENCY_NO_WAY_BACK: &str = "as this session has no way back to the decoy";
 /// The window has no helper to ask for anything else.
 pub const EMERGENCY_NO_HELPER: &str = "as the window cannot reach NAILS";
 /// The helper runs a request of Verify or of Rehearsal, and reads the
 /// emergency only after it.
 pub const EMERGENCY_BUSY: &str = "while NAILS is busy";
-/// A deactivation powers the computer off: a return or a restart would be
-/// the weaker ending.
+/// A deactivation powers the computer off: a restart would be the weaker
+/// ending.
 pub const EMERGENCY_POWERING_OFF: &str = "as the computer is powering off";
-/// A deactivation returns to the decoy: the helper reads a restart only
-/// after it, and the window's own ending is a power-off.
-pub const EMERGENCY_RETURNING: &str = "while the session returns to the decoy";
-/// The plan of a return says the way back powers off instead, whatever
-/// happens before it runs.
-pub const EMERGENCY_WAY_BACK_POWERS_OFF: &str = "as this session's way back powers off instead";
 /// While the pointer holds it and the bar fills.
 pub const EMERGENCY_KEEP_HOLDING: &str = "Keep Holding";
 /// Once the bar is full.
@@ -266,8 +221,6 @@ pub const EMERGENCY_HOLD_HINT: &str = "Hold to End the Session";
 pub const EMERGENCY_AGAIN: &str = "Press Enter Again to End Now";
 /// Once the emergency fired to power off.
 pub const EMERGENCY_NOW: &str = "The computer powers off now.";
-/// Once the emergency fired to return to the decoy.
-pub const EMERGENCY_RETURNING_NOW: &str = "Returning to the decoy's login screen now.";
 /// Once the emergency fired to restart.
 pub const EMERGENCY_RESTARTING_NOW: &str = "The computer restarts now.";
 /// The way out that needs nothing of the window or of NAILS.
@@ -277,12 +230,6 @@ pub const POWER_BUTTON_IF_STILL_ON: &str =
 /// then the power button.
 pub const POWER_OFF_IF_STILL_HERE: &str = "If the hidden session does not end, the computer \
      powers off instead. If it stays on, hold the power button until it is off.";
-/// What follows a return that does not come: the way back's own power-off
-/// where it cannot undo what the session changed in the network, the
-/// window's where the session does not end, then the power button.
-pub const POWER_OFF_IF_NOT_BACK: &str = "If the way back cannot undo what the session changed \
-     in the network, or the hidden session does not end, the computer powers off instead. If it \
-     stays on, hold the power button until it is off.";
 
 /// A hidden session runs.
 pub const HIDDEN_SESSION: &str = "Hidden Session";
@@ -292,8 +239,8 @@ pub const ACTIVATING: &str = "Activating";
 pub const INTERRUPTED: &str = "Activation Interrupted";
 /// The record cannot be read.
 pub const RECORD_UNREADABLE: &str = "Record Cannot Be Read";
-/// A hidden session has no way back.
-pub const NO_WAY_BACK: &str = "No Way Back";
+/// A hidden session runs without its session plan.
+pub const NO_SESSION_PLAN: &str = "Session Plan Missing";
 
 /// The decoy, with nothing to report.
 pub const DECOY_IDLE: &str = "Decoy. No hidden session is active.";
@@ -316,8 +263,6 @@ pub const DECOY_ENDED_ABNORMALLY: &str = "Decoy. The last hidden session did not
 pub const DECOY_VOLUME_COVERED: &str = "Decoy. A disk is mounted over the hidden volume.";
 /// An activation under way.
 pub const ACTIVATING_WHERE: &str = "The hidden session opens at the next login screen.";
-/// What the power button does when nothing else can help.
-pub const HOLD_POWER_BUTTON: &str = "Hold the power button until the computer is off.";
 
 /// A refusal changed nothing.
 pub const NOTHING_CHANGED: &str = "Nothing was changed.";
@@ -366,26 +311,31 @@ pub fn hidden_active(uptime_seconds: Option<i64>) -> String {
     }
 }
 
-/// A hidden session without a way back.
-pub const HIDDEN_NO_WAY_BACK: &str = "Hidden session without a way back.";
+/// A hidden session without its session plan.
+pub const HIDDEN_WITHOUT_PLAN: &str = "Hidden session without its session plan.";
 
-/// How the engine's reason for a hidden session without a way back opens:
-/// with what [`HIDDEN_NO_WAY_BACK`] says already.
-const ENGINE_NO_WAY_BACK: &str = "in the hidden root without a way back:";
+/// How the engine's reason for a hidden session without its session plan
+/// opens: with what [`HIDDEN_WITHOUT_PLAN`] says already.
+const ENGINE_WITHOUT_PLAN: &str = "in the hidden root without its session plan:";
 
-/// The engine's `reason` for a hidden session without a way back, as the
-/// line under [`HIDDEN_NO_WAY_BACK`]: why there is none, without the words
-/// that line says already.
+/// The engine's `reason` for a hidden session without its session plan, as
+/// the line under [`HIDDEN_WITHOUT_PLAN`]: why there is none, without the
+/// words that line says already.
 #[must_use]
-pub fn no_way_back_reason(reason: &str) -> String {
+pub fn without_plan_reason(reason: &str) -> String {
     let reason = reason.trim();
     sentence(
         reason
-            .strip_prefix(ENGINE_NO_WAY_BACK)
+            .strip_prefix(ENGINE_WITHOUT_PLAN)
             .unwrap_or(reason)
             .trim_start(),
     )
 }
+
+/// How a hidden session without its session plan ends: Deactivate powers
+/// off, which needs no plan.
+pub const END_WITH_POWER_OFF: &str = "You can still end the session. Choose Deactivate, then \
+     Power Off.";
 
 /// A hidden session with a disk mounted over its volume at `root`.
 #[must_use]

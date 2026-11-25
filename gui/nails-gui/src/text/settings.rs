@@ -46,9 +46,9 @@ pub const UNEXPECTED_SETTINGS: &str = "The answer about the change is not one th
 pub const UNEXPECTED_READ: &str =
     "The settings came in an answer this window does not expect, so it cannot show them.";
 /// The two keys a hidden session's record names, during a session.
-pub const SESSION_KEY_FIXED: &str = "This cannot change while a hidden session runs: to end the \
-     session and return to the decoy, NAILS needs the session's record where the session saved \
-     it. Change it on another computer, with the hidden volume mounted there.";
+pub const SESSION_KEY_FIXED: &str = "This cannot change while a hidden session runs. NAILS \
+     needs the session's record where the session saved it. Change it on another computer, with \
+     the hidden volume mounted there.";
 /// The row of a value now.
 pub const FACT_NOW: &str = "Now";
 /// The row of where it comes from.
@@ -151,7 +151,7 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
         "backend_watch.auto_emergency" => (
             "End the session when the drive fails",
             "On, a failure of the drive that lasts longer than the failure delay ends the session \
-             and returns to the decoy. Off, you get an alert and end it yourself.",
+             and powers off the computer. Off, you get an alert and end it yourself.",
         ),
         "backend_watch.debounce_secs" => (
             "Failure delay",
@@ -220,12 +220,6 @@ pub fn choice(key: &str, value: &str) -> (&'static str, &'static str) {
         ("sleep_policy.mode", "teardown") => (
             "Power off",
             "The computer powers off when it is about to sleep.",
-        ),
-        ("window.emergency", "return") => (
-            "Return to the decoy",
-            "The decoy's login screen comes back, as after Return to Decoy, and memory stays \
-             powered. Where the way back cannot undo what the session changed in the network, \
-             the computer powers off instead.",
         ),
         ("window.emergency", "poweroff") => (
             "Power off",

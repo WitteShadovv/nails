@@ -46,15 +46,16 @@
           ]
         },
         "requested": {
+          "description": "What was asked for: `default` (no flag: in the hidden session the power-off every hidden session ends with, on the decoy side the cleanup alone), `reboot` or `poweroff`.",
           "enum": [
-            "return_to_decoy",
+            "default",
             "reboot",
             "poweroff"
           ]
         },
         "dispatched": {
+          "description": "What was enqueued: a hidden session never goes back to the decoy, so in the hidden session this is `poweroff` or `reboot`.",
           "enum": [
-            "return_to_decoy",
             "reboot",
             "poweroff",
             null

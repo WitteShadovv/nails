@@ -319,8 +319,10 @@ pub struct Entry {
     pub warnings: Vec<String>,
 }
 
-/// The decoy root device from the mount table: what the way back mounts at
-/// `/run/nextroot`. Refuses a root that cannot be mounted again by device: a
+/// The decoy root device from the mount table, which the plan records. It
+/// served the way back, which is gone; the refusals stay until a removal of
+/// their own proves the entry on such roots. Refuses a root that cannot be
+/// mounted again by device: a
 /// RAM root (an impermanent decoy), an overlay, a ZFS dataset, or a bind of a
 /// subdirectory other than a btrfs subvolume.
 pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
@@ -329,8 +331,8 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     let refuse = |why: String| Err(NailsError::InvalidState(why));
     if !mount.source.starts_with("/dev/") {
         return refuse(format!(
-            "the decoy root ({} on {}) is not on a block device; a RAM or overlay root cannot be \
-             mounted again for the way back",
+            "the decoy root ({} on {}) is not on a block device, and NAILS supports a decoy root \
+             only on one",
             mount.fstype,
             mount.source.display()
         ));

@@ -13,7 +13,7 @@ Pre-flight checks:
   [PASS] platform: NixOS 26.11
   [PASS] systemd-version: systemd 261 supports soft-reboot
   [PASS] soft-reboot-units: soft-reboot.target and systemd-soft-reboot.service are installed
-  [PASS] decoy-root: the decoy root (ext4 on /dev/vda) can be mounted again for the way back
+  [PASS] decoy-root: the decoy root (ext4 on /dev/vda) is on a block device
   [PASS] fstab-policy: decoy filesystems in the hidden root: /nix/.ro-store: overlaid; /nix/store: overlaid; /tmp/shared: overlaid; /tmp/xchg: overlaid
   [PASS] mount-namespace: Running in PID 1's mount namespace with shared root propagation
   [PASS] host-tools: All 5 required host tools are present

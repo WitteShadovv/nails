@@ -1,14 +1,24 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The whole-root session: one overlay over the decoy root, entered and left
-//! with `systemctl soft-reboot` through `/run/nextroot`.
+//! The whole-root session: one overlay over the decoy root, entered with
+//! `systemctl soft-reboot` through `/run/nextroot`. A session never goes back
+//! to the decoy's kernel: it ends in a power-off ([`session_end`]).
+//!
+//! The modules that served the way back (a second soft-reboot into the
+//! decoy, which is gone) stay until a removal of their own, and nothing
+//! reaches them any more: [`run_scrub`]'s scrub, [`run_records`]'s restore,
+//! [`network`]'s restore, [`boot_records`], [`boot_writer`], [`fresh_pids`],
+//! [`zram`], [`ret`]'s return, [`decoy_mounts`]'s making again, and
+//! [`tail`]'s drain.
 //!
 //! - [`plan`]: the session plan on the decoy's `/run`, carried across every
 //!   soft-reboot;
 //! - [`nextroot`]: the mount primitives and the pre-switch init check;
-//! - [`transition`]: the last userspace step before each switch (the arm
-//!   check, the `current-system` repoint, the `/run` scrub, the kmsg cursor);
+//! - [`transition`]: the last userspace step before the switch into the
+//!   hidden root (the arm check, the `current-system` repoint, the masks), and
+//!   the power-off where it cannot do its work;
+//! - [`session_end`]: how every hidden session ends, in one place;
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
@@ -76,6 +86,7 @@ pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
 pub mod selinux;
+pub mod session_end;
 pub mod skips;
 pub mod switch_refusal;
 pub mod tail;

@@ -13,7 +13,7 @@
 //!    process command line, a `recently-used.xbel` entry and a desktop
 //!    notification. Every file write is checked first to land in an overlay
 //!    upper or on the hidden volume; nothing is written to the decoy.
-//! 2. **Deactivate** as usual: it soft-reboots back to the decoy.
+//! 2. **Deactivate** as usual: it powers off. Start the decoy again.
 //! 3. **Scan** ([`scan`]), back on the decoy or in a later session, or offline
 //!    against an image: the raw, decrypted decoy block devices are read
 //!    `O_RDONLY | O_NOATIME`, never mounted, and searched for the token in

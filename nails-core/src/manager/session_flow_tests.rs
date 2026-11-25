@@ -512,7 +512,7 @@ fn leaving_is_refused_outside_the_hidden_session() {
     let target = FakeTarget::default();
 
     let error = m
-        .leave_session_on(&machine(dir.path(), DECOY_TABLE), LeaveTo::Decoy, &target)
+        .leave_session_on(&machine(dir.path(), DECOY_TABLE), &target)
         .unwrap_err();
 
     assert!(
@@ -522,8 +522,10 @@ fn leaving_is_refused_outside_the_hidden_session() {
     assert!(target.started.borrow().is_empty());
 }
 
+/// A hidden root whose plan cannot be read ends the same way: the power-off
+/// needs no plan.
 #[test]
-fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
+fn leaving_a_hidden_root_without_its_plan_powers_off() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -532,26 +534,17 @@ fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
     let mut m = manager(&hidden);
     let target = FakeTarget::default();
 
-    let error = m
-        .leave_session_on(&machine(dir.path(), &table), LeaveTo::Decoy, &target)
-        .unwrap_err();
+    m.leave_session_on(&machine(dir.path(), &table), &target)
+        .unwrap();
 
-    let message = error.to_string();
-    assert!(message.contains("the way back is unknown"), "{message}");
-    assert!(message.contains("no session plan in /run"), "{message}");
-    assert!(message.contains("Power the machine off"), "{message}");
-    assert!(target.started.borrow().is_empty());
-    assert!(
-        recorded(&hidden).state.is_active(),
-        "the record is untouched"
-    );
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
 
-/// A way back whose soft-reboot was not started (a program blocks shutdown,
-/// logind refused it or dropped it) leaves the session running: its record
-/// stays active, its way back undone.
+/// A power-off PID 1 did not take leaves the session running: its record
+/// stays active.
 #[test]
-fn a_way_back_that_did_not_start_keeps_the_session_record() {
+fn a_power_off_that_did_not_start_keeps_the_session_record() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -565,20 +558,17 @@ fn a_way_back_that_did_not_start_keeps_the_session_record() {
         ..FakeTarget::default()
     };
 
-    let error = m
-        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
-        .unwrap_err();
+    let error = m.leave_session_on(&machine, &target).unwrap_err();
 
     assert!(error.to_string().contains("refused"), "{error}");
     assert_eq!(*target.started.borrow(), ["poweroff.target"]);
     assert!(recorded(&hidden).state.is_active(), "the session goes on");
 }
 
-/// A return whose guards do not hold in the hidden session's PID 1 is
-/// refused before anything is prepared or enqueued, and the session goes on
-/// with its record; a power-off asks about no guard and goes on.
+/// Deactivation asks about no guard of a switch: none comes. A session whose
+/// guards do not hold ends in a power-off all the same.
 #[test]
-fn a_return_without_its_guards_keeps_the_session_and_a_power_off_goes_on() {
+fn a_session_without_its_switch_guards_still_powers_off() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -592,34 +582,22 @@ fn a_return_without_its_guards_keeps_the_session_and_a_power_off_goes_on() {
         ..FakeTarget::default()
     };
 
-    let error = m
-        .leave_session_on(&machine, LeaveTo::Decoy, &target)
-        .unwrap_err();
+    m.leave_session_on(&machine, &target).unwrap();
 
-    assert!(
-        matches!(&error, NailsError::PreFlightCheckFailed(failures)
-            if failures[0].1.contains("ServiceWatchdogs=no")),
-        "{error}"
-    );
-    assert!(target.started.borrow().is_empty());
-    assert!(recorded(&hidden).state.is_active(), "the session goes on");
-    assert!(
-        Plan::load(&machine.paths.plan()).unwrap().armed.is_none(),
-        "the way back is not armed"
-    );
-    assert!(!machine.paths.nextroot().exists(), "nothing is mounted");
-
-    m.leave_session_on(&machine, LeaveTo::Poweroff, &target)
-        .unwrap();
     assert_eq!(*target.started.borrow(), ["poweroff.target"]);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+    assert!(
+        Plan::load(&machine.paths.plan()).unwrap().armed.is_none(),
+        "nothing is armed"
+    );
+    assert!(!machine.paths.nextroot().exists(), "nothing is mounted");
 }
 
-/// A way back whose record cannot be written starts nothing, and the
+/// A power-off whose record cannot be written starts nothing, and the
 /// session goes on: an invalid state that says so and why, which the front
 /// end answers with the emergency.
 #[test]
-fn a_way_back_whose_record_fails_does_not_start() {
+fn a_power_off_whose_record_fails_does_not_start() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -632,13 +610,11 @@ fn a_way_back_whose_record_fails_does_not_start() {
     // The state gate refuses the scratch directory, which is no mount point.
     let _gate = crate::hidden_root::state_attach_probe::enforce();
 
-    let error = m
-        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
-        .unwrap_err();
+    let error = m.leave_session_on(&machine, &target).unwrap_err();
 
     assert!(
         matches!(&error, NailsError::InvalidState(why) if why.starts_with(
-            "the way back did not start: refusing to write state outside the mounted hidden \
+            "the power-off did not start: refusing to write state outside the mounted hidden \
              volume: "
         )),
         "{error}"
@@ -651,7 +627,7 @@ fn a_way_back_whose_record_fails_does_not_start() {
 /// disk gives one, starts nothing either: an invalid state that names the
 /// error, which the front end answers with the emergency.
 #[test]
-fn a_way_back_whose_record_cannot_be_written_does_not_start() {
+fn a_power_off_whose_record_cannot_be_written_does_not_start() {
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -666,13 +642,11 @@ fn a_way_back_whose_record_cannot_be_written_does_not_start() {
     let mut m = manager(&hidden);
     let target = FakeTarget::default();
 
-    let error = m
-        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
-        .unwrap_err();
+    let error = m.leave_session_on(&machine, &target).unwrap_err();
 
     assert!(
         matches!(&error, NailsError::InvalidState(why) if why.starts_with(
-            "the way back did not start: the state could not be recorded ("
+            "the power-off did not start: the state could not be recorded ("
         )),
         "{error}"
     );
@@ -691,11 +665,8 @@ fn powering_off_from_the_hidden_root_records_inactive_first() {
     let mut m = manager(&hidden);
     let target = FakeTarget::default();
 
-    let report = m
-        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
-        .unwrap();
+    m.leave_session_on(&machine, &target).unwrap();
 
-    assert_eq!(report, crate::session::LeaveReport::default());
     assert_eq!(*target.started.borrow(), ["poweroff.target"]);
     assert_eq!(recorded(&hidden).state, SystemState::Inactive);
 }
@@ -718,8 +689,8 @@ fn refusal_left(dir: &Path) -> bool {
 
 #[test]
 fn leaving_forgets_the_last_refused_switch() {
-    // A way back refused before kept its reason in the runtime directory; the
-    // new one supersedes it, wherever a reason was kept.
+    // A switch refused before kept its reason; the session's end supersedes
+    // it, wherever a reason was kept.
     let dir = tempfile::tempdir().unwrap();
     let hidden = dir.path().join("hidden");
     std::fs::create_dir_all(&hidden).unwrap();
@@ -731,7 +702,7 @@ fn leaving_forgets_the_last_refused_switch() {
     refused_in(&hidden);
     let mut m = manager(&hidden);
 
-    m.leave_session_on(&machine, LeaveTo::Poweroff, &FakeTarget::default())
+    m.leave_session_on(&machine, &FakeTarget::default())
         .unwrap();
 
     assert!(!refusal_left(&machine.paths.runtime()));

@@ -8,8 +8,8 @@ Usage: nails [OPTIONS] <COMMAND>
 
 Commands:
   activate     Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
-  deactivate   Soft-reboot from the hidden session back to the plain decoy
-  emergency    Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+  deactivate   End the hidden session and power off
+  emergency    Kill the hidden session at once and power off (or reboot)
   recover      Remove what an interrupted activation left in /run
   status       Show the session, security posture and hidden volume
   verify       Check for known NAILS traces (evidence, not proof)

@@ -614,7 +614,6 @@ pub(crate) fn same_boot_question() -> Question {
         destructive: true,
         prompt: Some(text::type_to_continue(text::ALLOW_WORD)),
         locked: true,
-        alternative: None,
     }
 }
 

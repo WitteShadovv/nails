@@ -90,7 +90,7 @@ fn whatever_the_recogniser_accepts_clap_parses_as_the_same_emergency() {
                 } else if args.reboot {
                     Finish::Reboot
                 } else {
-                    Finish::Return
+                    Finish::Default
                 };
                 assert_eq!(finish, early.finish, "finish differs for {words:?}");
                 assert_eq!(cli.global.json, early.json, "--json differs for {words:?}");

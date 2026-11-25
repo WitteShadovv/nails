@@ -15,10 +15,9 @@
 //!    client writes its requests under, so it never lands inside one of
 //!    them, and without waiting on a pipe the helper does not read. The
 //!    request asks for the [`Finish`] the emergency fired with, the ending
-//!    `nails emergency` takes from its flags: the way back to the decoy's
-//!    login screen, a power-off or a full reboot. The helper takes it as
-//!    soon as it reads its next request and runs the engine's hot path,
-//!    which ends the session so.
+//!    `nails emergency` takes from its flags: a power-off or a full reboot.
+//!    The helper takes it as soon as it reads its next request and runs the
+//!    engine's hot path, which ends the session so.
 //! 2. **A power-off of the operator's own**, whatever the finish, where the
 //!    helper did not end the session in time: there is no helper, the
 //!    request could not be written within the [grace](Fallback::grace) of
@@ -29,18 +28,10 @@
 //!    still running then means the helper did not act on the request within
 //!    the grace: it was still on another request (a verify or a scan can
 //!    take minutes, and the window fires with the power-off then), or the
-//!    steps of a return or a restart before the kill took longer. A
-//!    power-off fired [at once](Firing::POWER_OFF_AT_ONCE) does not wait the
-//!    grace: the window fires so while a deactivation returns to the decoy.
-//!    The helper reads the request only once it has answered that
-//!    deactivation's apply, and the switch the apply starts ends the window
-//!    and the helper with the session, so a window that waited would not be
-//!    there to ask, and the request might never be read. A return that
-//!    logind holds already may still come first. It is `systemctl
+//!    steps of a restart before the kill took longer. It is `systemctl
 //!    poweroff`, which asks logind as a desktop's own Power Off does: the
 //!    orderly power-off, slower than the engine's, but it needs neither root
-//!    nor the helper. Without the helper the window has no way back to the
-//!    decoy, so this is always a power-off.
+//!    nor the helper.
 //! 3. **The power button**, which the page names from the start: holding it
 //!    switches the computer off, as on any computer.
 //!
@@ -53,9 +44,9 @@
 //!
 //! The emergency's request carries the id [`EMERGENCY_ID`], which no request
 //! of the client's has: the client skips the frames that answer it. The
-//! finish, and whether the power-off follows at once, are the window's to
-//! know when the person completes the gesture ([`Emergency::fire`]): the
-//! thread learns them with the signal, and asks nothing of anyone for them.
+//! finish is the window's to know when the person completes the gesture
+//! ([`Emergency::fire`]): the thread learns it with the signal, and asks
+//! nothing of anyone for it.
 
 use std::ffi::OsString;
 use std::os::unix::net::UnixStream;
@@ -91,11 +82,9 @@ const SYSTEMCTL: [&str; 3] = [
 ];
 
 /// How the engine's emergency ends the hidden session, as the request asks
-/// for it: the ending of `nails emergency`, `--poweroff` and `--reboot`.
+/// for it: the ending of `nails emergency --poweroff` and `--reboot`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Finish {
-    /// The way back to the decoy's login screen.
-    Return,
     /// A power-off: RAM decays, the strongest ending, and the only one the
     /// window has of its own.
     PowerOff,
@@ -113,93 +102,25 @@ impl Finish {
         }
     }
 
-    /// The finish as the emergency's flag holds it: never 0, which is the
-    /// flag before it fired.
+    /// The finish as the emergency's flag holds it: never [`NOT_FIRED`].
     fn code(self) -> u8 {
         match self {
-            Finish::Return => 1,
-            Finish::PowerOff => 2,
-            Finish::Reboot => 3,
+            Finish::PowerOff => 1,
+            Finish::Reboot => 2,
         }
     }
 
     /// The finish of a flag that fired; a power-off for any other value.
     fn of_code(code: u8) -> Self {
         match code {
-            1 => Finish::Return,
-            3 => Finish::Reboot,
+            2 => Finish::Reboot,
             _ => Finish::PowerOff,
-        }
-    }
-}
-
-/// How the emergency fired: the [`Finish`] its request asks for, and whether
-/// the window's own power-off follows the request at once rather than a
-/// grace after it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Firing {
-    finish: Finish,
-    at_once: bool,
-}
-
-impl Firing {
-    /// A power-off the window also asks for itself, right after the request:
-    /// where the helper reads the request only after a switch that ends the
-    /// window with the session, a window that waited the grace would not be
-    /// there to ask.
-    pub const POWER_OFF_AT_ONCE: Self = Self {
-        finish: Finish::PowerOff,
-        at_once: true,
-    };
-
-    /// The finish the request asks for.
-    #[must_use]
-    pub fn finish(self) -> Finish {
-        self.finish
-    }
-
-    /// Whether the window's own power-off follows the request at once.
-    #[must_use]
-    pub fn at_once(self) -> bool {
-        self.at_once
-    }
-
-    /// The firing as the emergency's flag holds it: never [`NOT_FIRED`].
-    fn code(self) -> u8 {
-        if self.at_once {
-            AT_ONCE
-        } else {
-            self.finish.code()
-        }
-    }
-
-    /// The firing of a flag that fired.
-    fn of_code(code: u8) -> Self {
-        if code == AT_ONCE {
-            Self::POWER_OFF_AT_ONCE
-        } else {
-            Finish::of_code(code).into()
-        }
-    }
-}
-
-impl From<Finish> for Firing {
-    /// `finish`, with the window's own power-off a grace after the request.
-    fn from(finish: Finish) -> Self {
-        Self {
-            finish,
-            at_once: false,
         }
     }
 }
 
 /// The emergency's flag before it fired.
 const NOT_FIRED: u8 = 0;
-
-/// The emergency's flag once it fired [to power off at
-/// once](Firing::POWER_OFF_AT_ONCE); the [finishes](Finish::code) have the
-/// values below it.
-const AT_ONCE: u8 = 4;
 
 /// What the emergency did, as its thread reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -267,8 +188,8 @@ enum Line {
 }
 
 struct Shared {
-    /// [`NOT_FIRED`], then the [code](Firing::code) of how it fired: one
-    /// flag, so the finish is set with the firing and never after.
+    /// [`NOT_FIRED`], then the [code](Finish::code) of the finish it fired
+    /// with: one flag, so the finish is set with the firing and never after.
     fired: AtomicU8,
     line: Mutex<Line>,
     changed: Condvar,
@@ -279,11 +200,11 @@ impl Shared {
         self.line.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// How it fired, once it fired.
-    fn fired(&self) -> Option<Firing> {
+    /// The finish it fired with, once it fired.
+    fn fired(&self) -> Option<Finish> {
         match self.fired.load(Ordering::SeqCst) {
             NOT_FIRED => None,
-            code => Some(Firing::of_code(code)),
+            code => Some(Finish::of_code(code)),
         }
     }
 }
@@ -314,16 +235,14 @@ impl Emergency {
         Self { shared, thread }
     }
 
-    /// Fire the emergency to end the session as `firing` says: with a
-    /// [`Finish`], or with a power-off [at once](Firing::POWER_OFF_AT_ONCE).
-    /// True the one time it fires, and only that firing counts. It only sets
-    /// a flag and wakes the emergency's thread, so it never waits.
-    pub fn fire(&self, firing: impl Into<Firing>) -> bool {
-        let firing = firing.into();
+    /// Fire the emergency to end the session with `finish`. True the one
+    /// time it fires, and only that firing counts. It only sets a flag and
+    /// wakes the emergency's thread, so it never waits.
+    pub fn fire(&self, finish: Finish) -> bool {
         if self
             .shared
             .fired
-            .compare_exchange(NOT_FIRED, firing.code(), Ordering::SeqCst, Ordering::SeqCst)
+            .compare_exchange(NOT_FIRED, finish.code(), Ordering::SeqCst, Ordering::SeqCst)
             .is_err()
         {
             return false;
@@ -357,25 +276,22 @@ impl Emergency {
 }
 
 fn run(shared: &Shared, fallback: &Fallback, report: &dyn Fn(Outcome)) {
-    let firing = loop {
+    let finish = loop {
         match shared.fired() {
-            Some(firing) => break firing,
+            Some(finish) => break finish,
             None => std::thread::park(),
         }
     };
     let deadline = Instant::now() + fallback.grace;
-    if ask_helper(shared, deadline, firing.finish) {
+    if ask_helper(shared, deadline, finish) {
         report(Outcome::HelperAsked);
-        // The engine's emergency enqueues the way back or the power action
-        // and ends every program of the session, this window included,
-        // whether the launcher started it or it started its helper through
-        // pkexec. A window still here a grace after the request means the
-        // helper did not run it within the grace: the window asks for the
-        // power-off itself. Fired at once, it asks now: the switch the helper
-        // finishes first would end this window within the grace.
-        if !firing.at_once {
-            std::thread::sleep(fallback.grace);
-        }
+        // The engine's emergency enqueues the power action and ends every
+        // program of the session, this window included, whether the
+        // launcher started it or it started its helper through pkexec. A
+        // window still here a grace after the request means the helper did
+        // not run it within the grace: the window asks for the power-off
+        // itself.
+        std::thread::sleep(fallback.grace);
     }
     report(if power_off(fallback) {
         Outcome::PowerOffAsked

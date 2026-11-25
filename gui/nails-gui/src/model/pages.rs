@@ -175,17 +175,20 @@ impl Model {
         let mut facts = self.volume_fact(status);
         facts.push(self.emergency_fact());
         match status.attention {
-            Some(Attention::NoWayBack) => Page {
-                heading: text::NO_WAY_BACK.to_string(),
-                description: text::HIDDEN_NO_WAY_BACK.to_string(),
+            // Deactivate powers off, which needs no plan. No tool runs
+            // here.
+            Some(Attention::WithoutPlan) => Page {
+                heading: text::NO_SESSION_PLAN.to_string(),
+                description: text::HIDDEN_WITHOUT_PLAN.to_string(),
                 note: status
                     .reason
                     .as_deref()
-                    .map(text::no_way_back_reason)
+                    .map(text::without_plan_reason)
                     .unwrap_or_default(),
                 urgent: true,
                 facts: vec![self.emergency_fact()],
-                fix: text::HOLD_POWER_BUTTON.to_string(),
+                fix: text::END_WITH_POWER_OFF.to_string(),
+                action: Some(text::DEACTIVATE),
                 ..Page::default()
             },
             Some(Attention::VolumeCovered) => Page {
@@ -210,9 +213,8 @@ impl Model {
                 },
                 facts,
                 fix: fix.unwrap_or_default(),
-                // Without the hidden volume the way back has nothing to
-                // return with: the session ends with an emergency. Nor can a
-                // tool reach it.
+                // Without the hidden volume the session ends with an
+                // emergency, and no tool can reach it.
                 action: (attention != Some(Attention::VolumeLost)).then_some(text::DEACTIVATE),
                 links: if attention == Some(Attention::VolumeLost) {
                     Vec::new()
@@ -401,7 +403,6 @@ fn report_rows(report: &Readiness, allowed: &BTreeSet<Risk>) -> Vec<CheckView> {
 pub(super) fn ending_now_page(finish: Finish) -> Page {
     let (description, fix) = match finish {
         Finish::PowerOff => (text::EMERGENCY_NOW, text::POWER_BUTTON_IF_STILL_ON),
-        Finish::Return => (text::EMERGENCY_RETURNING_NOW, text::POWER_OFF_IF_NOT_BACK),
         Finish::Reboot => (
             text::EMERGENCY_RESTARTING_NOW,
             text::POWER_OFF_IF_STILL_HERE,

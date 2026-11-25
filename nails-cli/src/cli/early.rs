@@ -67,7 +67,8 @@ static EARLY_REPORT: Mutex<Option<HotReport>> = Mutex::new(None);
 pub struct EarlyArgs {
     /// `--countdown <SECS>`.
     pub countdown: Option<u64>,
-    /// How the emergency ends (`--poweroff`, `--reboot`, or the way back).
+    /// How the emergency ends (`--poweroff`, `--reboot`, or the default, which
+    /// powers a hidden session off).
     pub finish: Finish,
     /// `--json`: a countdown cancelled with Ctrl+C prints the cancel envelope.
     pub json: bool,
@@ -79,7 +80,7 @@ impl Default for EarlyArgs {
     fn default() -> Self {
         Self {
             countdown: None,
-            finish: Finish::Return,
+            finish: Finish::Default,
             json: false,
             ascii: false,
         }
@@ -477,10 +478,13 @@ fn guard_device(node: &std::path::Path) {
 pub fn dispatch() -> bool {
     let argv: Vec<OsString> = std::env::args_os().collect();
     if is_transition(&argv) && nix::unistd::geteuid().is_root() {
-        let _ = nails_teardown::whole_root::transition::run(
+        // Fail closed: an outcome that ends the session exits non-zero, which
+        // fails the service, so PID 1 powers off through its FailureAction=
+        // instead of switching (transition::dropin_text).
+        let outcome = nails_teardown::whole_root::transition::run(
             &nails_teardown::whole_root::transition::Env::system(started()),
         );
-        crate::cli::chokepoint::exit_process(0);
+        crate::cli::chokepoint::exit_process(outcome.exit_code());
     }
     if let Some(node) = guarded_device(&argv)
         && may_run()

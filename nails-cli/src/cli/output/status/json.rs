@@ -110,7 +110,7 @@ struct ReminderJson<'a> {
 }
 
 /// Where the machine is, folded from the live view: a session entering is
-/// `activating`, a hidden root (with or without a way back) is `hidden`, and
+/// `activating`, a hidden root (with or without its plan) is `hidden`, and
 /// everything else — the plain decoy and an interrupted activation seen from the
 /// decoy — is `decoy`.
 fn place_of(report: &StatusReport) -> &'static str {
@@ -123,7 +123,7 @@ fn place_of(report: &StatusReport) -> &'static str {
 
 /// The one thing that needs the operator, or `None`. What the live view says
 /// needs action now comes first, with the `reason` and `remediation` that go
-/// with it: a hidden root without a way back, then an interrupted activation.
+/// with it: a hidden root without its session plan, then an interrupted activation.
 /// Then the record being unreadable or untrusted, in every place (nothing it
 /// says can be trusted), and after it a refused switch, a session that ended
 /// without updating the record, and a disk mounted over the volume.

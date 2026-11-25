@@ -35,7 +35,7 @@ pub enum Posture {
     /// An activation is entering the hidden root right now.
     Transitioning,
     /// Something needs the operator: an interrupted entry, or a hidden root
-    /// without a way back.
+    /// without its session plan.
     Degraded,
     /// The state file cannot be read, so the record is unknown.
     Unknown,
@@ -354,7 +354,9 @@ pub fn posture_of(
         ),
         SessionView::HiddenWithoutPlan(why) => (
             Posture::Degraded,
-            Some(format!("in the hidden root without a way back: {why}")),
+            Some(format!(
+                "in the hidden root without its session plan: {why}"
+            )),
             Some("Power off to end the session".to_string()),
         ),
         SessionView::Decoy if state_unknown => {

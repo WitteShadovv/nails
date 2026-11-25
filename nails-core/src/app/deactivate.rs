@@ -1,44 +1,35 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `deactivate` operation: end the hidden session and return to the decoy
-//! (or power off).
+//! The `deactivate` operation: end the hidden session.
 //!
-//! The way back prepares the decoy root at `/run/nextroot`, marks the hidden
-//! backend for closing, records the state inactive and enqueues the soft-reboot.
-//! A front end confirms with the operator and shows a person the result before
-//! the switch (the soft-reboot stops its terminal), so the operation is split:
-//! [`prepare`] builds the manager and refuses, before anything is asked, outside
-//! a hidden session and in a hidden root whose session plan cannot be read,
-//! where the way back is unknown; [`ReadyDeactivation::foresee`] tells what
-//! the return is bound to leave, which makes it power off instead, and
-//! [`ReadyDeactivation::warnings`] names what the return will not put back,
-//! for the front end to show before it asks;
-//! [`ReadyDeactivation::lock`] takes the exclusive state lock once the front
-//! end has confirmed; and [`LockedDeactivation::leave`], on the only handle
-//! that leaves, commits the way back once the front end has, for a person,
-//! printed. A machine-readable result waits for the commit, so it reports the
-//! outcome.
+//! A hidden session never goes back to the decoy's kernel: deactivation ends
+//! it the way every hidden session ends, with a power-off
+//! ([`session_end`](nails_teardown::whole_root::session_end::session_end)). It
+//! records the state inactive and enqueues `poweroff.target`. A front end
+//! confirms with the operator and shows a person the result before the
+//! power-off stops its terminal, so the operation is split: [`prepare`]
+//! builds the manager and refuses, before anything is asked, outside a hidden
+//! session; [`ReadyDeactivation::lock`] takes the exclusive state lock once
+//! the front end has confirmed; and [`LockedDeactivation::leave`], on the only
+//! handle that leaves, commits the power-off once the front end has, for a
+//! person, printed. A machine-readable result waits for the commit, so it
+//! reports the outcome.
 
-use std::path::{Path, PathBuf};
-
-use nails_teardown::whole_root::fresh_pids;
-use nails_teardown::whole_root::network::Foreseen;
-use nails_teardown::whole_root::plan::Plan;
+use std::path::Path;
 
 use super::lock::LockError;
 use crate::hidden_root::Allow;
-use crate::session::{LeaveReport, LeaveTo, RealTargetHost, SessionView};
+use crate::session::{RealTargetHost, SessionView};
 use crate::{NailsError, NailsManager, RealFilesystem, RuntimeEnv, StateLock};
 
-/// What ends the session where `deactivate` takes no lock or records no way
-/// back before the switch, as a person reads it: the emergency, which needs
+/// What ends the session where `deactivate` takes no lock or records nothing
+/// before the power-off, as a person reads it: the emergency, which needs
 /// neither, so no failure there strands the session.
 pub fn emergency_needs_no_lock() -> String {
     use crate::next_step::{NextStep, sudo_line};
     format!(
-        "`{}` ends the session without the lock: it returns to the decoy where it can prepare \
-         the return and powers off where it cannot",
+        "`{}` ends the session without the lock: it powers off at once",
         sudo_line(NextStep::Emergency)
     )
 }
@@ -47,11 +38,6 @@ pub fn emergency_needs_no_lock() -> String {
 pub enum Prepared {
     /// Not in a hidden session, so there is nothing to deactivate.
     NotHidden,
-    /// In the hidden root, but its session plan in `/run` cannot be read, so
-    /// the way back is unknown: refused before anything is asked or done.
-    /// Carries why the plan cannot be read. Only a power-off ends such a
-    /// session: a plain emergency finds no plan either, and does nothing.
-    WayBackUnknown(String),
     /// In a hidden session: ready to confirm, lock and leave.
     Ready(Box<ReadyDeactivation>),
 }
@@ -62,25 +48,17 @@ pub enum Prepared {
 ///
 /// ```compile_fail
 /// fn leave_unlocked(ready: nails_core::app::deactivate::ReadyDeactivation) {
-///     let _ = ready.leave(nails_core::session::LeaveTo::Decoy);
+///     let _ = ready.leave();
 /// }
 /// ```
 ///
 /// ```
 /// fn leave_locked(locked: &mut nails_core::app::deactivate::LockedDeactivation) {
-///     let _ = locked.leave(nails_core::session::LeaveTo::Decoy);
+///     let _ = locked.leave();
 /// }
 /// ```
 pub struct ReadyDeactivation {
     manager: NailsManager<RealFilesystem>,
-    /// The session plan the probe read, which the way back returns with.
-    plan: Box<Plan>,
-    /// The root the way back's last step runs in (`/`, but in tests), where
-    /// [`warnings`](Self::warnings) looks for the tools that step runs.
-    root: PathBuf,
-    /// Where that step sets the process-number counter, which
-    /// [`warnings`](Self::warnings) checks it can.
-    pid_places: fresh_pids::Places,
 }
 
 impl ReadyDeactivation {
@@ -92,35 +70,6 @@ impl ReadyDeactivation {
     /// The state file path, beside which the state lock lies.
     fn state_path(&self) -> &Path {
         &self.manager.config().state_file_path
-    }
-
-    /// What the return to the decoy is bound to leave of the links and MAC
-    /// addresses as they are now, which makes its last step power off instead
-    /// ([`way_back_foresees`](crate::session::leave::way_back_foresees)).
-    /// Nothing for a power-off.
-    pub fn foresee(&self, to: LeaveTo) -> Foreseen {
-        if to == LeaveTo::Poweroff {
-            return Foreseen::default();
-        }
-        crate::session::leave::way_back_foresees(&self.root)
-    }
-
-    /// What the return to the decoy will not put back, as far as the hidden
-    /// session can tell before the switch, one sentence each, for the front
-    /// end to show before it asks: what it is bound to leave (`foreseen`,
-    /// from [`foresee`](Self::foresee)), which makes it power off instead; or
-    /// that it cannot number the decoy's units from where the decoy's own
-    /// boot numbered them ([`fresh_pids::way_back_can_lower`]), or finds no
-    /// getty or logind to measure where by ([`fresh_pids::counter`]). None
-    /// for a power-off, after which the decoy starts afresh.
-    pub fn warnings(&self, to: LeaveTo, foreseen: &Foreseen) -> Vec<String> {
-        let mut warnings = way_back_warnings(to, foreseen);
-        warnings.extend(pid_warning(
-            to,
-            fresh_pids::way_back_can_lower(&self.plan.pids, &self.pid_places),
-            fresh_pids::counter(&self.plan.pids, &self.root.join("proc")).is_some(),
-        ));
-        warnings
     }
 
     /// Take the exclusive state lock on the hidden volume. Hands out the only
@@ -144,20 +93,15 @@ impl ReadyDeactivation {
 
 #[cfg(any(test, feature = "test-support"))]
 impl ReadyDeactivation {
-    /// A deactivation of the hidden session `plan` describes, for tests of a
-    /// front end: its hidden volume and state file where `config` names them,
-    /// and the way back's last step running in the tree at `root` instead of
-    /// `/`, where it also sets the process-number counter. Outside tests only
-    /// [`prepare`] hands one out, and only in a hidden
-    /// root with its plan. The lock step is the real one, and the handle it
-    /// hands out leaves only from a hidden root the live probe finds.
-    pub fn for_test(config: crate::Config, plan: Plan, root: &Path) -> Self {
+    /// A deactivation with its hidden volume and state file where `config`
+    /// names them, for tests of a front end. Outside tests only [`prepare`]
+    /// hands one out, and only in a hidden root. The lock step is the real
+    /// one, and the handle it hands out leaves only from a hidden root the
+    /// live probe finds.
+    pub fn for_test(config: crate::Config) -> Self {
         let state_path = config.state_file_path.clone();
         Self {
             manager: NailsManager::new(RealFilesystem, config, state_path),
-            plan: Box::new(plan),
-            root: root.to_path_buf(),
-            pid_places: fresh_pids::Places::under(root),
         }
     }
 }
@@ -171,49 +115,37 @@ pub struct LockedDeactivation {
 }
 
 impl LockedDeactivation {
-    /// Whether the way back `to` may start now: not while a program blocks
-    /// shutdown, or while logind does not answer whether one does, and a
-    /// return to the decoy not unless the hidden session's PID 1 holds the
-    /// guards the entry checked, the stop guard of `blk-availability.service`
-    /// and the switch's timeout guard
-    /// ([`may_leave`](crate::session::leave::may_leave)), nor where the plan
-    /// records a label for the RAM copy of the binary and the loaded policy
-    /// would not start the way back's last step from it in the unconfined
-    /// service domain
-    /// ([`check_way_back`](crate::session::program_label::check_way_back)). It
-    /// asks the host [`leave`](Self::leave) would leave with. `leave` asks again itself; a
-    /// caller that shows a person what comes asks first, so that a refusal
-    /// comes before it.
-    pub fn may_leave(&self, to: LeaveTo) -> Result<(), NailsError> {
+    /// The host [`leave`](Self::leave) leaves with: PID 1 and logind, asked
+    /// with the tools the session plan records, where it can be read.
+    fn host(&self) -> RealTargetHost {
         let view = self.ready.manager.session_view();
-        let host = RealTargetHost::for_plan(match &view {
+        RealTargetHost::for_plan(match &view {
             SessionView::Hidden(plan) => Some(&**plan),
             _ => None,
-        });
-        crate::session::leave::may_leave(to, &host)?;
-        if to == LeaveTo::Decoy {
-            crate::session::program_label::check_way_back(&self.ready.plan, &host)?;
-        }
-        Ok(())
+        })
     }
 
-    /// Commit the way back: enqueue the soft-reboot (or the power-off). A
-    /// caller that shows a person the result prints it first, because this
-    /// stops the terminal; a machine-readable result waits for the outcome.
-    pub fn leave(&mut self, to: LeaveTo) -> Result<LeaveReport, NailsError> {
-        let manager = &mut self.ready.manager;
-        let view = manager.session_view();
-        let host = RealTargetHost::for_plan(match &view {
-            SessionView::Hidden(plan) => Some(&**plan),
-            _ => None,
-        });
-        manager.leave_session(to, &host)
+    /// Whether the session may end now: not while a program blocks
+    /// shutdown, or while logind does not answer whether one does
+    /// ([`may_leave`](crate::session::leave::may_leave)). [`leave`](Self::leave)
+    /// asks again itself; a caller that shows a person what comes asks first,
+    /// so that a refusal comes before it.
+    pub fn may_leave(&self) -> Result<(), NailsError> {
+        crate::session::leave::may_leave(&self.host())
+    }
+
+    /// Commit the session's end: enqueue the power-off. A caller that shows
+    /// a person the result prints it first, because this stops the terminal;
+    /// a machine-readable result waits for the outcome.
+    pub fn leave(&mut self) -> Result<(), NailsError> {
+        let host = self.host();
+        self.ready.manager.leave_session(&host)
     }
 }
 
 /// Prepare a deactivation: load the configuration (never refusing, since a
-/// broken config must not block the way back), build the manager and check that
-/// a hidden session with a way back is running.
+/// broken config must not block the end of the session), build the manager
+/// and check that a hidden session is running.
 pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
     let config = super::config::load_config_or_defaults(config_override).into_config();
     let state_path = config.state_file_path.clone();
@@ -224,117 +156,17 @@ pub fn prepare(env: &RuntimeEnv, config_override: Option<&Path>) -> Prepared {
 }
 
 /// What a deactivation can do where the probe found the machine (`view`):
-/// only the hidden root with its plan has a way back to take.
+/// only a hidden root has a session to end, with its plan or without (the
+/// power-off needs none).
 fn prepared(manager: NailsManager<RealFilesystem>, view: SessionView) -> Prepared {
     match view {
-        SessionView::Hidden(plan) => Prepared::Ready(Box::new(ReadyDeactivation {
-            manager,
-            plan,
-            root: PathBuf::from("/"),
-            pid_places: fresh_pids::Places::system(),
-        })),
-        SessionView::HiddenWithoutPlan(why) => Prepared::WayBackUnknown(why),
+        SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => {
+            Prepared::Ready(Box::new(ReadyDeactivation { manager }))
+        }
         SessionView::Entering(_) | SessionView::Interrupted { .. } | SessionView::Decoy => {
             Prepared::NotHidden
         }
     }
-}
-
-/// Why the way back is bound to power off instead of returning, for a person
-/// to read before the switch ([`power_off_reason`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PowerOffReason {
-    /// What the way back cannot undo, as the start of a sentence: "The way
-    /// back cannot delete tunl0, which the kernel keeps".
-    pub what: String,
-    /// Whether it powers off whatever happens before it runs: a link the
-    /// kernel keeps never goes, where the session's own stop may still take
-    /// another link down or set an address back.
-    pub certain: bool,
-}
-
-impl PowerOffReason {
-    /// "unless that changes before it runs, " where the power-off is not
-    /// [`certain`](Self::certain), for the clause before the power-off.
-    pub fn unless(&self) -> &'static str {
-        if self.certain {
-            ""
-        } else {
-            "unless that changes before it runs, "
-        }
-    }
-}
-
-/// Why the way back is bound to power off, from what it is bound to leave
-/// (`foreseen`); `None` when nothing there makes it.
-pub fn power_off_reason(foreseen: &Foreseen) -> Option<PowerOffReason> {
-    if foreseen.kernel_kept.is_empty() {
-        return None;
-    }
-    Some(PowerOffReason {
-        what: format!(
-            "The way back cannot delete {}, which the kernel keeps",
-            joined(&foreseen.kernel_kept)
-        ),
-        certain: true,
-    })
-}
-
-/// `names` in a sentence: `a`, `a and b`, or `a, b and c`.
-fn joined(names: &[String]) -> String {
-    match names.split_last() {
-        None => String::new(),
-        Some((last, [])) => last.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-    }
-}
-
-/// The warnings for leaving `to`: why the way back is bound to power off
-/// (`foreseen`).
-fn way_back_warnings(to: LeaveTo, foreseen: &Foreseen) -> Vec<String> {
-    use crate::next_step::{NextStep, sudo_line};
-    if to == LeaveTo::Poweroff {
-        return Vec::new();
-    }
-    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
-    power_off_reason(foreseen)
-        .map(|reason| {
-            format!(
-                "{}, so {}the machine powers off instead of returning to the decoy. `{poweroff}` \
-                 powers off at once.",
-                reason.what,
-                reason.unless()
-            )
-        })
-        .into_iter()
-        .collect()
-}
-
-/// The warning for leaving `to` when the last step of the way back cannot
-/// set the process-number counter back (`lowers` false), or has no getty or
-/// logind to measure by (`measured` false) and can only set it to just below
-/// the lowest number the decoy's own userspace held at entry.
-fn pid_warning(to: LeaveTo, lowers: bool, measured: bool) -> Option<String> {
-    use crate::next_step::{NextStep, sudo_line};
-    if to == LeaveTo::Poweroff || (lowers && measured) {
-        return None;
-    }
-    let poweroff = sudo_line(NextStep::DeactivatePoweroff);
-    Some(if lowers {
-        format!(
-            "The return finds no getty or logind to measure the decoy's process numbers by, so \
-             it numbers the decoy's processes from just below the lowest number its own \
-             userspace held when the session began, and where the decoy keeps classic wtmp, its \
-             getty and login records can carry process numbers that a fresh boot would not give \
-             them. `{poweroff}` leaves none of them."
-        )
-    } else {
-        format!(
-            "The return cannot number the decoy's processes from where its own boot numbered \
-             them, so where the decoy keeps classic wtmp, its getty and login records carry \
-             process numbers that continue from this boot. `{poweroff}` leaves none of them."
-        )
-    })
 }
 
 #[cfg(test)]
@@ -355,18 +187,12 @@ mod tests {
         NailsManager::new(RealFilesystem, config, state_path)
     }
 
-    /// A [`ReadyDeactivation`] whose hidden volume, state file and root of the
-    /// way back's last step are under `dir`. Its handle still leaves from what
-    /// the live probe sees of the machine, so the test that leaves with it
-    /// gives it a `/run` of its own.
+    /// A [`ReadyDeactivation`] whose hidden volume and state file are under
+    /// `dir`. Its handle still leaves from what the live probe sees of the
+    /// machine, so the test that leaves with it gives it a `/run` of its own.
     fn ready_at(dir: &Path) -> ReadyDeactivation {
-        let mut plan = plan();
-        plan.pids = nails_teardown::test_support::stage_pid_measure(dir);
         ReadyDeactivation {
             manager: manager_at(dir),
-            plan,
-            root: dir.to_path_buf(),
-            pid_places: fresh_pids::Places::under(dir),
         }
     }
 
@@ -385,19 +211,6 @@ mod tests {
         Box::new(Plan::from_json(&json.to_string()).expect("a minimal plan"))
     }
 
-    /// Nothing the way back is bound to leave.
-    fn none() -> Foreseen {
-        Foreseen::default()
-    }
-
-    /// A way back bound to leave the link the kernel keeps once a session
-    /// loads `ipip`.
-    fn kept() -> Foreseen {
-        Foreseen {
-            kernel_kept: vec!["tunl0".to_string()],
-        }
-    }
-
     /// The locked handle of `ready`, taking the lock beside its state file
     /// without the attach gate (the scratch directory is no mount point).
     fn locked(ready: ReadyDeactivation) -> LockedDeactivation {
@@ -406,13 +219,13 @@ mod tests {
             .unwrap_or_else(|error| panic!("the lock step refused: {error:?}"))
     }
 
-    /// `leave` commits the real way back, from what the live probe sees. On
-    /// the plain decoy it must surface the refusal rather than quietly return
-    /// an empty success report. The test runs in a PID, user and mount
-    /// namespace of its own with a fresh `/run`: the probe finds no session
-    /// plan there, whatever the host runs, and neither `systemctl` nor
-    /// `busctl` finds the host's service manager or logind, whose sockets are
-    /// in the host's `/run`.
+    /// `leave` commits the real power-off, from what the live probe sees. On
+    /// the plain decoy it must surface the refusal rather than quietly
+    /// report a success. The test runs in a PID, user and mount namespace of
+    /// its own with a fresh `/run`: the probe finds no hidden root there,
+    /// whatever the host runs, and neither `systemctl` nor `busctl` finds the
+    /// host's service manager or logind, whose sockets are in the host's
+    /// `/run`.
     #[test]
     fn leaving_outside_a_hidden_session_refuses_instead_of_reporting_success() {
         let _ = crate::test_support::Rerun::new(crate::test_path!(
@@ -429,9 +242,7 @@ mod tests {
             )
             .expect("a fresh /run");
             let dir = tempfile::tempdir().unwrap();
-            let err = locked(ready_at(dir.path()))
-                .leave(LeaveTo::Decoy)
-                .unwrap_err();
+            let err = locked(ready_at(dir.path())).leave().unwrap_err();
             assert!(
                 matches!(&err, NailsError::InvalidState(msg) if msg.contains("not in a hidden session")),
                 "expected a refusal, got {err:?}"
@@ -439,157 +250,58 @@ mod tests {
         });
     }
 
-    /// The locked handle asks the host it would leave with, and only about a
-    /// return: a return whose switch would not power off at its job timeout
-    /// is refused, and a power-off goes on. The test runs in a PID, user and
-    /// mount namespace of its own with a fresh `/run`, as the one above: the
-    /// probe finds no session plan, so the host takes `systemctl` and
-    /// `busctl` from the system directories, the first of which is below
-    /// `/run`. Stand-ins there answer for a logind that lists no inhibitor and
-    /// a PID 1 that holds the guards, but for service watchdogs, which a file
-    /// in that `/run` turns off and on. They only print: nothing is started.
+    /// The locked handle asks logind whether a program blocks shutdown, and
+    /// nothing about the guards a switch needs: none comes. The namespaces
+    /// are those of the test above; stand-ins below its `/run` answer for a
+    /// logind that lists an inhibitor or none, as a file there says, and a
+    /// PID 1 whose service watchdogs are off. They only print: nothing is
+    /// started.
     #[test]
-    fn the_locked_handle_asks_pid_1_about_the_guards_of_a_return_only() {
-        let _ = crate::test_support::Rerun::new(crate::test_path!(
-            the_locked_handle_asks_pid_1_about_the_guards_of_a_return_only
-        ))
-        .in_pid_ns()
-        .run(|| {
-            nix::mount::mount(
-                Some("tmpfs"),
-                "/run",
-                Some("tmpfs"),
-                nix::mount::MsFlags::empty(),
-                Some("mode=0755"),
-            )
-            .expect("a fresh /run");
-            let bin = Path::new("/run/current-system/sw/bin");
-            std::fs::create_dir_all(bin).unwrap();
-            let watchdogs = Path::new("/run/watchdogs");
-            crate::test_support::write_executable(
-                &bin.join("busctl"),
-                "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[]]}'\n",
-                0o755,
-            );
-            crate::test_support::write_executable(
-                &bin.join("systemctl"),
-                format!(
-                    "#!/bin/sh\ncase \"$*\" in\n\
-                     'show --property=JobTimeoutAction --value soft-reboot.target') \
-                     echo poweroff-force ;;\n\
-                     'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
-                     'show --property=ServiceWatchdogs --value') cat {} ;;\n\
-                     esac\nexit 0\n",
-                    watchdogs.display()
-                ),
-                0o755,
-            );
-            std::fs::write(watchdogs, "no\n").unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let locked = locked(ready_at(dir.path()));
+    fn the_locked_handle_asks_logind_only() {
+        let _ =
+            crate::test_support::Rerun::new(crate::test_path!(the_locked_handle_asks_logind_only))
+                .in_pid_ns()
+                .run(|| {
+                    nix::mount::mount(
+                        Some("tmpfs"),
+                        "/run",
+                        Some("tmpfs"),
+                        nix::mount::MsFlags::empty(),
+                        Some("mode=0755"),
+                    )
+                    .expect("a fresh /run");
+                    let bin = Path::new("/run/current-system/sw/bin");
+                    std::fs::create_dir_all(bin).unwrap();
+                    let inhibitors = Path::new("/run/inhibitors");
+                    crate::test_support::write_executable(
+                        &bin.join("busctl"),
+                        format!(
+                            "#!/bin/sh\nIFS= read -r line < {}\necho \"$line\"\n",
+                            inhibitors.display()
+                        ),
+                        0o755,
+                    );
+                    crate::test_support::write_executable(
+                        &bin.join("systemctl"),
+                        "#!/bin/sh\ncase \"$*\" in\n\
+                 'show --property=ServiceWatchdogs --value') echo no ;;\n\
+                 esac\nexit 0\n",
+                        0o755,
+                    );
+                    std::fs::write(inhibitors, "{\"type\":\"a(ssssuu)\",\"data\":[[]]}\n").unwrap();
+                    let dir = tempfile::tempdir().unwrap();
+                    let locked = locked(ready_at(dir.path()));
+                    locked.may_leave().unwrap();
 
-            let error = locked.may_leave(LeaveTo::Decoy).unwrap_err();
-            let NailsError::PreFlightCheckFailed(failures) = &error else {
-                panic!("expected the guards' refusal, got {error:?}")
-            };
-            assert_eq!(failures[0].0, "switch-timeout", "{error}");
-            assert!(failures[0].1.contains("ServiceWatchdogs=no"), "{error}");
-            locked.may_leave(LeaveTo::Poweroff).unwrap();
-
-            std::fs::write(watchdogs, "yes\n").unwrap();
-            locked.may_leave(LeaveTo::Decoy).unwrap();
-        });
-    }
-
-    /// Where the plan records a label for the RAM copy of the binary, the
-    /// locked handle also asks the hidden session's PID 1 how it starts
-    /// `systemd-soft-reboot.service`, and refuses a return whose start has an
-    /// `SELinuxContext=` of its own; a power-off, and a plan without a label,
-    /// ask nothing about it. The namespaces and the stand-ins are those of the
-    /// test above; this `systemctl` also notes each question about the
-    /// context, and answers it from a file in that `/run` with shell builtins
-    /// alone.
-    #[test]
-    fn the_locked_handle_asks_pid_1_about_the_switch_s_context_where_the_copy_is_labelled() {
-        let _ = crate::test_support::Rerun::new(crate::test_path!(
-            the_locked_handle_asks_pid_1_about_the_switch_s_context_where_the_copy_is_labelled
-        ))
-        .in_pid_ns()
-        .run(|| {
-            nix::mount::mount(
-                Some("tmpfs"),
-                "/run",
-                Some("tmpfs"),
-                nix::mount::MsFlags::empty(),
-                Some("mode=0755"),
-            )
-            .expect("a fresh /run");
-            let bin = Path::new("/run/current-system/sw/bin");
-            std::fs::create_dir_all(bin).unwrap();
-            let context = Path::new("/run/context");
-            let asked = Path::new("/run/asked");
-            crate::test_support::write_executable(
-                &bin.join("busctl"),
-                "#!/bin/sh\necho '{\"type\":\"a(ssssuu)\",\"data\":[[]]}'\n",
-                0o755,
-            );
-            crate::test_support::write_executable(
-                &bin.join("systemctl"),
-                format!(
-                    "#!/bin/sh\ncase \"$*\" in\n\
-                     'show --property=JobTimeoutAction --value soft-reboot.target') \
-                     echo poweroff-force ;;\n\
-                     'show --property=JobTimeoutUSec --value soft-reboot.target') echo 30min ;;\n\
-                     'show --property=ServiceWatchdogs --value') echo yes ;;\n\
-                     'show --property=SELinuxContext --value systemd-soft-reboot.service') \
-                     echo x >> {} ; IFS= read -r line < {} ; echo \"$line\" ;;\n\
-                     esac\nexit 0\n",
-                    asked.display(),
-                    context.display()
-                ),
-                0o755,
-            );
-            std::fs::write(context, "system_u:system_r:init_t:s0\n").unwrap();
-            let dir = tempfile::tempdir().unwrap();
-            let mut ready = ready_at(dir.path());
-            ready.plan.program_label =
-                Some(nails_teardown::whole_root::program_label::PROGRAM_LABEL.to_string());
-            let handle = locked(ready);
-            let times_asked = || {
-                std::fs::read_to_string(asked)
-                    .map(|text| text.lines().count())
-                    .unwrap_or(0)
-            };
-
-            handle.may_leave(LeaveTo::Poweroff).unwrap();
-            assert_eq!(times_asked(), 0, "a power-off asks nothing about it");
-            let error = handle.may_leave(LeaveTo::Decoy).unwrap_err();
-            let NailsError::PreFlightCheckFailed(failures) = &error else {
-                panic!("expected the program label's refusal, got {error:?}")
-            };
-            assert_eq!(failures[0].0, "program-label", "{error}");
-            assert!(
-                failures[0]
-                    .1
-                    .contains("SELinuxContext=system_u:system_r:init_t:s0"),
-                "{error}"
-            );
-            assert_eq!(times_asked(), 1);
-
-            std::fs::write(context, "\n").unwrap();
-            handle.may_leave(LeaveTo::Decoy).unwrap();
-            assert_eq!(times_asked(), 2);
-            drop(handle);
-
-            let unlabelled = locked(ready_at(dir.path()));
-            std::fs::write(context, "system_u:system_r:init_t:s0\n").unwrap();
-            unlabelled.may_leave(LeaveTo::Decoy).unwrap();
-            assert_eq!(
-                times_asked(),
-                2,
-                "a plan without a label asks nothing about it"
-            );
-        });
+                    std::fs::write(
+                        inhibitors,
+                        "{\"type\":\"a(ssssuu)\",\"data\":[[[\"shutdown\",\"apt\",\"Installing\",\
+                 \"block\",0,4242]]]}\n",
+                    )
+                    .unwrap();
+                    let error = locked.may_leave().unwrap_err();
+                    assert!(error.to_string().contains("apt blocks shutdown"), "{error}");
+                });
     }
 
     /// The handle that leaves holds the state lock for as long as it lives,
@@ -610,7 +322,7 @@ mod tests {
     #[test]
     fn preparing_off_the_hidden_root_reports_not_hidden() {
         // On a machine that is not in a hidden session, prepare must refuse
-        // the way back (NotHidden), never hand back a Ready deactivation.
+        // (NotHidden), never hand back a Ready deactivation.
         let env = RuntimeEnv::default();
         assert!(
             matches!(prepare(&env, None), Prepared::NotHidden),
@@ -618,32 +330,19 @@ mod tests {
         );
     }
 
-    /// A hidden root whose plan cannot be read has no way back: it is refused
-    /// with the probe's reason before anything is asked, never handed out as
-    /// a deactivation that confirms, prints and only then fails.
+    /// A hidden root has a session to end, with its plan or without: the
+    /// power-off needs none. The decoy, an entry under way and an
+    /// interrupted one have no session to end.
     #[test]
-    fn a_hidden_root_without_its_plan_is_refused_with_the_reason() {
-        let dir = tempfile::tempdir().unwrap();
-        let why = "no session plan in /run (upper /mnt/data/root/upper)";
-        match prepared(
-            manager_at(dir.path()),
-            SessionView::HiddenWithoutPlan(why.to_string()),
-        ) {
-            Prepared::WayBackUnknown(reason) => assert_eq!(reason, why),
-            Prepared::NotHidden => panic!("refused as not hidden"),
-            Prepared::Ready(_) => panic!("handed out a deactivation without a way back"),
-        }
-    }
-
-    /// Only the hidden root with its plan is ready to leave; the decoy, an
-    /// entry under way and an interrupted one have no session to end.
-    #[test]
-    fn only_the_hidden_root_with_its_plan_is_ready_to_leave() {
+    fn only_a_hidden_root_is_ready_to_leave_with_its_plan_or_without() {
         let dir = tempfile::tempdir().unwrap();
         let ready = |view| matches!(prepared(manager_at(dir.path()), view), Prepared::Ready(_));
         let not_hidden =
             |view| matches!(prepared(manager_at(dir.path()), view), Prepared::NotHidden);
         assert!(ready(SessionView::Hidden(plan())));
+        assert!(ready(SessionView::HiddenWithoutPlan(
+            "no session plan in /run".to_string()
+        )));
         assert!(not_hidden(SessionView::Decoy));
         assert!(not_hidden(SessionView::Entering(plan())));
         assert!(not_hidden(SessionView::Interrupted {
@@ -652,114 +351,10 @@ mod tests {
         }));
     }
 
-    /// What the way back is bound to leave is announced before the switch,
-    /// as one sentence that says why the machine powers off instead of
-    /// returning; a power-off, or a return bound to leave nothing, has
-    /// nothing to announce.
     #[test]
-    fn a_way_back_bound_to_power_off_says_so() {
-        use crate::next_step::{NextStep, sudo_line};
-        let poweroff = sudo_line(NextStep::DeactivatePoweroff);
-        assert_eq!(
-            way_back_warnings(LeaveTo::Decoy, &kept()),
-            [format!(
-                "The way back cannot delete tunl0, which the kernel keeps, so the machine powers \
-                 off instead of returning to the decoy. `{poweroff}` powers off at once."
-            )]
-        );
-        assert!(way_back_warnings(LeaveTo::Decoy, &none()).is_empty());
-        assert!(way_back_warnings(LeaveTo::Poweroff, &kept()).is_empty());
-    }
-
-    /// The reason names the links the kernel keeps; it is certain, as such a
-    /// link never goes.
-    #[test]
-    fn the_reason_names_what_the_way_back_cannot_undo() {
-        assert_eq!(power_off_reason(&none()), None);
-        let reason = power_off_reason(&kept()).unwrap();
-        assert_eq!(
-            reason.what,
-            "The way back cannot delete tunl0, which the kernel keeps"
-        );
-        assert!(reason.certain);
-        assert_eq!(reason.unless(), "");
-        let both = Foreseen {
-            kernel_kept: vec!["tunl0".to_string(), "sit0".to_string()],
-        };
-        assert_eq!(
-            power_off_reason(&both).unwrap().what,
-            "The way back cannot delete tunl0 and sit0, which the kernel keeps"
-        );
-    }
-
-    /// A power-off is bound to leave nothing: the decoy starts afresh.
-    #[test]
-    fn a_power_off_foresees_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let ready = ready_at(dir.path());
-        assert_eq!(ready.foresee(LeaveTo::Poweroff), none());
-        // Without the record entry takes, a return is bound to leave nothing
-        // either: the way back then leaves the links alone.
-        assert_eq!(ready.foresee(LeaveTo::Decoy), none());
-    }
-
-    /// Put an empty file at `path` below `root`.
-    fn put(root: &Path, path: &str) {
-        let file = root.join(path);
-        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
-        std::fs::write(file, "").unwrap();
-    }
-
-    /// The return warns when its last step will not be able to number the
-    /// decoy's processes from where its own boot did: no floor in the plan, or
-    /// a counter it cannot write. Never for a power-off.
-    #[test]
-    fn the_return_warns_when_it_cannot_set_the_process_numbers_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut ready = ready_at(dir.path());
-        for tool in ["usr/bin/ip", "usr/sbin/nft"] {
-            put(dir.path(), tool);
-        }
-        assert!(ready.warnings(LeaveTo::Decoy, &none()).is_empty());
-        let warning = pid_warning(LeaveTo::Decoy, false, true).unwrap();
-        assert!(warning.contains("continue from this boot"), "{warning}");
-        let expected = vec![warning];
-        ready.plan.pids.floor = None;
-        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), expected);
-        ready.plan.pids.floor = Some(388);
-        std::fs::remove_file(dir.path().join("proc/sys/kernel/ns_last_pid")).unwrap();
-        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), expected);
-        assert!(ready.warnings(LeaveTo::Poweroff, &none()).is_empty());
-        assert_eq!(pid_warning(LeaveTo::Poweroff, false, false), None);
-        assert_eq!(pid_warning(LeaveTo::Decoy, true, true), None);
-        assert_eq!(
-            pid_warning(LeaveTo::Decoy, false, false),
-            expected.first().cloned()
-        );
-    }
-
-    /// The return warns, too, when its last step can set the counter but
-    /// finds no getty or logind that both the decoy's start and the hidden
-    /// start ran to measure where to by, so it can only set it to just below
-    /// the floor. Never for a power-off.
-    #[test]
-    fn the_return_warns_when_it_has_nothing_to_measure_the_process_numbers_by() {
-        let dir = tempfile::tempdir().unwrap();
-        let ready = ready_at(dir.path());
-        for tool in ["usr/bin/ip", "usr/sbin/nft"] {
-            put(dir.path(), tool);
-        }
-        let warning = pid_warning(LeaveTo::Decoy, true, false).unwrap();
-        assert!(warning.contains("no getty or logind"), "{warning}");
-        let expected = vec![warning];
-        // The hidden start's getty is gone.
-        std::fs::remove_dir_all(dir.path().join("proc/9150")).unwrap();
-        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), expected);
-        assert!(ready.warnings(LeaveTo::Poweroff, &none()).is_empty());
-        // The decoy had none to anchor on.
-        let mut ready = ready_at(dir.path());
-        ready.plan.pids.anchors.clear();
-        assert_eq!(ready.warnings(LeaveTo::Decoy, &none()), expected);
-        assert_eq!(pid_warning(LeaveTo::Poweroff, true, false), None);
+    fn the_emergency_hint_promises_no_return() {
+        let hint = emergency_needs_no_lock();
+        assert!(hint.contains("powers off"), "{hint}");
+        assert!(!hint.contains("return"), "{hint}");
     }
 }

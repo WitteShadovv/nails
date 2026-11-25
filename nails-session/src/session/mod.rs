@@ -7,8 +7,8 @@
 //! the upper on the hidden volume, and soft-reboots into it: every process of
 //! the hidden session starts inside the overlay, so its writes through the
 //! decoy's mounts land in the upper (a disk the session mounts itself is a
-//! residual channel of the threat model). `deactivate` soft-reboots back into
-//! the plain decoy root; `emergency` kills all of userspace first. The
+//! residual channel of the threat model). `deactivate` ends the session with
+//! a power-off; `emergency` kills all of userspace first. The
 //! mechanics shared with the panic path live in `nails_teardown::whole_root`;
 //! this module adds what needs the configuration and the host: the fstab
 //! policy, the decoy's mount and swap units outside its fstab and the hidden
@@ -42,6 +42,6 @@ pub mod window_launcher;
 pub use entry::{Entry, EntryHost, EntryInputs, RealEntryHost, decoy_root_of};
 pub use guards::GuardHost;
 pub use layout::{Layout, Paths};
-pub use leave::{LeaveReport, LeaveTo, RealTargetHost, TargetHost, leave};
+pub use leave::{RealTargetHost, TargetHost, leave};
 pub use probe::{SessionView, probe};
 pub use window_launcher::WindowLauncher;

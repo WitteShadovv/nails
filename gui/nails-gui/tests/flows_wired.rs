@@ -3,8 +3,8 @@
 
 //! The window's new flows end to end, without a display: the window on
 //! Slint's headless platform and the real worker against a fake helper.
-//! A deactivation returns to the decoy, or powers off through a plan of its
-//! own, and the helper sees exactly the requests and tokens the protocol
+//! A deactivation powers off on the plan it asks for, and the helper sees
+//! exactly the requests and tokens the protocol
 //! asks for. An activation past its point of no return leaves Logging Out
 //! when the engine says the logout will not come, and gets a way out when
 //! the logout it asked for does not come.
@@ -24,11 +24,10 @@ use serde_json::{Value, json};
 use support::{FakePowerOff, event, fixture, result};
 use wired::{Wired, helper, next_request};
 
-/// The tokens the fake helper hands out: one for the plan of a return, one
-/// for that of a power-off, one for an activation.
+/// The tokens the fake helper hands out: one for the plan of a
+/// deactivation, one for an activation.
 fn token(of: &str) -> String {
     match of {
-        "return" => "a".repeat(32),
         "poweroff" => "b".repeat(32),
         _ => "c".repeat(32),
     }
@@ -39,8 +38,9 @@ fn status(place: &str) -> Value {
         "place": place, "attention": null, "hidden_root": "/mnt/data"}})
 }
 
-/// A hidden session's helper that plans and applies a deactivation, warning
-/// before a return with `warning`.
+/// A hidden session's helper that plans and applies a deactivation, as the
+/// engine does: the plan of a power-off whatever the window asks, with
+/// `warning` in it.
 fn deactivating(
     warning: &'static str,
 ) -> (
@@ -54,30 +54,19 @@ fn deactivating(
         match &request.op {
             Op::Status => vec![result(id, 0, status("hidden"))],
             Op::ConfigShow(_) => vec![result(id, 0, fixture("config-show"))],
-            Op::DeactivatePlan(args) => {
-                let (of, warnings) = if args.poweroff {
-                    ("poweroff", json!([]))
-                } else {
-                    ("return", json!([warning]))
-                };
-                vec![result(
-                    id,
-                    0,
-                    json!({"schema_version": 2, "command": "deactivate", "ok": true, "data": {
-                        "poweroff": args.poweroff, "warnings": warnings, "token": token(of)}}),
-                )]
-            }
-            Op::DeactivateApply(Token { token: applied }) => {
-                let status = if *applied == token("poweroff") {
-                    "poweroff_requested"
-                } else {
-                    "return_requested"
-                };
+            Op::DeactivatePlan(_) => vec![result(
+                id,
+                0,
+                json!({"schema_version": 2, "command": "deactivate", "ok": true, "data": {
+                    "poweroff": true, "warnings": [warning], "powers_off_instead": null,
+                    "token": token("poweroff")}}),
+            )],
+            Op::DeactivateApply(Token { token: applied }) if *applied == token("poweroff") => {
                 vec![result(
                     id,
                     0,
                     json!({"schema_version": 2, "command": "deactivate", "ok": true,
-                        "data": {"status": status}}),
+                        "data": {"status": "poweroff_requested"}}),
                 )]
             }
             _ => vec![],
@@ -113,43 +102,18 @@ fn requests_until(
 }
 
 #[test]
-fn return_to_decoy_applies_the_plan_of_a_return_through_the_helper() {
-    let warning = "The return cannot number the decoy's processes from where its own boot \
-        numbered them.";
-    let (wired, requests, _power_off) = deactivating(warning);
+fn power_off_applies_the_plan_of_the_power_off_through_the_helper() {
+    let warning = "A program still holds /mnt/data/work: it closes with the session.";
+    let (wired, requests, power_off) = deactivating(warning);
     assert!(
         wired
             .screen
             .find_with(text::DEACTIVATE_QUESTION, AccessibleRole::Groupbox)
             .accessible_description()
             .unwrap_or_default()
-            .contains("The return cannot number the decoy's processes"),
+            .contains(warning),
         "the engine's warning, as it came"
     );
-    wired
-        .screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
-        .invoke_accessible_default_action();
-    wired.pump_until(|update| matches!(update, Update::Answered(Kind::Apply, _)));
-    assert!(wired.screen.shows(text::ENDING));
-    assert!(wired.screen.shows(text::RETURNING));
-    let ops = requests_until(&requests, |op| matches!(op, Op::DeactivateApply(_)));
-    assert_eq!(
-        ops,
-        [
-            Op::Status,
-            Op::ConfigShow(ConfigShowArgs::default()),
-            Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
-            Op::DeactivateApply(Token {
-                token: token("return")
-            }),
-        ]
-    );
-}
-
-#[test]
-fn power_off_applies_a_plan_of_its_own_and_never_the_returns() {
-    let (wired, requests, _power_off) = deactivating("A warning of the return.");
     wired
         .screen
         .find_with(text::POWER_OFF, AccessibleRole::Button)
@@ -164,13 +128,14 @@ fn power_off_applies_a_plan_of_its_own_and_never_the_returns() {
         [
             Op::Status,
             Op::ConfigShow(ConfigShowArgs::default()),
-            Op::DeactivatePlan(DeactivateArgs { poweroff: false }),
             Op::DeactivatePlan(DeactivateArgs { poweroff: true }),
             Op::DeactivateApply(Token {
                 token: token("poweroff")
             }),
         ]
     );
+    // The engine powers off: the window asks the system for nothing.
+    assert!(power_off.calls().is_empty(), "{:?}", power_off.calls());
 }
 
 /// A decoy's helper whose activation plays `apply` (given the request id)

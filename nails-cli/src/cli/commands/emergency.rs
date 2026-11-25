@@ -5,20 +5,16 @@
 //!
 //! The hot path runs in `nails-teardown` (`whole_root::emergency`), normally
 //! from `main` before the CLI is initialised (see `cli::early`). In the hidden
-//! session it prepares the way back, marks the hidden backend for closing,
-//! enqueues the soft-reboot to the plain decoy (or the power action) and kills
-//! every hidden process at once. The machine ends at the decoy's own login
-//! screen, where the operator logs in with the decoy password, or off where
-//! the way back cannot undo what it sets out to, which the report says where
-//! it can already tell; with `--poweroff` it powers off. On the decoy it
-//! removes what an interrupted activation left in `/run`.
+//! session it enqueues the power-off (or, with `--reboot`, a full reboot) and
+//! kills every hidden process at once: a hidden session never goes back to the
+//! decoy's kernel. On the decoy it removes what an interrupted activation left
+//! in `/run`.
 //!
 //! This handler only reports: it prints the result and the timed phases and
-//! logs them, best-effort, because the soft-reboot it enqueued is already
+//! logs them, best-effort, because the power action it enqueued is already
 //! stopping userspace (the terminal may be gone by now). It then records the
 //! state as inactive while the hidden volume is still reachable.
 
-use nails_core::app::deactivate::{PowerOffReason, power_off_reason};
 use nails_core::app::emergency as app;
 use nails_core::output::{Mark, Style};
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
@@ -38,7 +34,7 @@ fn requested_finish(args: &EmergencyArgs) -> Finish {
     } else if args.reboot {
         Finish::Reboot
     } else {
-        Finish::Return
+        Finish::Default
     }
 }
 
@@ -46,8 +42,8 @@ fn requested_finish(args: &EmergencyArgs) -> Finish {
 ///
 /// # Returns
 ///
-/// - [`ExitStatus::Ok`] when the way back or the power action was enqueued, or
-///   there was nothing to do
+/// - [`ExitStatus::Ok`] when the power action was enqueued, or there was
+///   nothing to do
 /// - [`ExitStatus::DegradedReboot`] when a decoy-side cleanup left mounts below
 ///   `/run/nextroot`, or only the kernel could be asked to power off
 /// - [`ExitStatus::Failed`] when nothing at all could be dispatched
@@ -76,11 +72,7 @@ pub fn execute(
     if settings.is_json() {
         print_json(&report);
     } else {
-        render_human(
-            settings,
-            &report,
-            power_off_reason(&app::foresee(&report)).as_ref(),
-        );
+        render_human(settings, &report);
     }
     crate::cli::output::flush_stdio();
     app::record_inactive(env, &report, config_override);
@@ -88,8 +80,7 @@ pub fn execute(
 }
 
 /// Run the hot path in-process (the backend watcher, the sleep guard), log
-/// its report and hand it back: without a session plan it found nothing to
-/// act on ([`HotReport::found_nothing`]), and a return then does nothing.
+/// its report and hand it back.
 pub(crate) fn run_hot_path_with(finish: Finish) -> HotReport {
     let plan = nails_teardown::whole_root::plan::Plan::load(
         &nails_teardown::whole_root::plan::default_plan_path(),
@@ -203,15 +194,9 @@ fn print_json(report: &HotReport) {
     Envelope::outcome("emergency", ok, app::data(report)).print();
 }
 
-/// What a person reads of the hot path's `report`, ending with where the
-/// machine ends: off where the way back is `bound` to power off instead of
-/// returning, else the decoy's login screen, or off when it cannot undo what
-/// it sets out to.
-fn human_lines(
-    settings: &OutputSettings,
-    report: &HotReport,
-    bound: Option<&PowerOffReason>,
-) -> Vec<String> {
+/// What a person reads of the hot path's `report`, ending, in the hidden
+/// session, with where the machine ends: off.
+fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     let style = settings.stdout_style();
     let mut out = Vec::new();
     match report.side {
@@ -226,18 +211,14 @@ fn human_lines(
             }
         }
         Side::Hidden => out.push(match report.dispatched {
-            Some(Finish::Return) => style.marked(
-                Mark::Pass,
-                "Returning to the decoy: hidden processes killed, soft-reboot under way",
-            ),
-            Some(Finish::Poweroff) => {
+            Some(Finish::Poweroff | Finish::Default) => {
                 style.marked(Mark::Pass, "Hidden processes killed, powering off")
             }
             Some(Finish::Reboot) => style.marked(Mark::Pass, "Hidden processes killed, rebooting"),
             None => style.marked(Mark::Fail, "Nothing could be enqueued"),
         }),
     }
-    if report.side != Side::Hidden && report.requested != Finish::Return {
+    if report.side != Side::Hidden && report.requested != Finish::Default {
         match report.dispatched {
             Some(finish) => out.push(format!("  Power action: {}", app::finish_name(finish))),
             None => out.push("  ! The power action could not be enqueued".to_string()),
@@ -274,35 +255,26 @@ fn human_lines(
             phases.join(", ")
         ));
     }
-    if report.side == Side::Hidden && report.dispatched == Some(Finish::Return) {
-        out.push(match bound {
-            Some(reason) => format!(
-                "  {}: {}the machine powers off instead of returning to the decoy.",
-                reason.what,
-                reason.unless()
-            ),
-            None => "  The decoy starts at its own login screen; log in there with the decoy \
-                     password (a display manager set to log an account in automatically logs it \
-                     in again, as at boot). The machine powers off instead if a link, MAC \
-                     address, rule or table the way back sets out to undo is still the session's \
-                     afterwards."
+    if report.side == Side::Hidden && report.dispatched == Some(Finish::Poweroff) {
+        out.push(
+            "  The machine powers off now. Leave it off for a few minutes before you hand it \
+             over."
                 .to_string(),
-        });
+        );
     }
     out
 }
 
-/// Print the report for a person, with why the way back is `bound` to power
-/// off, if it is. `--quiet` silences a clean run only: one that left mounts
-/// behind, or a backend device open, is still reported.
-fn render_human(settings: &OutputSettings, report: &HotReport, bound: Option<&PowerOffReason>) {
+/// Print the report for a person. `--quiet` silences a clean run only: one
+/// that left mounts behind, or a backend device open, is still reported.
+fn render_human(settings: &OutputSettings, report: &HotReport) {
     if settings.is_quiet()
         && app::exit_status(report) == ExitStatus::Ok
         && app::backend_left_open(report).is_empty()
     {
         return;
     }
-    for line in human_lines(settings, report, bound) {
+    for line in human_lines(settings, report) {
         crate::cli::output::println_tolerating_broken_pipe(&line);
     }
 }
@@ -333,9 +305,9 @@ mod tests {
 
     #[test]
     fn without_a_session_emergency_succeeds_and_says_so() {
-        let report = simulated(None, Finish::Return);
+        let report = simulated(None, Finish::Default);
         assert_eq!(app::exit_status(&report), ExitStatus::Ok);
-        let lines = human_lines(&OutputSettings::default(), &report, None);
+        let lines = human_lines(&OutputSettings::default(), &report);
         assert!(lines[0].contains("nothing to tear down"), "{lines:?}");
     }
 
@@ -343,7 +315,7 @@ mod tests {
     fn a_power_action_is_reported_in_the_human_lines() {
         let report = simulated(None, Finish::Poweroff);
         assert_eq!(report.dispatched, Some(Finish::Poweroff));
-        let lines = human_lines(&OutputSettings::default(), &report, None);
+        let lines = human_lines(&OutputSettings::default(), &report);
         assert!(
             lines
                 .iter()
@@ -353,35 +325,49 @@ mod tests {
     }
 
     /// A backend device the hot path could not mark to close is named, with
-    /// what that leaves: it stays open after the switch.
+    /// what that leaves.
     #[test]
     fn a_backend_device_left_open_is_named() {
-        let mut report = simulated(None, Finish::Return);
-        report.side = Side::Hidden;
-        report.dispatched = Some(Finish::Return);
+        let mut report = simulated(None, Finish::Default);
+        report.side = Side::Decoy;
         report.deferred = vec![
             ("hidden-crypt".to_string(), false),
             ("hidden-loop".to_string(), true),
         ];
-        let lines = human_lines(&OutputSettings::default(), &report, None);
+        let lines = human_lines(&OutputSettings::default(), &report);
         let left_open: Vec<&String> = lines
             .iter()
             .filter(|line| line.contains("could not be marked to close"))
             .collect();
+        assert_eq!(left_open.len(), 1, "{lines:?}");
+        assert!(left_open[0].contains("hidden-crypt"), "{lines:?}");
+    }
+
+    /// In the hidden session the emergency without a flag ends in a
+    /// power-off, and says so; nothing promises a return.
+    #[test]
+    fn the_hidden_session_s_default_ending_says_it_powers_off() {
+        let mut report = simulated(None, Finish::Default);
+        report.side = Side::Hidden;
+        report.dispatched = Some(Finish::Poweroff);
+        let lines = human_lines(&OutputSettings::default(), &report);
+        assert!(lines[0].contains("powering off"), "{lines:?}");
         assert_eq!(
-            left_open,
-            [
-                "  ! The hidden backend device hidden-crypt could not be marked to close: it \
-                 stays open after the switch, its key in RAM, until power-off"
-            ],
-            "{lines:?}"
+            lines.last().map(String::as_str),
+            Some(
+                "  The machine powers off now. Leave it off for a few minutes before you hand \
+                 it over."
+            )
         );
+        let text = lines.join("\n").to_lowercase();
+        assert!(!text.contains("return"), "{lines:?}");
+        assert!(!text.contains("login screen"), "{lines:?}");
     }
 
     #[test]
     fn the_requested_finish_follows_the_flags() {
         let mut args = EmergencyArgs::default();
-        assert_eq!(requested_finish(&args), Finish::Return);
+        assert_eq!(requested_finish(&args), Finish::Default);
         args.reboot = true;
         assert_eq!(requested_finish(&args), Finish::Reboot);
         args.reboot = false;

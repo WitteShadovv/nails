@@ -209,7 +209,6 @@ fn storage_question(heading: &str, refusal: &str) -> Question {
         destructive: true,
         prompt: Some(text::type_to_continue(text::ALLOW_WORD)),
         locked: true,
-        alternative: None,
     }
 }
 

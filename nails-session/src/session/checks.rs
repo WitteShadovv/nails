@@ -196,7 +196,7 @@ impl DecoyRootCheck {
 pub fn judge_decoy_root(entries: &[MountEntry], root: &Path) -> CheckResult {
     match super::entry::decoy_root_of(entries, root) {
         Ok(decoy) => CheckResult::Pass(format!(
-            "the decoy root ({} on {}) can be mounted again for the way back",
+            "the decoy root ({} on {}) is on a block device",
             decoy.fstype,
             decoy.source.display()
         )),
@@ -214,7 +214,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyRootCheck {
         "decoy-root"
     }
     fn description(&self) -> &'static str {
-        "the decoy root can be mounted again for the way back"
+        "the decoy root is on a block device"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
         Ok(self.judge((self.mount_table)()))
@@ -227,10 +227,7 @@ impl DecoyRootCheck {
     fn judge(&self, mounts: std::io::Result<Vec<MountEntry>>) -> CheckResult {
         match mounts {
             Ok(mounts) => judge_decoy_root(&mounts, &self.root),
-            Err(error) => without_mount_table(
-                "the decoy root can be mounted again for the way back",
-                &error,
-            ),
+            Err(error) => without_mount_table("the decoy root is on a block device", &error),
         }
     }
 }
@@ -252,7 +249,7 @@ pub fn judge_session(view: &SessionView) -> CheckResult {
         SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => CheckResult::fail_with(
             "the hidden session is already active".to_string(),
             format!(
-                "Run `{}` to return to the decoy.",
+                "Run `{}` to end it. It powers off.",
                 sudo_line(NextStep::Deactivate)
             ),
         ),

@@ -31,7 +31,7 @@
 //! ```compile_fail
 //! fn leave(manager: &mut nails_core::NailsManager<nails_core::RealFilesystem>) {
 //!     let target = nails_core::session::RealTargetHost::for_plan(None);
-//!     let _ = manager.leave_session(nails_core::session::LeaveTo::Decoy, &target);
+//!     let _ = manager.leave_session(&target);
 //! }
 //! ```
 //!
@@ -48,7 +48,7 @@ use crate::platform::PlatformKind;
 use crate::session::entry::{self, EntryHost, EntryInputs};
 use crate::session::labels::{self, Labels};
 use crate::session::package_drift::{self, Advisory};
-use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
+use crate::session::{Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use crate::time::Timestamp;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
@@ -599,41 +599,31 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    /// Leave the hidden root: soft-reboot back to the plain decoy (or power
-    /// off). The state file is set inactive first, while the hidden volume is
-    /// still mounted.
+    /// End the hidden session: a power-off, the way every hidden session ends
+    /// ([`session_end`](nails_teardown::whole_root::session_end::session_end)).
+    /// The state file is set inactive first, while the hidden volume is still
+    /// mounted. It needs no session plan: a hidden root whose plan cannot be
+    /// read ends the same way.
     ///
     /// Only the deactivation's locked handle calls it
     /// ([`LockedDeactivation::leave`](crate::app::deactivate::LockedDeactivation::leave)).
-    pub(crate) fn leave_session(
-        &mut self,
-        to: LeaveTo,
-        host: &dyn TargetHost,
-    ) -> Result<crate::session::LeaveReport> {
-        self.leave_session_on(&Machine::system(), to, host)
+    pub(crate) fn leave_session(&mut self, host: &dyn TargetHost) -> Result<()> {
+        self.leave_session_on(&Machine::system(), host)
     }
 
-    fn leave_session_on(
-        &mut self,
-        machine: &Machine,
-        to: LeaveTo,
-        host: &dyn TargetHost,
-    ) -> Result<crate::session::LeaveReport> {
-        let mut plan = match self.session_view_on(machine) {
-            SessionView::Hidden(plan) => *plan,
-            SessionView::HiddenWithoutPlan(why) => {
-                return Err(NailsError::InvalidState(format!(
-                    "in the hidden root, but the way back is unknown: {why}. Power the machine \
-                     off to end the session."
-                )));
-            }
+    fn leave_session_on(&mut self, machine: &Machine, host: &dyn TargetHost) -> Result<()> {
+        match self.session_view_on(machine) {
+            SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => {}
             _ => {
                 return Err(NailsError::InvalidState(
                     "not in a hidden session".to_string(),
                 ));
             }
-        };
-        // Leaving is a new switch: supersede the last one's refusal, if any.
+        }
+        // Refused before anything is recorded, so a refusal leaves the
+        // session and its record as they were.
+        crate::session::leave::may_leave(host)?;
+        // Ending is a new switch of sorts: supersede the last one's refusal.
         self.forget_refused_switch(&machine.paths);
         let before = crate::StateFile::load(&self.state_file_path).ok();
         // Nothing has started when the record fails, and the session goes
@@ -645,11 +635,11 @@ impl<F: Filesystem> NailsManager<F> {
                 other => format!("the state could not be recorded ({other})"),
             };
             return Err(NailsError::InvalidState(format!(
-                "the way back did not start: {why}"
+                "the power-off did not start: {why}"
             )));
         }
         rustix::fs::sync();
-        let left = crate::session::leave(&machine.paths, &mut plan, to, host);
+        let left = crate::session::leave(host);
         if left.is_err()
             && let Some(before) = before
         {

@@ -15,14 +15,11 @@
 mod kernel_tests {
     use nails_core::test_path;
     use nails_core::test_support::{Rerun, ScratchTmpfs, write_executable};
-    use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
+    use nails_teardown::mountinfo::{parse_overlay_opts, read_mountinfo, top_mount_at};
     use nails_teardown::whole_root::nextroot;
     use nails_teardown::whole_root::plan::{
-        Arm, DecoyRoot, Direction, PLAN_NAME, PLAN_VERSION, Plan, RootSide, SNAPSHOT_NAME, Tools,
-        UTAB_MOUNTS_NAME, UTAB_NAME,
+        Arm, DecoyRoot, Direction, PLAN_NAME, PLAN_VERSION, Plan, RootSide, Tools,
     };
-    use nails_teardown::whole_root::run_scrub::{KERNEL_SEQNUM, Snapshot};
-    use nails_teardown::whole_root::tail;
     use nails_teardown::whole_root::transition::{self, Env, Outcome};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Path, PathBuf};
@@ -141,19 +138,14 @@ mod kernel_tests {
                 run: self.run.path().to_path_buf(),
                 nextroot: self.nextroot(),
                 runtime_dir: self.run.path().join("overlay-runtime"),
-                kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
-                pid_places: None,
-                zram: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
-                mounts: read_mountinfo().unwrap(),
-                network: nails_teardown::whole_root::network::Places::system(self.run.path()),
-                network_kernel: None,
+                mounts: Some(read_mountinfo().unwrap()),
                 power_off: transition::PowerOff {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
-                tail: None,
+                detach: nails_teardown::whole_root::nextroot::detach_tree,
                 selinux: &nails_teardown::whole_root::selinux::KERNEL,
                 start: nails_teardown::whole_root::program_label::Started::by_hand(),
             }
@@ -362,249 +354,6 @@ mod kernel_tests {
                 "decoy"
             );
             assert!(!runtime.exists());
-        });
-    }
-
-    #[test]
-    fn the_way_back_detaches_mounts_the_hidden_shutdown_made_under_run() {
-        // The spike's third run: NixOS mounts a tmpfs at /run/initramfs during
-        // every shutdown. The scrub must unmount it before removing its
-        // mountpoint, and keep everything the decoy had before entering.
-        let _ = Rerun::new(test_path!(
-            the_way_back_detaches_mounts_the_hidden_shutdown_made_under_run
-        ))
-        .in_user_mount_ns()
-        .run(|| {
-            let world = World::new();
-            let run = world.run.path();
-            let runtime = run.join("overlay-runtime");
-            std::fs::write(run.join("decoy-lock"), "").unwrap();
-            std::fs::create_dir_all(run.join("mount")).unwrap();
-            std::fs::write(run.join("mount/utab"), "ID=1 decoy\n").unwrap();
-            std::fs::write(runtime.join(SNAPSHOT_NAME), Snapshot::take(run).to_text()).unwrap();
-
-            // The hidden session and its shutdown.
-            let initramfs = run.join("initramfs");
-            std::fs::create_dir_all(&initramfs).unwrap();
-            nix::mount::mount(
-                Some("tmpfs"),
-                &initramfs,
-                Some("tmpfs"),
-                nix::mount::MsFlags::empty(),
-                Some("mode=0755"),
-            )
-            .unwrap();
-            std::fs::write(initramfs.join("shutdown"), "hidden exitrd").unwrap();
-            std::fs::write(run.join("mount/utab"), "ID=1 decoy\nID=9 /hidden\n").unwrap();
-            std::fs::write(run.join("nologin"), "").unwrap();
-
-            // The decoy root at the next root, with /run bound in.
-            nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
-            nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
-            // The decoy's copy taken at entry: a line for the decoy root,
-            // which is the next root's mount now, and one whose mount the
-            // entry's switch left behind (here the scratch /run's own ID,
-            // which is not below the next root).
-            let table = read_mountinfo().unwrap();
-            let decoy_root = top_mount_at(&table, &world.nextroot()).unwrap();
-            let left_behind = top_mount_at(&table, run).unwrap();
-            let kept = format!(
-                "ID={} SRC={} TARGET=/sysroot ROOT={} OPTS=x-initrd.mount\n",
-                decoy_root.mount_id,
-                decoy_root.source.display(),
-                decoy_root.root.display()
-            );
-            std::fs::write(
-                runtime.join(UTAB_NAME),
-                format!(
-                    "{kept}ID={} SRC={} TARGET=/sysroot/run ROOT=/ OPTS=x-initrd.mount\n",
-                    left_behind.mount_id,
-                    left_behind.source.display()
-                ),
-            )
-            .unwrap();
-            let mut plan = world.plan(Direction::Leave);
-            plan.entered_at = Some(1);
-            // The entry cleared noexec on this /run; the way back sets it again.
-            plan.run_noexec = true;
-            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
-            assert!(!nextroot::is_noexec(run).unwrap());
-
-            let outcome = transition::run(&world.env());
-            assert!(
-                matches!(outcome, Outcome::Returned { failed: 0, .. }),
-                "{outcome:?}"
-            );
-            assert!(
-                !initramfs.exists(),
-                "the shutdown's mount and mountpoint are gone"
-            );
-            assert!(mounted_below(&initramfs).is_empty());
-            assert!(!run.join("nologin").exists());
-            assert!(!runtime.exists());
-            assert!(nextroot::is_noexec(run).unwrap(), "noexec is back");
-            assert!(run.join("decoy-lock").exists());
-            assert_eq!(
-                std::fs::read_to_string(run.join("mount/utab")).unwrap(),
-                kept,
-                "only the decoy's line for a mount of the next root is back"
-            );
-            nextroot::detach_tree(&world.nextroot());
-        });
-    }
-
-    #[test]
-    fn the_cursor_waits_for_pid_1_to_take_down_the_detached_mount_s_unit() {
-        // PID 1 logs a mount unit's end once it reads the mount table again
-        // after the scrub detached the mount, by default at most five times in
-        // a second. Here the stand-in PID 1 lists the unit as mounted
-        // twice more, then logs its end to the kernel log and lists it no
-        // more: the cursor must come after that line.
-        let _ = Rerun::new(test_path!(
-            the_cursor_waits_for_pid_1_to_take_down_the_detached_mount_s_unit
-        ))
-        .in_user_mount_ns()
-        .run(|| {
-            let world = World::new();
-            let run = world.run.path();
-            let runtime = run.join("overlay-runtime");
-            std::fs::write(runtime.join(SNAPSHOT_NAME), Snapshot::take(run).to_text()).unwrap();
-            let initramfs = run.join("initramfs");
-            std::fs::create_dir_all(&initramfs).unwrap();
-            nix::mount::mount(
-                Some("tmpfs"),
-                &initramfs,
-                Some("tmpfs"),
-                nix::mount::MsFlags::empty(),
-                Some("mode=0755"),
-            )
-            .unwrap();
-            nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
-            nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
-            let mut plan = world.plan(Direction::Leave);
-            plan.entered_at = Some(1);
-            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
-            // Outside the scratch /run, which the scrub empties.
-            let dir = tempfile::tempdir().unwrap();
-            let kmsg = dir.path().join("kmsg");
-            std::fs::write(&kmsg, "6,500,1,-;hidden record\n").unwrap();
-            let count = dir.path().join("count");
-            let unit = tail::mount_unit(&initramfs);
-            assert!(unit.ends_with("-initramfs.mount"), "{unit}");
-            let systemctl = dir.path().join("systemctl");
-            write_executable(
-                &systemctl,
-                format!(
-                    "#!/bin/sh\n\
-                     [ \"$1 $3\" = 'list-units --type=mount' ] || exit 0\n\
-                     echo x >> {count}\n\
-                     n=$(wc -l < {count})\n\
-                     if [ \"$n\" -lt 3 ]; then\n\
-                       printf '%s loaded active mounted %s\\n' '{unit}' '{path}'\n\
-                     elif [ \"$n\" -eq 3 ]; then\n\
-                       printf '6,501,2,-;systemd[1]: %s: Deactivated successfully.\\n' \
-                         '{unit}' >> {kmsg}\n\
-                     fi\n",
-                    count = count.display(),
-                    path = initramfs.display(),
-                    kmsg = kmsg.display(),
-                ),
-                0o755,
-            );
-            let mut env = world.env();
-            env.kmsg = kmsg;
-            env.systemctl = Some(systemctl);
-
-            let outcome = transition::run(&env);
-
-            assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-            assert!(mounted_below(&initramfs).is_empty());
-            let cursor = std::fs::read(run.join(KERNEL_SEQNUM)).unwrap();
-            assert_eq!(
-                u64::from_ne_bytes(cursor.try_into().unwrap()),
-                502,
-                "the cursor comes after the unit's end"
-            );
-            assert_eq!(
-                std::fs::read_to_string(&count).unwrap().lines().count(),
-                3,
-                "asked until the unit was down, and no more"
-            );
-            nextroot::detach_tree(&world.nextroot());
-        });
-    }
-
-    #[test]
-    fn the_way_back_gives_the_decoys_utab_lines_to_its_restored_mounts() {
-        // The decoy's copy of utab names its root and its ESP by the IDs they
-        // had at entry. The way back binds both below the next root again,
-        // where the kernel gives them IDs of their own; the mount table lines
-        // the entry kept beside the copy (as the decoy saw them) lead each
-        // line to its mount.
-        let _ = Rerun::new(test_path!(
-            the_way_back_gives_the_decoys_utab_lines_to_its_restored_mounts
-        ))
-        .in_user_mount_ns()
-        .run(|| {
-            let world = World::new();
-            let run = world.run.path();
-            let runtime = run.join("overlay-runtime");
-            let table = read_mountinfo().unwrap();
-            let root_then = top_mount_at(&table, world.decoy.path()).unwrap().clone();
-            let esp_then = top_mount_at(&table, world.esp.path()).unwrap().clone();
-            let seen_at = |m: &MountEntry, at: &str| {
-                format!(
-                    "{} 1 {} {} {at} rw - {} {} rw\n",
-                    m.mount_id,
-                    m.dev,
-                    m.root.display(),
-                    m.fstype,
-                    m.source.display()
-                )
-            };
-            std::fs::write(
-                runtime.join(UTAB_MOUNTS_NAME),
-                seen_at(&root_then, "/") + &seen_at(&esp_then, "/boot"),
-            )
-            .unwrap();
-            let line = |id: i32, m: &MountEntry, target: &str| {
-                format!(
-                    "ID={id} SRC={} TARGET={target} ROOT={} OPTS=x-initrd.mount\n",
-                    m.source.display(),
-                    m.root.display()
-                )
-            };
-            std::fs::write(
-                runtime.join(UTAB_NAME),
-                line(root_then.mount_id, &root_then, "/sysroot")
-                    + &line(esp_then.mount_id, &esp_then, "/sysroot/boot"),
-            )
-            .unwrap();
-            std::fs::create_dir_all(run.join("mount")).unwrap();
-            std::fs::write(run.join("mount/utab"), "ID=1 hidden\n").unwrap();
-
-            // The way back: the decoy root and its ESP below the next root.
-            nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
-            nextroot::bind(world.esp.path(), &world.nextroot().join("boot"), false).unwrap();
-            nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
-            let table = read_mountinfo().unwrap();
-            let root_now = top_mount_at(&table, &world.nextroot()).unwrap().mount_id;
-            let esp_now = top_mount_at(&table, &world.nextroot().join("boot"))
-                .unwrap()
-                .mount_id;
-            assert_ne!(root_now, root_then.mount_id);
-            assert_ne!(esp_now, esp_then.mount_id);
-            let mut plan = world.plan(Direction::Leave);
-            plan.entered_at = Some(1);
-            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
-
-            let outcome = transition::run(&world.env());
-            assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
-            assert_eq!(
-                std::fs::read_to_string(run.join("mount/utab")).unwrap(),
-                line(root_now, &root_then, "/sysroot") + &line(esp_now, &esp_then, "/sysroot/boot")
-            );
-            nextroot::detach_tree(&world.nextroot());
         });
     }
 

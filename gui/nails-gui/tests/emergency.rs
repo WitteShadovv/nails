@@ -15,7 +15,7 @@ mod support;
 use i_slint_backend_testing::{AccessibleLiveness, AccessibleRole, ElementHandle};
 use nails_api::protocol::DeactivatePlanData;
 use nails_gui::client::{Answer, PlanData, ours};
-use nails_gui::emergency::{Finish, Firing};
+use nails_gui::emergency::Finish;
 use nails_gui::text;
 use nails_gui::worker::{Failure, Kind, Update};
 use screen::Screen;
@@ -329,7 +329,7 @@ fn deactivation_asked(screen: &Screen) {
         .invoke_accessible_default_action();
     screen.asks();
     screen.update(Update::Planned(PlanData::Deactivate(DeactivatePlanData {
-        poweroff: false,
+        poweroff: true,
         warnings: vec![],
         powers_off_instead: None,
         token: "0".repeat(32),
@@ -342,16 +342,8 @@ fn an_open_question_keeps_neither_the_pointer_nor_the_keyboard_from_it() {
     let screen = hidden();
     deactivation_asked(&screen);
     // The keyboard: Tab goes from the question's buttons to it and back.
-    let walk = screen.walk(Key::Tab, 4);
-    assert_eq!(
-        walk,
-        [
-            text::EMERGENCY,
-            text::POWER_OFF,
-            text::RETURN_TO_DECOY,
-            "Cancel"
-        ]
-    );
+    let walk = screen.walk(Key::Tab, 3);
+    assert_eq!(walk, [text::POWER_OFF, text::EMERGENCY, "Cancel"]);
     // The pointer: the question's dimming lies under it.
     hold(&screen, 1100, None);
     assert_ended(&screen);
@@ -366,15 +358,14 @@ fn the_page_of_a_deactivation_that_ends_keeps_it_working() {
     screen.update(settings_with("reboot"));
     deactivation_asked(&screen);
     screen
-        .find_with(text::RETURN_TO_DECOY, AccessibleRole::Button)
+        .find_with(text::POWER_OFF, AccessibleRole::Button)
         .invoke_accessible_default_action();
     screen.update(Update::Running(Kind::Apply));
-    assert!(screen.shows(text::RETURNING));
-    // NAILS reads a restart only after the return's apply, whose switch ends
-    // the window with the session: the page says the control powers off, and
-    // it asks for the power-off at once.
+    assert!(screen.shows(text::POWERING_OFF));
+    // A restart would be the weaker ending while the computer powers off:
+    // the page says the control powers off too.
     let row = screen.find_with(text::FACT_EMERGENCY, AccessibleRole::ListItem);
-    let said = format!("Power off, {}", text::EMERGENCY_RETURNING);
+    let said = format!("Power off, {}", text::EMERGENCY_POWERING_OFF);
     assert_eq!(row.accessible_description().as_deref(), Some(said.as_str()));
     let button = control(&screen);
     assert_eq!(button.accessible_enabled(), Some(true));
@@ -383,7 +374,7 @@ fn the_page_of_a_deactivation_that_ends_keeps_it_working() {
         Some(text::emergency_how(Finish::PowerOff))
     );
     hold(&screen, 1100, None);
-    assert_eq!(screen.firings(), [Firing::POWER_OFF_AT_ONCE]);
+    assert_eq!(screen.finishes(), [Finish::PowerOff]);
     assert_ended(&screen);
 }
 
@@ -414,12 +405,9 @@ fn settings_with(spelling: &str) -> Update {
 #[test]
 fn before_it_is_used_the_page_and_the_control_say_how_it_ends_the_session() {
     for (spelling, finish, name, now) in [
-        (
-            "return",
-            Finish::Return,
-            "Return to the decoy",
-            text::EMERGENCY_RETURNING_NOW,
-        ),
+        // An older engine's settings: the return before every hidden
+        // session ended in a power-off.
+        ("return", Finish::PowerOff, "Power off", text::EMERGENCY_NOW),
         (
             "poweroff",
             Finish::PowerOff,

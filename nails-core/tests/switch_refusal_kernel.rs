@@ -69,19 +69,14 @@ mod kernel_tests {
                 run: self.run.path().to_path_buf(),
                 nextroot: std::fs::canonicalize(self.next.path()).unwrap(),
                 runtime_dir: self.runtime(),
-                kmsg: self.run.path().join("no-kmsg"),
                 systemctl: None,
-                pid_places: None,
-                zram: None,
                 now: 1_234,
-                mounts: read_mountinfo().expect("the live mount table"),
-                network: nails_teardown::whole_root::network::Places::system(self.run.path()),
-                network_kernel: None,
+                mounts: Some(read_mountinfo().expect("the live mount table")),
                 power_off: transition::PowerOff {
                     grace: std::time::Duration::ZERO,
                     kernel: || false,
                 },
-                tail: None,
+                detach: nails_teardown::whole_root::nextroot::detach_tree,
                 selinux: &nails_teardown::whole_root::selinux::KERNEL,
                 start: nails_teardown::whole_root::program_label::Started::by_hand(),
             }
@@ -149,8 +144,10 @@ mod kernel_tests {
 
             let outcome = transition::run(&env);
 
-            let Outcome::Disarmed(why) = outcome else {
-                panic!("expected a refused switch, got {outcome:?}");
+            // The step ends the session: the stand-in kernel refused the
+            // power-off, so it detached the next root and returned.
+            let Outcome::Ended(why) = outcome else {
+                panic!("expected the session's end, got {outcome:?}");
             };
             assert!(why.contains("does not resolve"), "{why}");
             // The next root is detached, and the reason is on the volume
@@ -183,7 +180,7 @@ mod kernel_tests {
                 // root in the next root: nothing must be written there.
                 let plan = armed_plan(Some("0:0".to_string()));
                 switch_refusal::record_on_volume(
-                    &env.mounts,
+                    env.mounts.as_deref().unwrap(),
                     &plan,
                     &env.nextroot,
                     "failed init check",

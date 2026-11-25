@@ -298,7 +298,7 @@ fn session_warning_of(fs: &MockFilesystem) -> String {
 /// reads, before why.
 const SESSION_UNKNOWN: &str = "NAILS cannot tell whether Unattended-Upgrade::InstallOnShutdown \
                                is on there, which would make it install the pending updates \
-                               when the session ends with deactivate: ";
+                               when the session is shut down through logind: ";
 
 /// In what the hidden session sees, a part of apt's configuration whose
 /// link lookup fails may be a link, which resolves through the overlay
@@ -586,7 +586,7 @@ fn a_lookup_not_made_for_a_warning_warns_and_never_refuses() {
     let session = "unattended-upgrades.service is stopped on the decoy but enabled, so the hidden \
                    session starts it, and NAILS cannot tell whether \
                    Unattended-Upgrade::InstallOnShutdown is on there, which would make it install \
-                   the pending updates when the session ends with deactivate: ";
+                   the pending updates when the session is shut down through logind: ";
     let not_made = "(NAILS does not look up /etc/apt/apt.conf.d, since the lookup would mount the \
                     automount point /etc/apt/apt.conf.d)";
     let session_upper = Some("/hidden/upper");

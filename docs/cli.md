@@ -31,8 +31,9 @@ This document contains the help content for the `nails` command-line program.
 Run a hidden session on a decoy Linux system.
 
 NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
-decoy root, with every change kept on the hidden volume, entered and left with
-`systemctl soft-reboot` (systemd 254 or newer). The binary and its
+decoy root, with every change kept on the hidden volume, entered with
+`systemctl soft-reboot` (systemd 254 or newer). A hidden session never goes
+back to the decoy: it ends in a power-off. The binary and its
 configuration live on the hidden volume, so you run it by its
 full path from the mounted volume (e.g. `sudo /mnt/data/nails status`),
 never from a copy on the decoy disk.
@@ -43,9 +44,9 @@ The workflow has four steps:
   3. `activate` to soft-reboot into the hidden session. You are logged out;
      the hidden session starts at its own login screen (a display manager set
      to log an account in automatically logs it in again, as at boot).
-  4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
-     kill the hidden session at once and return (or power off). If an
-     activation was interrupted, `recover` removes what it left behind.
+  4. `deactivate` to end the session and power off, or `emergency` to kill
+     the hidden session at once and power off (or reboot). If an activation
+     was interrupted, `recover` removes what it left behind.
 
 **Usage:** `nails [OPTIONS] <COMMAND>`
 
@@ -54,8 +55,8 @@ EXAMPLES:
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
   sudo /mnt/data/nails activate         Soft-reboot into the hidden session
   sudo /mnt/data/nails status --json    Machine-readable state and uptime
-  sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
-  sudo /mnt/data/nails emergency        Kill the hidden session and return now
+  sudo /mnt/data/nails deactivate       End the hidden session and power off
+  sudo /mnt/data/nails emergency        Kill the hidden session and power off now
   source <(/mnt/data/nails completions bash)   Load completions in the session
 
 EXIT STATUS:
@@ -76,8 +77,8 @@ EXIT STATUS:
 ###### **Subcommands:**
 
 * `activate` — Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
-* `deactivate` — Soft-reboot from the hidden session back to the plain decoy
-* `emergency` — Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+* `deactivate` — End the hidden session and power off
+* `emergency` — Kill the hidden session at once and power off (or reboot)
 * `recover` — Remove what an interrupted activation left in /run
 * `status` — Show the session, security posture and hidden volume
 * `verify` — Check for known NAILS traces (evidence, not proof)
@@ -155,30 +156,19 @@ EXAMPLES:
 
 ## `nails deactivate`
 
-Soft-reboot from the hidden session back to the plain decoy
+End the hidden session and power off
 
 **Usage:** `nails deactivate [OPTIONS]`
 
 WHAT HAPPENS:
-  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
-  marks the hidden volume for closing and soft-reboots: every hidden program
-  is stopped in order, the top of /run is scrubbed of the hidden session, most
-  of the network state it set up is put back, asked of the kernel itself (the
-  addresses and routes it gave the decoy's own devices stay), and the decoy
-  starts again at its own login screen (a display manager set to log an
-  account in automatically logs it in again, as at boot). When a link, MAC
-  address, policy-routing rule or nftables table the return sets out to undo
-  is still the session's afterwards, or it cannot read them back, the machine
-  powers off instead. The scrub also deletes the runtime journal, which the
-  decoy shares with the hidden session, so a volatile decoy's journal starts
-  again at the return. The hidden volume is unmounted and its encryption
-  mapping closed by the switch itself. Deactivation warns when it is bound to
-  power off: over a link the kernel keeps when it is deleted (the fallback
-  device a tunnel module makes when it loads, tunl0 for ipip).
+  In the hidden session, deactivation stops every hidden program in order and
+  powers the machine off. A hidden session never goes back to the decoy: the
+  kernel that ran it ends with it. Leave the machine off for a few minutes
+  before you hand it over. Deactivation refuses while a program blocks
+  shutdown; `emergency` does not wait for it.
 
 EXAMPLES:
-  nails deactivate                    Soft-reboot back to the decoy
-  nails deactivate --poweroff         Power off instead
+  nails deactivate                    End the session and power off
   nails deactivate -y                 Skip the confirmation prompt
 
 ###### **Options:**
@@ -186,34 +176,24 @@ EXAMPLES:
 * `-y`, `--yes` — Proceed without the confirmation prompt
 
    Deactivation ends the hidden session. Without this flag it prompts on a terminal and refuses to run without one.
-* `--poweroff` — Power the machine off instead of returning to the decoy.
-
-   Powering off lets RAM decay; leave the machine off for a few minutes before handing it over.
 
 
 
 ## `nails emergency`
 
-Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+Kill the hidden session at once and power off (or reboot)
 
 **Usage:** `nails emergency [OPTIONS]`
 
 WHAT HAPPENS:
-  In the hidden session: the decoy root is mounted at /run/nextroot, the
-  hidden volume is marked for closing, the soft-reboot is enqueued and every
-  hidden program is killed at once. The machine returns to the plain decoy,
-  which shows its normal login screen; log in with the decoy password (a
-  display manager set to log an account in automatically logs it in again, as
-  at boot). With --poweroff the machine powers off instead, and so it does,
-  as after deactivate, when a link, MAC address, policy-routing rule or
-  nftables table the return sets out to undo is still the session's
-  afterwards, or it cannot read them back. On the decoy, emergency removes
-  what an interrupted activation left in /run.
+  In the hidden session: every interactive shell is killed, the power-off is
+  enqueued and every hidden program is killed at once. A hidden session never
+  goes back to the decoy. With --reboot the machine reboots fully instead. On
+  the decoy, emergency removes what an interrupted activation left in /run.
 
 EXAMPLES:
-  nails emergency                     Kill the hidden session and return now
+  nails emergency                     Kill the hidden session and power off now
   nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then act
-  nails emergency --poweroff          Kill the hidden session and power off
   nails emergency --reboot            Kill the hidden session and reboot fully
 
 ###### **Options:**
@@ -221,10 +201,10 @@ EXAMPLES:
 * `--countdown <SECS>` — Wait this many seconds before acting, printing a Ctrl+C abort hint.
 
    Omitted (the default) acts immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
-* `--poweroff` — Power the machine off instead of returning to the decoy, whatever the outcome. RAM decays: the strongest answer to a seizure. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`
-* `--reboot` — Reboot fully (firmware and bootloader) instead of the soft-reboot back.
+* `--poweroff` — Power off, also on the decoy side, where the emergency otherwise only cleans up. In the hidden session it powers off without the flag too. RAM decays: leave the machine off for a few minutes. Mutually exclusive with `--reboot`
+* `--reboot` — Reboot fully (firmware and bootloader) instead of powering off.
 
-   A warm reboot does not clear RAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
+   A warm reboot does not clear RAM. Prefer the power-off when RAM residue matters. Mutually exclusive with `--poweroff`.
 
 
 

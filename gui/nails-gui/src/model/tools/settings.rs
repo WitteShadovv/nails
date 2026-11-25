@@ -212,7 +212,6 @@ impl Settings {
             destructive: false,
             prompt: None,
             locked: false,
-            alternative: None,
         })
     }
 

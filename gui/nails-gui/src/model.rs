@@ -22,8 +22,7 @@
 //! that asks for it gives the [`Asker`] that words the question once the plan
 //! holds ([`Model::plan`]), and [`Model::answer`] turns the person's answer
 //! into the apply or the withdrawal. An activation and a deactivation are
-//! such operations too, whose questions the model words itself; a
-//! deactivation's offers a second action ([`Model::alternative`]).
+//! such operations too, whose questions the model words itself.
 //!
 //! The main page, once it settled, has rows that open the window's tools
 //! ([`tools`]): Verify and Rehearsal on both sides, Discard Hidden Changes
@@ -39,10 +38,9 @@ use std::path::PathBuf;
 
 use nails_api::CheckOutcome;
 use nails_api::Event;
-use nails_api::protocol::PowerOffInstead;
 
 use crate::client::{Plan, PlanData};
-use crate::emergency::{Finish, Firing};
+use crate::emergency::Finish;
 use crate::envelope::{self, Attention, ErrorBody, Place, Readiness, StatusData};
 use crate::text;
 use crate::worker::{Ask, Failure, Kind, Update};
@@ -54,7 +52,7 @@ mod pages;
 pub mod tools;
 
 use activation::{Activation, Outcome, Risk};
-use deactivation::{Applied, Deactivation, Ending};
+use deactivation::{Applied, Deactivation};
 use pages::{busy_page, join, recovered};
 use tools::{Link, Tool, ToolKind};
 
@@ -107,9 +105,6 @@ pub struct Question {
     pub prompt: Option<String>,
     /// Whether the button waits for that word still.
     pub locked: bool,
-    /// The label of a second action beside the confirming one, when the
-    /// question offers two (a deactivation's two endings).
-    pub alternative: Option<String>,
 }
 
 /// What a screen that asks for a plan says once the plan holds.
@@ -255,9 +250,9 @@ pub enum Effect {
     /// window as gone, which cancels an activation before its point of no
     /// return. The session ends with the answer that follows.
     HangUp,
-    /// Fire the emergency ([`crate::emergency`]) to end the session as this
-    /// firing says; it goes its own way.
-    Emergency(Firing),
+    /// Fire the emergency ([`crate::emergency`]) to end the session with
+    /// this finish; it goes its own way.
+    Emergency(Finish),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -286,7 +281,7 @@ enum PlanFor {
     Screen(Asker),
     /// The activation.
     Activation,
-    /// A deactivation, whose question offers both endings.
+    /// A deactivation, which powers off.
     Deactivation,
     /// The open tool (a discard or a set up), which words its question
     /// and reads its answers.
@@ -326,10 +321,6 @@ pub struct Model {
     allowed: BTreeSet<Risk>,
     activation: Option<Activation>,
     deactivation: Option<Deactivation>,
-    /// Why the return the open question offers powers off instead, as its
-    /// plan said, for the page that follows Return to Decoy, and for the
-    /// Emergency control, whose return ends through the same way back.
-    return_instead: Option<PowerOffInstead>,
     /// The options the checks and the activation take, from Activation
     /// Options.
     options: tools::options::Options,
@@ -380,7 +371,6 @@ impl Model {
             allowed: BTreeSet::new(),
             activation: None,
             deactivation: None,
-            return_instead: None,
             options: tools::options::Options::default(),
             tool: None,
             planted_here: false,
@@ -428,10 +418,10 @@ impl Model {
         if !self.shows_emergency() {
             return None;
         }
-        let firing = self.emergency_firing();
-        self.emergency_fired = Some(firing.finish());
+        let finish = self.emergency_finish().0;
+        self.emergency_fired = Some(finish);
         self.close_question();
-        Some(Effect::Emergency(firing))
+        Some(Effect::Emergency(finish))
     }
 
     /// Whether the Emergency control shows: in a hidden session, by the
@@ -505,10 +495,10 @@ impl Model {
                 self.running = None;
                 self.helper_gone = true;
                 if matches!(self.activation, Some(Activation::PastThePoint))
-                    || matches!(self.deactivation, Some(Deactivation::Ending { .. }))
+                    || self.deactivation.is_some()
                 {
-                    // The switch ends the session with the decoy's, or with
-                    // the hidden one: the page stays as it is.
+                    // The switch ends the session with the decoy's, or the
+                    // power-off with the hidden one: the page stays as it is.
                     return Vec::new();
                 }
                 self.close_question();
@@ -532,7 +522,6 @@ impl Model {
             return None;
         }
         self.question = None;
-        self.return_instead = None;
         match self.asking.take() {
             Some(Asking::Allow { risk, typed }) => {
                 if !(confirmed && activation::is_the_word(&typed)) {
@@ -579,27 +568,8 @@ impl Model {
             self.activation = Some(Activation::started());
         }
         if matches!(self.plan_for, Some(PlanFor::Deactivation)) {
-            // Power Off, on the plan of a return: the plan of a power-off
-            // replaces it, and is applied once it holds.
-            self.deactivation = Some(Deactivation::Replanning);
-            return Some(Ask::Plan(Plan::Deactivate(Ending::PowerOff.args())));
+            self.deactivation = Some(Deactivation::default());
         }
-        Some(Ask::Apply)
-    }
-
-    /// The person chose the open question's second action: a deactivation's
-    /// return to the decoy, which applies the plan that holds.
-    pub fn alternative(&mut self) -> Option<Ask> {
-        let offered = self
-            .question
-            .as_ref()
-            .is_some_and(|question| question.alternative.is_some());
-        if !offered || !matches!(self.plan_for, Some(PlanFor::Deactivation)) {
-            return None;
-        }
-        let instead = self.return_instead.take();
-        self.close_question();
-        self.deactivation = Some(Deactivation::returning(instead));
         Some(Ask::Apply)
     }
 
@@ -626,12 +596,12 @@ impl Model {
                 ))))
             }
             text::DEACTIVATE => {
-                // The plan of a return names what the return would not put
-                // back, which the question shows beside both endings.
+                // The plan of the power-off, which ends every hidden
+                // session: its question says so.
                 self.plan_for = Some(PlanFor::Deactivation);
                 self.notice = None;
                 Some(Effect::Ask(Ask::Plan(Plan::Deactivate(
-                    Ending::Return.args(),
+                    deactivation::args(),
                 ))))
             }
             text::CANCEL => self.cancel(),
@@ -719,7 +689,6 @@ impl Model {
     fn close_question(&mut self) {
         self.question = None;
         self.asking = None;
-        self.return_instead = None;
     }
 
     /// Forget the risks allowed, which hold for one activation: it was
@@ -772,18 +741,12 @@ impl Model {
                 )
             }
             (Some(PlanFor::Deactivation), PlanData::Deactivate(plan)) => {
-                if self.deactivation == Some(Deactivation::Replanning) && plan.poweroff {
-                    // The person chose to power off already.
-                    self.deactivation = Some(Deactivation::ending(Ending::PowerOff));
-                    return vec![Ask::Apply];
-                }
-                if self.deactivation.is_some() || plan.poweroff {
+                if self.deactivation.is_some() || !plan.poweroff {
                     // Not the plan the window asked for: drop it.
                     self.deactivation = None;
                     self.plan_for = None;
                     return vec![Ask::Withdraw];
                 }
-                self.return_instead = plan.powers_off_instead.clone();
                 deactivation::question(plan)
             }
             (Some(PlanFor::Screen(asker)), data) => asker(data),
@@ -879,7 +842,7 @@ impl Model {
                 self.close_question();
                 match deactivation::applied(value) {
                     Applied::Enqueued(enqueued) => {
-                        self.deactivation = Some(enqueued.keeping(self.deactivation.take()));
+                        self.deactivation = Some(enqueued);
                         Vec::new()
                     }
                     Applied::Failed(message) => {

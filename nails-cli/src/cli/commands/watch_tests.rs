@@ -248,7 +248,7 @@ fn the_copies_in_run_decide_and_no_other_is_read() {
     assert_eq!(manifest.hidden_dev.as_deref(), Some("253:0"));
     assert!(plan.is_some(), "the plan tells the session's storage");
     assert!(config.backend_watch.auto_emergency);
-    assert_eq!(finish, Finish::Return);
+    assert_eq!(finish, Finish::Poweroff);
     assert!(notice.is_none());
     assert!(matches!(
         start(Ok(None), Ok(None), || None, |_| panic!("no session")),
@@ -285,7 +285,7 @@ fn an_unreadable_settings_copy_gives_way_to_the_hidden_volumes_own() {
         panic!("{started:?}");
     };
     assert!(config.backend_watch.auto_emergency);
-    assert_eq!(finish, Finish::Return);
+    assert_eq!(finish, Finish::Poweroff);
     assert!(notice.is_none());
     assert!(ever_tears_down(&config));
 }
@@ -424,11 +424,10 @@ fn asked(finish: Finish, answer: impl Fn(Finish) -> HotReport) -> (Vec<Finish>, 
     (asked, acted)
 }
 
-/// With the plan the automatic emergency returns to the decoy. A return
-/// that finds no plan when it fires does nothing, so the watcher powers off
-/// instead; without the plan it powers off at once. Each ends the loop.
+/// The automatic emergency powers off, as every hidden session ends, with
+/// the plan or without; it asks once, and each power-off ends the loop.
 #[test]
-fn the_automatic_emergency_returns_with_the_plan_and_powers_off_without_it() {
+fn the_automatic_emergency_powers_off_with_the_plan_and_without_it() {
     let in_session = |finish| {
         let mut report = simulated(finish);
         report.side = Side::Hidden;
@@ -436,18 +435,11 @@ fn the_automatic_emergency_returns_with_the_plan_and_powers_off_without_it() {
         report
     };
     assert_eq!(
-        asked(Finish::Return, in_session),
-        (vec![Finish::Return], true)
+        asked(Finish::Poweroff, in_session),
+        (vec![Finish::Poweroff], true)
     );
-
-    let no_plan = simulated(Finish::Return);
-    assert!(no_plan.found_nothing() && no_plan.dispatched.is_none());
     let powered_off = simulated(Finish::Poweroff);
     assert_eq!(powered_off.dispatched, Some(Finish::Poweroff));
-    assert_eq!(
-        asked(Finish::Return, simulated),
-        (vec![Finish::Return, Finish::Poweroff], true)
-    );
     assert_eq!(
         asked(Finish::Poweroff, simulated),
         (vec![Finish::Poweroff], true)
@@ -464,10 +456,6 @@ fn a_power_off_nothing_could_ask_for_leaves_the_watcher_watching() {
         report
     };
     assert_eq!(
-        asked(Finish::Return, refused),
-        (vec![Finish::Return, Finish::Poweroff], false)
-    );
-    assert_eq!(
         asked(Finish::Poweroff, refused),
         (vec![Finish::Poweroff], false)
     );
@@ -478,8 +466,8 @@ fn a_power_off_nothing_could_ask_for_leaves_the_watcher_watching() {
         report
     };
     assert_eq!(
-        asked(Finish::Return, by_the_kernel),
-        (vec![Finish::Return, Finish::Poweroff], true)
+        asked(Finish::Poweroff, by_the_kernel),
+        (vec![Finish::Poweroff], true)
     );
 }
 
@@ -534,7 +522,7 @@ fn a_watcher_that_cannot_watch_delivers_its_alert_and_stops() {
             manifest: manifest("/mnt/data"),
             plan: Some(Box::new(plan())),
             config: Box::new(alert_only()),
-            finish: Finish::Return,
+            finish: Finish::Poweroff,
             notice: Some(alert_only_notice()),
         },
         |_| panic!("delivered while it watches"),
@@ -549,7 +537,7 @@ fn a_watcher_that_cannot_watch_delivers_its_alert_and_stops() {
     assert_eq!(manifest.hidden_root, Path::new("/mnt/data"));
     assert!(plan.is_some());
     assert!(!config.backend_watch.auto_emergency);
-    assert_eq!(finish, Finish::Return);
+    assert_eq!(finish, Finish::Poweroff);
     assert_eq!(
         notice.map(|notice| notice.alert.title).as_deref(),
         Some("Storage monitor in alert-only mode")

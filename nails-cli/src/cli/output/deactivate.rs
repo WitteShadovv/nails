@@ -3,11 +3,10 @@
 
 //! Output formatting for the deactivate command.
 //!
-//! Deactivation enqueues the soft-reboot back to the decoy (or a power-off),
-//! so its machine-readable result is a small typed envelope printed once the
-//! switch is enqueued, and its failures are mapped to a structured error that
-//! folds the remedy into its `message` (the error body carries no separate hint
-//! field).
+//! Deactivation enqueues the power-off, so its machine-readable result is a
+//! small typed envelope printed once the power-off is enqueued, and its
+//! failures are mapped to a structured error that folds the remedy into its
+//! `message` (the error body carries no separate hint field).
 
 use nails_core::NailsError;
 use serde::Serialize;
@@ -17,32 +16,16 @@ use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, NextStep}
 /// The `data` payload for a successful `deactivate --json`.
 #[derive(Debug, Serialize)]
 pub struct DeactivateData {
-    /// What happens (`return_requested` or `poweroff_requested`).
+    /// What happens: `poweroff_requested`. A hidden session ends in a
+    /// power-off; `return_requested` is no longer sent.
     status: &'static str,
-    /// What the return does not put back, one sentence each, as a person
-    /// reads them; absent when there is nothing to say.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    warnings: Vec<String>,
-    /// The hidden backend's device-mapper devices that could not be marked to
-    /// close: they stay open after the switch, their key in RAM, until
-    /// power-off. Absent when every device was marked.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    backend_left_open: Vec<String>,
 }
 
 impl DeactivateData {
-    /// The payload of a deactivation whose soft-reboot back to the decoy, or
-    /// power-off when `poweroff` is set, is enqueued, with the `warnings` it
-    /// gives and the backend devices it `left_open`.
-    pub fn enqueued(poweroff: bool, warnings: Vec<String>, left_open: Vec<String>) -> Self {
+    /// The payload of a deactivation whose power-off is enqueued.
+    pub fn enqueued() -> Self {
         Self {
-            status: if poweroff {
-                "poweroff_requested"
-            } else {
-                "return_requested"
-            },
-            warnings,
-            backend_left_open: left_open,
+            status: "poweroff_requested",
         }
     }
 }
@@ -52,12 +35,12 @@ pub fn print_deactivate_json(data: DeactivateData) {
     Envelope::success("deactivate", data).print();
 }
 
-/// What a hidden backend device the way back could not mark to close leaves
-/// behind, as `deactivate` and `emergency` both say it.
+/// What a hidden backend device an emergency's cleanup could not mark to
+/// close leaves behind.
 pub fn backend_left_open_warning(name: &str) -> String {
     format!(
-        "The hidden backend device {name} could not be marked to close: it stays open after \
-         the switch, its key in RAM, until power-off"
+        "The hidden backend device {name} could not be marked to close: it stays open, its \
+         key in RAM, until power-off"
     )
 }
 
@@ -79,9 +62,7 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
             format!("unmount failed: {}: {reason}", path.display()),
         )
         .with_hint("check if the overlay is in use and retry"),
-        // The hidden session's PID 1 does not hold a runtime guard the switch
-        // needs, or could not be asked: refused before anything was prepared.
-        // The fix names the power-off and the emergency.
+        // A refused check: the fix names the emergency, which needs none.
         NailsError::PreFlightCheckFailed(failures) => {
             let reasons: Vec<&str> = failures
                 .iter()
@@ -93,23 +74,16 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
                 .unwrap_or_default();
             ErrorBody::new(
                 "not_ready",
-                format!("the way back is refused: {}", reasons.join("; ")),
+                format!("the power-off is refused: {}", reasons.join("; ")),
             )
             .with_hint(fix)
-            .with_next(NextStep::new(
-                nails_core::next_step::NextStep::DeactivatePoweroff.command(),
-            ))
+            .with_next(NextStep::new("emergency"))
         }
-        // A plain emergency returns to the decoy only where it can prepare the
-        // return, as this way back could not: otherwise it powers off.
+        // The emergency powers off at once, without the lock or the record.
         NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
             .with_hint(format!(
-                "`{}` ends the session now: it returns to the decoy where it can prepare the \
-                 return and powers off where it cannot; `{}` always powers off",
+                "`{}` ends the session now: it powers off at once",
                 nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Emergency),
-                nails_core::next_step::sudo_line(
-                    nails_core::next_step::NextStep::EmergencyPoweroff
-                )
             ))
             .with_next(NextStep::new("emergency")),
         other => ErrorBody::new("deactivation_failed", other.to_string())

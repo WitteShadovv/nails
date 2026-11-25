@@ -9,36 +9,18 @@ use std::path::PathBuf;
 fn success_json_prints_one_parseable_envelope() {
     // Smoke test: the renderer prints to stdout without panicking and the shape
     // is exercised by the envelope's own serialization tests.
-    print_deactivate_json(DeactivateData::enqueued(false, Vec::new(), Vec::new()));
+    print_deactivate_json(DeactivateData::enqueued());
 }
 
-/// A clean return carries its status alone; one with something it does not
-/// put back carries the sentences and names each device left open.
+/// A deactivation always ends in a power-off, and its data says so alone.
 #[test]
-fn the_data_names_what_the_return_leaves_and_omits_it_when_nothing_is_left() {
-    let clean =
-        serde_json::to_value(DeactivateData::enqueued(false, Vec::new(), Vec::new())).unwrap();
-    assert_eq!(clean, serde_json::json!({"status": "return_requested"}));
-
-    let warning = super::backend_left_open_warning("hidden-crypt");
-    let left = serde_json::to_value(DeactivateData::enqueued(
-        false,
-        vec![warning.clone()],
-        vec!["hidden-crypt".to_string()],
-    ))
-    .unwrap();
+fn the_data_says_the_power_off_and_nothing_of_a_return() {
+    let data = serde_json::to_value(DeactivateData::enqueued()).unwrap();
+    assert_eq!(data, serde_json::json!({"status": "poweroff_requested"}));
     assert_eq!(
-        left,
-        serde_json::json!({
-            "status": "return_requested",
-            "warnings": [warning],
-            "backend_left_open": ["hidden-crypt"],
-        })
-    );
-    assert_eq!(
-        warning,
-        "The hidden backend device hidden-crypt could not be marked to close: it stays open \
-         after the switch, its key in RAM, until power-off"
+        super::backend_left_open_warning("hidden-crypt"),
+        "The hidden backend device hidden-crypt could not be marked to close: it stays open, \
+         its key in RAM, until power-off"
     );
 }
 
@@ -83,26 +65,23 @@ fn permission_denied_and_invalid_state_map_to_their_own_codes() {
     assert_eq!(state.code, "invalid_state");
 }
 
-/// A way back that failed is not one a plain emergency takes for sure: the
-/// hint says it powers off where it cannot prepare the return, and names the
-/// power-off that always ends the session.
+/// A deactivation that failed names the emergency, which powers off at once
+/// without the lock or the record.
 #[test]
-fn an_invalid_state_names_both_ways_an_emergency_ends_the_session() {
+fn an_invalid_state_names_the_emergency() {
     use nails_core::next_step::{NextStep, sudo_line};
     let body = deactivate_error_body(&NailsError::InvalidState(
-        "could not mount the decoy root: /dev/vda2: EBUSY".into(),
+        "systemctl could not enqueue poweroff.target".into(),
     ));
     assert_eq!(body.code, "invalid_state");
     let lines: Vec<&str> = body.message.lines().collect();
     assert_eq!(
         lines,
         [
-            "could not mount the decoy root: /dev/vda2: EBUSY",
+            "systemctl could not enqueue poweroff.target",
             format!(
-                "`{}` ends the session now: it returns to the decoy where it can prepare the \
-                 return and powers off where it cannot; `{}` always powers off",
-                sudo_line(NextStep::Emergency),
-                sudo_line(NextStep::EmergencyPoweroff)
+                "`{}` ends the session now: it powers off at once",
+                sudo_line(NextStep::Emergency)
             )
             .as_str(),
         ]
@@ -113,27 +92,23 @@ fn an_invalid_state_names_both_ways_an_emergency_ends_the_session() {
     );
 }
 
-/// A return the hidden session's PID 1 does not guard is refused as not
-/// ready: the message says why, the fix names the power-off and the
-/// emergency, and the next step is the power-off.
+/// A refused check is not ready: the message says why, the fix follows, and
+/// the next step is the emergency.
 #[test]
-fn an_unguarded_way_back_names_the_power_off_and_the_emergency() {
+fn a_refused_check_names_the_emergency() {
     let body = deactivate_error_body(&NailsError::PreFlightCheckFailed(vec![(
-        "switch-timeout".to_string(),
-        "soft-reboot.target has no job timeout".to_string(),
-        Some("End the session with `a`, which powers off, or with `b`".to_string()),
+        "some-check".to_string(),
+        "something is off".to_string(),
+        Some("Fix it".to_string()),
     )]));
     assert_eq!(body.code, "not_ready");
     assert_eq!(
         body.message.lines().collect::<Vec<_>>(),
-        [
-            "the way back is refused: soft-reboot.target has no job timeout",
-            "End the session with `a`, which powers off, or with `b`",
-        ]
+        ["the power-off is refused: something is off", "Fix it"]
     );
     assert_eq!(
         body.next.map(|next| next.command).as_deref(),
-        Some("deactivate --poweroff")
+        Some("emergency")
     );
 }
 

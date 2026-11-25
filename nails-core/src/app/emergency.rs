@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The `emergency` operation: the way back right now.
+//! The `emergency` operation: end the hidden session right now.
 //!
 //! The hot path itself lives in `nails-teardown` (`whole_root::emergency`) and
 //! normally runs from `main` before the CLI is initialised, as root. This
@@ -15,7 +15,6 @@ use std::path::Path;
 
 use nails_api::ExitStatus;
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
-use nails_teardown::whole_root::network::Foreseen;
 use nails_teardown::whole_root::plan::{Plan, default_plan_path};
 use serde::Serialize;
 
@@ -35,30 +34,18 @@ pub fn run_hot_path(finish: Finish) -> HotReport {
     emergency::run(plan, &host, finish)
 }
 
-/// What the way back the hot path enqueued is bound to leave of the links and
-/// MAC addresses as they are once the hidden programs are killed, which makes
-/// its last step power off instead of returning
-/// ([`way_back_foresees`](crate::session::leave::way_back_foresees)).
-/// Nothing unless the hot path enqueued a return from the hidden root.
-pub fn foresee(report: &HotReport) -> Foreseen {
-    if report.side != Side::Hidden || report.dispatched != Some(Finish::Return) {
-        return Foreseen::default();
-    }
-    crate::session::leave::way_back_foresees(Path::new("/"))
-}
-
 /// The exit status for a hot-path report.
 ///
-/// - [`ExitStatus::Ok`] when the way back or the power action was enqueued, or
-///   there was nothing to do;
+/// - [`ExitStatus::Ok`] when the power action was enqueued, or there was
+///   nothing to do;
 /// - [`ExitStatus::DegradedReboot`] when a decoy-side cleanup left mounts below
 ///   `/run/nextroot`, or only the kernel could be asked to power off;
 /// - [`ExitStatus::Failed`] when nothing at all could be dispatched.
 pub fn exit_status(report: &HotReport) -> ExitStatus {
     match report.side {
-        Side::None if report.requested == Finish::Return => ExitStatus::Ok,
+        Side::None if report.requested == Finish::Default => ExitStatus::Ok,
         _ if !report.remaining.is_empty() => ExitStatus::DegradedReboot,
-        Side::Decoy if report.requested == Finish::Return => ExitStatus::Ok,
+        Side::Decoy if report.requested == Finish::Default => ExitStatus::Ok,
         _ if report.dispatched.is_some() => ExitStatus::Ok,
         _ if report.kernel_power_off => ExitStatus::DegradedReboot,
         _ => ExitStatus::Failed,
@@ -81,8 +68,7 @@ pub fn record_inactive(env: &RuntimeEnv, report: &HotReport, config_override: Op
 }
 
 /// The hidden backend's device-mapper devices the hot path could not mark
-/// for deferred removal, top first: they stay open after the switch, their
-/// key in RAM, until power-off.
+/// for deferred removal, top first. Only a decoy-side cleanup marks any.
 pub fn backend_left_open(report: &HotReport) -> Vec<String> {
     report
         .deferred
@@ -95,7 +81,7 @@ pub fn backend_left_open(report: &HotReport) -> Vec<String> {
 /// The name of a finish on the wire.
 pub fn finish_name(finish: Finish) -> &'static str {
     match finish {
-        Finish::Return => "return_to_decoy",
+        Finish::Default => "default",
         Finish::Reboot => "reboot",
         Finish::Poweroff => "poweroff",
     }
@@ -199,19 +185,9 @@ mod tests {
         emergency::run(plan, &host, finish)
     }
 
-    /// Only a return from the hidden root has a way back to foresee.
-    #[test]
-    fn only_a_return_from_the_hidden_root_foresees_its_way_back() {
-        let report = simulated(None, Finish::Return);
-        assert_eq!(foresee(&report), Foreseen::default());
-        let mut hidden = simulated(None, Finish::Poweroff);
-        hidden.side = Side::Hidden;
-        assert_eq!(foresee(&hidden), Foreseen::default());
-    }
-
     #[test]
     fn without_a_session_emergency_succeeds() {
-        let report = simulated(None, Finish::Return);
+        let report = simulated(None, Finish::Default);
         assert_eq!(exit_status(&report), ExitStatus::Ok);
     }
 
@@ -250,7 +226,7 @@ mod tests {
         remaining: Vec<std::path::PathBuf>,
         kernel_power_off: bool,
     ) -> HotReport {
-        let mut report = simulated(None, Finish::Return);
+        let mut report = simulated(None, Finish::Default);
         report.side = side;
         report.requested = requested;
         report.dispatched = dispatched;
@@ -260,7 +236,7 @@ mod tests {
     }
 
     /// Without a session plan, the success-is-Ok shortcut is only for the
-    /// return; a reboot that nothing could enqueue (and no kernel power-off)
+    /// default ending; a reboot that nothing could enqueue (and no kernel power-off)
     /// has failed, so it must not read as Ok.
     #[test]
     fn no_session_with_a_power_action_that_could_not_run_fails() {
@@ -269,13 +245,13 @@ mod tests {
     }
 
     /// Mounts still below `/run/nextroot` after a decoy-side cleanup are a
-    /// degraded reboot even when a plain return was asked for and would
+    /// degraded reboot even when no ending was asked for and it would
     /// otherwise have been Ok.
     #[test]
     fn remaining_mounts_force_a_degraded_reboot() {
         let r = report(
             Side::Decoy,
-            Finish::Return,
+            Finish::Default,
             None,
             vec![std::path::PathBuf::from("/run/nextroot/stuck")],
             false,
@@ -283,14 +259,14 @@ mod tests {
         assert_eq!(exit_status(&r), ExitStatus::DegradedReboot);
     }
 
-    /// A clean decoy-side way back, nothing left below `/run/nextroot`, is Ok.
+    /// A clean decoy-side cleanup, nothing left below `/run/nextroot`, is Ok.
     #[test]
     fn a_clean_decoy_side_return_is_ok() {
-        let r = report(Side::Decoy, Finish::Return, None, vec![], false);
+        let r = report(Side::Decoy, Finish::Default, None, vec![], false);
         assert_eq!(exit_status(&r), ExitStatus::Ok);
     }
 
-    /// The decoy Ok is only for the return: a power action the decoy could not
+    /// The decoy Ok is only for the default ending: a power action the decoy could not
     /// enqueue (nothing dispatched, no kernel power-off) has failed.
     #[test]
     fn a_decoy_power_action_that_could_not_run_fails() {
@@ -315,16 +291,10 @@ mod tests {
     }
 
     /// A device whose mark did not take is named apart from those that are
-    /// closing, never dropped: it stays open after the switch.
+    /// closing, never dropped.
     #[test]
     fn a_device_left_open_is_named_apart_from_those_closing() {
-        let mut r = report(
-            Side::Hidden,
-            Finish::Return,
-            Some(Finish::Return),
-            vec![],
-            false,
-        );
+        let mut r = report(Side::Decoy, Finish::Default, None, vec![], false);
         r.deferred = vec![("top".to_string(), false), ("lower".to_string(), true)];
         assert_eq!(backend_left_open(&r), ["top"]);
         let json = serde_json::to_value(data(&r)).unwrap();
@@ -335,6 +305,27 @@ mod tests {
         assert!(backend_left_open(&r).is_empty());
         let json = serde_json::to_value(data(&r)).unwrap();
         assert_eq!(json["backend_left_open"], serde_json::json!([]));
+    }
+
+    /// The emergency without a flag ends a hidden session in a power-off:
+    /// the wire names the request `default` and what was enqueued
+    /// `poweroff`, never a return.
+    #[test]
+    fn the_default_ending_of_a_hidden_session_is_a_power_off_on_the_wire() {
+        let r = report(
+            Side::Hidden,
+            Finish::Default,
+            Some(Finish::Poweroff),
+            vec![],
+            false,
+        );
+        assert_eq!(exit_status(&r), ExitStatus::Ok);
+        let json = serde_json::to_value(data(&r)).unwrap();
+        assert_eq!(json["requested"], "default");
+        assert_eq!(json["dispatched"], "poweroff");
+        for finish in [Finish::Default, Finish::Poweroff, Finish::Reboot] {
+            assert!(!finish_name(finish).contains("return"), "{finish:?}");
+        }
     }
 
     /// The wire names for each side are a stable contract read by `data`.
@@ -367,7 +358,7 @@ mod tests {
         let env = RuntimeEnv::default();
 
         // No session plan: nothing is recorded.
-        let no_session = report(Side::None, Finish::Return, None, vec![], false);
+        let no_session = report(Side::None, Finish::Default, None, vec![], false);
         record_inactive(&env, &no_session, Some(config_path.as_path()));
         assert!(
             !state_path.exists(),
@@ -375,7 +366,7 @@ mod tests {
         );
 
         // A session was torn down: the inactive state is recorded.
-        let torn_down = report(Side::Decoy, Finish::Return, None, vec![], false);
+        let torn_down = report(Side::Decoy, Finish::Default, None, vec![], false);
         record_inactive(&env, &torn_down, Some(config_path.as_path()));
         assert!(
             state_path.exists(),

@@ -125,7 +125,6 @@ fn every_choice_is_a_spelling_the_loader_takes_and_no_other_is() {
         serde_json::to_value(SleepPolicyMode::Teardown).unwrap(),
     ]);
     let window = spellings(vec![
-        serde_json::to_value(WindowEmergency::Return).unwrap(),
         serde_json::to_value(WindowEmergency::Poweroff).unwrap(),
         serde_json::to_value(WindowEmergency::Reboot).unwrap(),
     ]);

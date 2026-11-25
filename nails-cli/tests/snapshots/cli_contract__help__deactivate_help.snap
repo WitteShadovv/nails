@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Soft-reboot from the hidden session back to the plain decoy
+End the hidden session and power off
 
 Usage: nails deactivate [OPTIONS]
 
@@ -21,11 +21,6 @@ Options:
           Proceed without the confirmation prompt
 
           Deactivation ends the hidden session. Without this flag it prompts on a terminal and refuses to run without one.
-
-      --poweroff
-          Power the machine off instead of returning to the decoy.
-
-          Powering off lets RAM decay; leave the machine off for a few minutes before handing it over.
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
@@ -56,25 +51,14 @@ Options:
           Print help (see a summary with '-h')
 
 WHAT HAPPENS:
-  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
-  marks the hidden volume for closing and soft-reboots: every hidden program
-  is stopped in order, the top of /run is scrubbed of the hidden session, most
-  of the network state it set up is put back, asked of the kernel itself (the
-  addresses and routes it gave the decoy's own devices stay), and the decoy
-  starts again at its own login screen (a display manager set to log an
-  account in automatically logs it in again, as at boot). When a link, MAC
-  address, policy-routing rule or nftables table the return sets out to undo
-  is still the session's afterwards, or it cannot read them back, the machine
-  powers off instead. The scrub also deletes the runtime journal, which the
-  decoy shares with the hidden session, so a volatile decoy's journal starts
-  again at the return. The hidden volume is unmounted and its encryption
-  mapping closed by the switch itself. Deactivation warns when it is bound to
-  power off: over a link the kernel keeps when it is deleted (the fallback
-  device a tunnel module makes when it loads, tunl0 for ipip).
+  In the hidden session, deactivation stops every hidden program in order and
+  powers the machine off. A hidden session never goes back to the decoy: the
+  kernel that ran it ends with it. Leave the machine off for a few minutes
+  before you hand it over. Deactivation refuses while a program blocks
+  shutdown; `emergency` does not wait for it.
 
 EXAMPLES:
-  nails deactivate                    Soft-reboot back to the decoy
-  nails deactivate --poweroff         Power off instead
+  nails deactivate                    End the session and power off
   nails deactivate -y                 Skip the confirmation prompt
 
 ----- stderr -----

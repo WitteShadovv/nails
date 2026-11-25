@@ -268,7 +268,7 @@ impl ActivationPhase {
             Self::KeepClosure => "Copying the hidden system",
             Self::ActivateSystem => "Activating the hidden system",
             Self::MaskUnits => "Masking decoy units",
-            Self::WayBack => "Preparing the way back",
+            Self::WayBack => "Carrying the decoy's filesystems",
             Self::Arm => "Arming the switch",
         }
     }
