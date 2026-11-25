@@ -626,7 +626,7 @@ The binary lives on the hidden volume, so every invocation uses its full path.
 | `check` | decoy | Report readiness to activate, leaving no file or mount behind but in rare cases |
 | `activate` | decoy | Soft-reboot into the hidden session |
 | `deactivate` | hidden session | End the hidden session and power off |
-| `emergency` | either | Kill the hidden session at once and power off (or reboot); on the decoy, remove an interrupted activation |
+| `emergency` | either | Kill the hidden session at once and power off (or reboot). On the decoy, remove an interrupted activation |
 | `recover` | decoy | Remove what an interrupted activation left in `/run` |
 | `status` | either | The live session, security posture and hidden-volume space |
 | `verify` | hidden session | Scan for known artifacts (live, or `--offline` against a decoy image) |

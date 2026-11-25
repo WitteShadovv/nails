@@ -96,7 +96,7 @@ hidden volume and a `/run` with a next root on scratch tmpfs, then drives the
 production mount primitives, the transition step and the cgroup kill against
 them. It runs in the normal `cargo test` and skips, with a message, where user
 namespaces or a delegated cgroup are not available. Only the soft-reboot itself
-and the power-off that ends a session need a VM; those are the session tests
+and the power-off that ends a session need a VM. Those are the session tests
 under `nix/e2e-tests/tests/session/`.
 
 ## Tests and the process environment

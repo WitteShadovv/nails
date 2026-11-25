@@ -366,7 +366,7 @@ Keep all of it `root`-owned on the hidden volume.
    in its `.wants` or `.requires` directory outside the fstab (a NixOS
    `systemd.mounts` unit, the GPT auto-generator's ESP) get the same
    decisions. zram-generator does not run in the hidden session, which runs
-   without its zram swap; the decoy's next boot sets its zram swap up
+   without its zram swap. The decoy's next boot sets its zram swap up
    again. Any other zram swap unit stays on in the hidden session as
    RAM-only swap while its zram device has no backing device, and is kept off
    like disk swap when it has one. A mount unit that only another unit pulls in is not

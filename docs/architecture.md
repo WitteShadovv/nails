@@ -294,7 +294,7 @@ An activation moves through these layers; each names its modules and crates:
   off. `deactivate` refuses while a program blocks shutdown, records the
   session as ended and enqueues `poweroff.target`. The emergency kills every
   interactive shell, enqueues the power-off with every other job replaced,
-  then kills every hidden cgroup; where it cannot enqueue the power-off it
+  then kills every hidden cgroup. Where it cannot enqueue the power-off, it
   asks the kernel. Emergency runs the hot path from `main` before clap, the
   configuration and tracing, so a failed hidden volume or an unreadable
   configuration cannot stop it.

@@ -1337,7 +1337,7 @@ as the hidden systemd does for such a unit at its start, and then writes to it
 directly. The session watcher alerts on every such read-write mount, one below
 the hidden root included, and `[session_mounts] read_only` makes every disk the
 session does not use read-only for the session, including disks attached during
-it; the power-off at the session's end unmounts them with every other
+it. The power-off at the session's end unmounts them with every other
 filesystem (see
 [Disks mounted during the session](configuration.md#disks-mounted-during-the-session)).
 None of that holds for a disk mounted below `<hidden-root>/root`, where NAILS
