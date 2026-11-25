@@ -176,7 +176,7 @@ jobs:
         run: cargo build --release --locked -p nails-oracle
 
       - name: Download the raws
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: oracle-real-raws
 
@@ -449,7 +449,7 @@ jobs:
         run: cargo build --release --locked -p nails-oracle
 
       - name: Download the raws
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: oracle-real-btrfs-raws-${{ matrix.image }}
 
@@ -617,7 +617,7 @@ jobs:
           persist-credentials: false
 
       - name: Download the raws
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v6.0.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: oracle-real-btrfs-raws-${{ matrix.image }}
 
