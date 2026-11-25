@@ -50,6 +50,7 @@ in {
     with subtest("enter and leave the hidden session"):
         canonical_activate("/mnt/data/config/nails.toml", "--overlay-only")
         assert read_status_json("/mnt/data/config/nails.toml")["place"] == "hidden"
+        # Powers the machine off, starts it again and waits for the decoy.
         canonical_deactivate("/mnt/data/config/nails.toml")
         session.assert_decoy_root(machine)
   '';
@@ -69,15 +70,23 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 - `readStatusJsonFn` → `read_status_json(config_path=None)` (requires exit 0) and `read_status_json_with_rc(config_path=None)` → `(rc, data)` for fail-closed postures (exit 6 unknown, 7 degraded/inconsistent)
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
 - `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log` and, line by line, on the serial console the driver records
-- `canonicalDeactivateFn` → `canonical_deactivate(config_path, label="deactivate")`: soft-reboots back, asserts the plain decoy and waits for the hidden mapping to close
+- `canonicalDeactivateFn` → `canonical_deactivate(config_path, label="deactivate", sudo=False, boot=True)`: runs `deactivate -y`, follows the power-off until the kernel said it powered off, then (unless `boot=False`) starts the machine again and waits for the decoy's cold boot (`session.boot_decoy`); returns the host-side time to the power-off
+- `canonicalEmergencyFn` → `canonical_emergency(config_path, label="emergency", extra_args="", sudo=False, boot=True)`: the same for `nails emergency` in the hidden session
 
-The soft-reboot helpers themselves (`follow_soft_reboot`, `assert_hidden_root`,
-`assert_decoy_root`, `carried_run_residue`, `wait_for_power_off`, ...) live in
-`py/nails_e2e/session.py`.
+A hidden session never goes back to the decoy: `deactivate`, `emergency`, the
+watcher's automatic emergency and the window's Emergency power the machine
+off, and so does the transition step when an entry fails. After the cold boot
+the hidden volume is closed and `/run` is empty: a test that goes on opens the
+volume again (`hiddenVolume.reopenHiddenVolume`) and keeps nothing it needs
+later in `/run`.
+
+The session helpers themselves (`follow_soft_reboot`, `follow_power_off`,
+`boot_decoy`, `assert_hidden_root`, `assert_decoy_root`,
+`wait_for_real_power_off`, ...) live in `py/nails_e2e/session.py`.
 
 ### `py/nails_e2e/session.py`
 
-`nails activate`, `deactivate` and `emergency` end by enqueueing
+`nails activate` ends by enqueueing
 `soft-reboot.target`: PID 1 stops every userspace process (the driver's backdoor
 shell included), switches root and starts a fresh userspace, which starts the
 backdoor again. `follow_soft_reboot(machine, trigger, label, deadline_s=600.0,
@@ -105,17 +114,22 @@ console, never to `/dev/console`: that is the last `console=` on the kernel
 command line, `tty0` in the NixOS test VMs, and the driver records only the
 serial port.
 
-`follow_power_off(machine, trigger, label, deadline_s=600.0)` runs a trigger
-the same way for a switch that is to power the machine off instead. It returns
-once QEMU has exited and the kernel said it powered off
-(`wait_for_real_power_off`), and fails at once when a new backdoor announces
-itself (the switch went through), when the new userspace is stuck or when the
-trigger failed.
+`follow_power_off(machine, trigger, label, deadline_s=600.0,
+console_index=None)` runs a trigger the same way for an ending that powers the
+machine off: `deactivate`, `emergency`, or a switch that is to power off. It
+returns once QEMU has exited and the kernel said it powered off
+(`wait_for_real_power_off`: the console's `reboot: Power down`, no restart and
+no panic), with the host-side time from the trigger, and fails at once when a
+new backdoor announces itself (the machine switched or rebooted instead), when
+the new userspace is stuck or when the trigger failed. `trigger=None` waits for
+an ending something else starts (the watcher), from `console_index` on.
+`boot_decoy(machine)` then starts the machine again and asserts the plain
+decoy root, the hidden mapping closed and no NAILS runtime directory.
 
 ### `lib/backend-fault.nix`
 
-- `emergencyOutcomeFn` → `emergency_outcome(trigger, label, deadline_s=600, console_index=None)`: follows a teardown with a failed backend to `"decoy"` or `"off"`
-- `assertFaultExitFn` → `assert_fault_exit(outcome, run_before, wall)`
+- `emergencyOutcomeFn` → `emergency_outcome(trigger, label, deadline_s=600, console_index=None)`: follows a teardown with a failed backend to a real power-off (`follow_power_off`) and returns `"off"`
+- `assertFaultExitFn` → `assert_fault_exit(outcome)`: boots the decoy again and checks its cold boot (`boot_decoy`)
 
 ### VM profiles
 
@@ -211,7 +225,7 @@ The interactive driver opens a Python prompt instead of running the test: `start
 ## Timeouts and shard weights
 
 - Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
-- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes, or when the trigger fails without enqueueing the switch, and at once when QEMU exits. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
+- `session.follow_soft_reboot` (and so `canonical_activate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes, or when the trigger fails without enqueueing the switch, and at once when QEMU exits. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.follow_power_off` (and so `canonical_deactivate` and `canonical_emergency`) and `session.wait_for_power_off` bound a power-off the same way; every session ends in one, and the cold boot of the decoy after it takes about as long as a boot.
 - `ci.e2e run --job-timeout MINUTES`, which every CI shard passes with its job's timeout, ends the run five minutes before that and lets one attempt of a test take an equal share of the rest per attempt (half with `--retries 1`, 12.5 minutes in a 30-minute shard). In a `nix build` nix's `--timeout` stops a longer build; with `--execute` the runner stops the driver and the VMs of its process group. At the deadline whatever still runs is stopped, and no retry, nor with `--execute` any test, starts with less than a minute left. A test stopped for its time, or by its own `globalTimeout`, fails as `timed out`, and one never started as `not run`; the log of a stopped test is kept up to the stop.
 - `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `5 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
 - Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job. A test that boots in `--execute` mode is timed from its driver's start to its end; one built in a `nix build` from the start of its build to its end, as nix reports them while it runs, so tests built side by side on one runner take longer than alone. A test served from the Nix store or a binary cache did not boot and records 0 s.
@@ -288,8 +302,8 @@ enforces what the suite's past races taught:
 - capture command output under `/run`, never `/tmp` (`/tmp` is part of the root
   overlay in a session, and the forensic tests image the disk under it). The
   output of a command that triggers a soft-reboot goes to the hidden volume: the
-  shell that ran it dies at the switch, and the way back scrubs what the hidden
-  session added to `/run`;
+  shell that ran it dies at the switch, and a session's end powers the machine
+  off, which empties `/run`;
 - every wait has a bounded timeout and a power-off wait goes through the QEMU
   process with a deadline (`session.wait_for_power_off`), not a bare
   `wait_for_shutdown()`.
@@ -441,13 +455,15 @@ entry in `shard-durations.json`. It runs in its own lane (`.github/workflows/soa
 weekly and on demand, never on the gate; a red run on `main` opens or comments
 on the `CI red: Soak` issue.
 
-- `soak-reentry`: takes one VM through hundreds of activate/deactivate cycles in
-  a single boot, beside neighbour VMs that cycle on their own, and asserts every
-  re-entry reaches the hidden root's backdoor within the deadline. Every 25
-  cycles, and after the last, it checks that each canary the hidden sessions
-  wrote so far is in the upper and that none of them reached the decoy disk.
-  It keeps the soft-reboot re-entry hang closed, which only paired, repeated
-  activations under parallel-VM host load ever exposed.
+- `soak-reentry`: takes one VM through 300 cycles of activation, `deactivate`'s
+  power-off and a cold boot, beside neighbour VMs that soft-reboot inside their
+  own hidden roots, and asserts every entry reaches the hidden root's backdoor
+  within the deadline. Every 25 cycles, and after the last, it checks that each
+  canary the hidden sessions wrote so far is in the upper and that none of them
+  reached the decoy disk. Since every session ends in a power-off, each entry
+  is the first soft-reboot of its boot: the re-entry hang within one boot,
+  which only paired, repeated activations under parallel-VM host load ever
+  exposed, can no longer happen through NAILS.
 
 ## Research spikes (`tests/research/`)
 
@@ -462,7 +478,8 @@ starting with `FINDING:` are research output, not assertions.
 
 - `research-emergency-cgroup-kill`: shows that systemd restarts a killed
   `Restart=always` unit onto the decoy unless a stop job is enqueued first; the
-  emergency enqueues the soft-reboot before its `cgroup.kill` for this reason.
+  emergency enqueues its ending (now `poweroff.target`) before its
+  `cgroup.kill` for this reason.
 - `research-dual-root-vt-emergency`: runs a hidden display and session on their
   own VT inside a whole-root overlay while the decoy desktop keeps running, and
   makes emergency a cgroup kill plus a VT switch. This dual-root design was
@@ -477,10 +494,10 @@ starting with `FINDING:` are research output, not assertions.
 
 The spike that proved the whole-root soft-reboot, formerly
 `research-soft-reboot-whole-root`, is now the regular test
-`soft-reboot-mechanics` in `tests/session/`: it enters a whole-root overlay with
-`systemctl soft-reboot` and returns twice, checks the vital paths, the `/run`
-scrub and the decoy journal, then power-cycles through the firmware and scans
-the raw decoy disk.
+`soft-reboot-mechanics` in `tests/session/`: it enters a whole-root overlay by
+hand with `systemctl soft-reboot` and powers off from it, twice, checks the
+vital paths, the ESP and NVRAM and the decoy journal after each cold boot, and
+scans the raw decoy disk.
 
 ## Pre-flight tests (`tests/preflight/`)
 
@@ -521,26 +538,30 @@ promise of `check` as a whole:
 
 ## Session tests (`tests/session/`)
 
-The `session` tag groups the tests of the whole-root session. Each follows real
-soft-reboots with `py/nails_e2e/session.py`:
+The `session` tag groups the tests of the whole-root session. Each follows the
+real soft-reboot into the hidden root and the real power-off that ends every
+hidden session (a hidden session never goes back to the decoy) with
+`py/nails_e2e/session.py`, and boots the VM again where it goes on:
 
 - `session-lifecycle`: `init` and `check`, activation into the hidden root, a
-  hidden write that lands only in the upper, deactivation without hidden `/run`
-  residue and with the volatile decoy journal reset (a line the decoy logged
-  before activation is gone, and the journal starts at the deactivation, with
-  no kernel record the kernel logged earlier), the upper persisting into the
-  next session, an emergency and its timed log, `recover`/`emergency` on
-  the plain decoy changing nothing, and eth1 keeping the static addresses
-  NixOS gave it (`networking.interfaces`) in both hidden sessions and after
-  both ways back, with the unit that adds them running at every switch;
+  hidden write that lands only in the upper, `verify --deep` in the session,
+  `deactivate` powering the machine off and the decoy's cold boot (no soft-reboot
+  count, no hidden file, unit or journal line, and the volatile journal without
+  the decoy's own line from before the session), the upper persisting into the
+  next session, an emergency that kills a hidden service and the login session
+  and powers off with its timed phases in the log on the hidden volume,
+  `recover`/`emergency` on the plain decoy changing nothing, and eth1 keeping
+  the static addresses NixOS gave it (`networking.interfaces`) in both hidden
+  sessions and after each cold boot;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
-  its history, emergency from a hidden login shell, the decoy's avahi-daemon
-  and a service with a PID file in `/run` starting again after the emergency
-  killed their hidden copies, the units the hidden root does not need (the
-  boot-loader and root-filesystem units) and systemd's GPT auto-generator
-  masked in the hidden session only, the decoy's mounts and `utab` lines back
-  as before the entry after the emergency's way back, `--poweroff`, and the
-  next cold boot on the plain decoy with the backend closed;
+  its history, emergency from a hidden login shell and from a desktop terminal
+  killing everything and powering off, the units the hidden root does not need
+  (the boot-loader and root-filesystem units) and systemd's GPT auto-generator
+  masked in the hidden session only, `utab` naming live mounts, the cold-booted
+  decoy running its own services (avahi-daemon, a service with a PID file in
+  `/run`) without the session's masks, a root covered by a disk receiving
+  nothing from the emergency, and `--poweroff` with the next cold boot on the
+  plain decoy with the backend closed;
 - `session-console-history`: activation or an emergency typed into a shell
   that a console login started never reaches the decoy's history files. The
   console logs in through util-linux's login, so the login shell leads its
@@ -552,7 +573,8 @@ soft-reboots with `py/nails_e2e/session.py`:
   history settings `nails check` typed into it reads as the shell it was typed
   into, and into a root shell that `sudo -i` opened at the prompt, and
   `nails emergency --poweroff` into such a window on the plain decoy, each
-  with 400 idle processes around it as on a desktop;
+  with 400 idle processes around it as on a desktop; each session ends with
+  `deactivate`'s power-off;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry; PID 1
@@ -560,71 +582,63 @@ soft-reboots with `py/nails_e2e/session.py`:
   reload on, the killed activation leaves it, and every one of the others
   removes it and leaves PID 1 without it;
 - `session-refused-switch`: an entry the transition refuses (a unit's stop
-  hides the next root's os-release during the decoy's shutdown) coming back to
-  the plain decoy with nothing of the entry left and no record on the decoy's
+  hides the next root's os-release during the decoy's shutdown) powering the
+  machine off for real (the step fails closed), the cold boot coming up on the
+  plain decoy with nothing of the entry left and no record on the decoy's
   disk, `status` and `status --json` naming the refused switch with its time
   and reason once the hidden volume is open again, `recover` keeping the
   reason, and the next activation clearing it;
 - `session-dns-records`: a name server and a search domain that only the hidden
-  session's NetworkManager uses stay off the decoy after the way back: out of
-  the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
-  decoy's `resolvconf.service` writes at its start, and out of its journal;
-- `session-mac-restore`: a network card whose driver refuses a new MAC address
-  while the card is up (QEMU's emulated NE2000) has its permanent address back,
-  and is up, after the hidden session gave it a random one and ended with
-  `deactivate`, and again with a plain `emergency`;
+  session's NetworkManager uses never reach the decoy: after the power-off the
+  cold boot has none of them in the openresolv records in `/run`, in the
+  `/etc/resolv.conf` that the decoy's `resolvconf.service` writes, in
+  NetworkManager's runtime state or in any boot of the journal, and the
+  network state (rules, nft tables, sysctls, hostname) of its first boot;
+- `session-mac-restore`: a random MAC address the hidden session set on a
+  network card is gone after `deactivate`'s power-off and after a plain
+  `emergency`'s: the card has its permanent address on each cold boot;
 - `session-fresh-pids`: after a session that pushed the kernel's process
-  numbers far on, the getty the decoy starts on the way back and its records
-  in `/var/log/wtmp` carry numbers in the range a fresh boot of the same image
-  gives them, as they do after a second session beside a unit that every
-  soft-reboot leaves running with a lower number, and a plain soft-reboot, as
-  a positive control, does not;
-- `session-wayback-poweroff`: a way back that cannot put the decoy's network
-  state back (the hidden session loaded `ipip`, whose fallback device `tunl0`
-  the kernel keeps when asked to delete it) powers the machine off instead of
-  returning, with nothing on the console that says why or names the decoy,
-  PID 1's status lines and its lines about the carried filesystems' unmounts
-  included, after `deactivate` and after a plain `emergency`; one that undoes
-  everything still returns;
-- `session-switch-timeout`: a switch held up until `soft-reboot.target`'s job
-  timeout powers the machine off instead of being forced through, on the way
-  back and on the way in, with PID 1's own line for it on the console and no
-  userspace coming up first, and each next cold boot is the plain decoy (after
-  the entry with the record still active, which `recover` resets). The node's
-  test-only unit holds up the switch for as long as its instance says (for
-  good, or 90 seconds), and a test-only drop-in shortens the timeout to a
-  minute. The hidden PID 1 has the session's drop-in with that timeout, and
-  the decoy after the way back has its own unit, on which the same hold forces
-  a plain soft-reboot through (the positive control). Activation refuses with
-  a test-only drop-in that turns the timeout off, and goes on after a
-  `systemctl service-watchdogs no`, which its own reload undoes; in a session
-  `deactivate` refuses with service watchdogs off, with no timeout and without
-  the session's drop-in, each time before it says that the session ends, and
-  the session goes on each time. When a test-only unit's stop removes the
-  drop-in during the switch, after `deactivate` checked it, the same hold
-  forces the way back through into the decoy, which comes up with the
-  session's files still in `/run` (the positive control for the session's own
-  switch; the entry refuses to stage one for the way in). With a test-only
-  drop-in that sets a plain `poweroff` for the timeout instead, PID 1 skips
-  that action during the switch, and a switch held up for 90 seconds goes on
-  only when the hold ends. `deactivate --poweroff` in a session with service
-  watchdogs off, whose way back `deactivate` refuses, powers the machine off,
-  and the next cold boot is the plain decoy with the session's end recorded;
+  numbers far on and its power-off, the getty the decoy starts at its cold boot
+  and its records in `/var/log/wtmp` carry numbers in the range a fresh boot of
+  the same image gives them, and a plain soft-reboot, as a positive control,
+  does not;
+- `session-wayback-poweroff`: `deactivate` and a plain `emergency` each end in
+  a real power-off with nothing on the console that says why or names the
+  decoy, PID 1's status lines and its lines about the carried filesystems'
+  unmounts included, and the cold boot without the kernel-only change the
+  session made (the IPIP fallback device `tunl0`, which the kernel keeps when
+  asked to delete it and only the power-off ends);
+- `session-switch-timeout`: the session's timeout guard stays loaded for the
+  whole session, through a daemon-reload; a soft-reboot in the hidden session
+  or an entry held up until `soft-reboot.target`'s job timeout powers the
+  machine off instead of being forced through, with PID 1's own line for it on
+  the console and no userspace coming up first, and each next cold boot is the
+  plain decoy (with the record still active, which `recover` resets). The
+  node's test-only unit holds up the switch for as long as its instance says
+  (for good, or 90 seconds), and a test-only drop-in shortens the timeout to a
+  minute. On the decoy, which has no guard, the same hold forces a plain
+  soft-reboot through (the positive control). Activation refuses with a
+  test-only drop-in that turns the timeout off, and goes on after a
+  `systemctl service-watchdogs no`, which its own reload undoes; `deactivate`
+  powers off without asking about any guard, in a session without one too.
+  With a test-only drop-in that sets a plain `poweroff` for the timeout
+  instead, PID 1 skips that action during the switch, and a switch held up
+  for 90 seconds goes on only when the hold ends;
 - `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
   with its store on the root disk under NixOS's read-only bind, a store path
-  bound after it, a read-only bind stacked on an fstab filesystem and its ESP
-  behind an automount, has every mount outside `/run`, `/boot` and the hidden
-  volume back after the way back as it had it before the entry (filesystem,
-  directory, place in the tree, options and propagation type, in the same
-  order and no mount more), its `utab` lines with them, a read-only store,
-  and its automount on `/boot`, masked in the hidden session, set up again
-  by its own start;
+  bound after it, an fstab filesystem and its ESP behind an automount, has the
+  automount on `/boot` skipped in the hidden session, and after the power-off
+  the cold-booted decoy has its mount table as at its first boot: a read-only
+  store, the other filesystems, `utab` lines naming live mounts, the
+  `x-initrd.mount` marks and its automount on `/boot`, and nothing of the
+  session on its fstab filesystem;
 - `session-fstab-policy`: the decision `check` reports for every decoy
   filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
-  hidden upper, masked swap, and no hidden write on any decoy disk afterwards;
-  with Debian's `blk-availability.service` running, a decoy filesystem on LVM
-  that the switch keeps mounted for the way back (the unit's stop is cleared
-  for the session and back afterwards);
+  hidden upper, masked swap, and no hidden write on any decoy disk afterwards,
+  read after the power-off and the cold boot; with Debian's
+  `blk-availability.service` running, a decoy filesystem on LVM that the
+  switch keeps mounted (the unit's stop is cleared for the session), and the
+  cold boot with the decoy's own stop and none of the session's masks;
 - `session-fstab-options`: the lines of the hidden session's own fstab read
   by their options' names as systemd's fstab generator reads them: a disk
   whose line says `noauto,auto=1` with a quoted option, one with
@@ -636,14 +650,15 @@ soft-reboots with `py/nails_e2e/session.py`:
   and `check` reads a decoy line with `noauto,auto=1` and a quoted option as
   one the boot mounts;
 - `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
-  soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
-  that does not evaluate refusing the entry, and no bootloader or system
-  profile change;
+  soft-reboot, the cold boot after the power-off on the decoy toplevel with
+  the decoy's MAC address and hostname, re-entry, a configuration that does
+  not evaluate refusing the entry, and no bootloader or system profile change;
 - `session-nixos-store-gc`: the hidden NixOS closure copied onto the hidden
   volume at entry, a decoy rebuild and garbage collection between two hidden
   sessions that deletes the hidden toplevel from the decoy store, the second
   session still starting it, and the decoy store (database, writable store
-  layer, profiles and roots) unchanged by each session;
+  layer, profiles and roots) unchanged by each session, apart from what the
+  cold boot itself registers;
 - `session-alert-delivery`: the notification of `sudo nails rehearse plant` and
   the watcher's alert for a disk mounted read-write reaching a notification
   server on the operator's own session bus, from the operator's uid, once on a
@@ -651,16 +666,16 @@ soft-reboots with `py/nails_e2e/session.py`:
   them;
 - `session-disk-mounts`: a second disk mounted read-write in the hidden session
   raising the watcher's alert, and a third mounted below the hidden root
-  raising it too, `deactivate` freeing the first while busy and unmounting both
-  before the way back, as its log on the hidden volume records, a line for the
-  third disk below the hidden root that the session wrote into its own
-  `/etc/fstab` kept off with a warning by the next `--overlay-only` entry, and
-  with `[session_mounts] read_only` the disk read-only once the session's
-  watcher has started (its first sweep),
-  a disk hot-plugged during the session made read-only by the udev rule alone,
-  every write failing, the third disk, mounted read-only below the hidden root
-  and set writable by hand, swept read-only again, and every disk writable
-  again after the way back, the second unchanged;
+  raising it too, `deactivate` powering off with disks mounted and busy, a
+  line for the third disk below the hidden root that the session wrote into
+  its own `/etc/fstab` kept off with a warning by the next `--overlay-only`
+  entry, and with `[session_mounts] read_only` the disk read-only once the
+  session's watcher has started (its first sweep), a disk hot-plugged during
+  the session made read-only by the udev rule alone, every write failing (its
+  image, read on the host after the power-off, still blank), the third disk,
+  mounted read-only below the hidden root and set writable by hand, swept
+  read-only again, and every disk writable after the cold boot, the second
+  unchanged;
 - `session-readme-captures`: the source of the README's `check`, `activate`
   and `status --json` captures (`docs/assets/screenshots/`). The standard VM
   is set up as `docs/decoy-requirements.md` recommends for a clean decoy (a
@@ -669,9 +684,18 @@ soft-reboots with `py/nails_e2e/session.py`:
   start shows; `check` and `activate` print no warning there;
 - `session-sleep-guard`: each `sleep_policy.mode` against a virtual lid switch
   that logind watches like a laptop's: with `warn` a closed lid suspends the
-  session, with `block` the guard holds sleep, idle and lid-switch inhibitors
-  and a closed lid does not, and with `teardown` a closed lid powers the
-  machine off before the suspend runs;
+  session, with `block` the guard holds sleep, idle and lid-switch inhibitors,
+  a closed lid does not, and `deactivate` still powers off, with `teardown` a
+  closed lid powers the machine off before the suspend runs, and no cold boot
+  runs a guard or holds its inhibitors;
+- `session-window-emergency`: the window's Emergency through the helper, with
+  the default request and with the power-off request, and the operator's own
+  `systemctl poweroff`, each powering the machine off for real within the
+  window's grace, and each cold boot the plain decoy;
+- `session-window-launcher`: the launcher entry and polkit action live only in
+  the hidden session, the helper plans a power-off for each ending, the
+  window's deactivate powers off, and the cold-booted decoy and its disk image
+  hold none of the launcher's text;
 - `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture
@@ -712,8 +736,8 @@ Layout:
   touches the single decoy disk the forensic check images, with the layout of
   `e2e-tests/lib/hidden-volume.nix`. The tmpfs is below `/run`, which a
   soft-reboot does not carry, so after the switch the file is reachable only
-  through its loop device, which is attached without autoclear so that the
-  hidden root can be opened again on the decoy after a session. It also
+  through its loop device. The session's power-off takes the file with it,
+  and the next session's setup makes a fresh one. It also
   switches to a volatile journal (plus masking an active rsyslog or auditd,
   with `auditctl --signal stop` as a fallback for an auditd that still runs
   after the mask), which the decoy-persistence preflight needs, stops
@@ -722,6 +746,17 @@ Layout:
   scenario that activates on an image with apt's timers does after each boot
   before it waits for a daily run already started to end, so that no daily
   run makes `unattended-upgrade-run` refuse an activation.
+- `py/power_off.py`: how a scenario ends a hidden session. A hidden session
+  never goes back to the decoy, so `deactivate` and `emergency` power the
+  machine off. A QEMU that exits would take the `-snapshot` disk with it, so
+  `follow_power_off` tells QEMU over QMP to pause at the guest's power-off
+  instead, runs the trigger, and waits until QEMU is stopped. It needs the
+  kernel's `reboot: Power down` on the console, and fails at once when a new
+  userspace comes up, a userspace is stuck, the trigger fails, the kernel
+  reboots or panics, or QEMU exits. `boot_again` resets the machine into a cold
+  boot of the same disk and reconnects. `image_paused_disk` copies the paused
+  disk into a sparse raw image for the forensic scans. Its unit tests run in
+  the `distro-checks` check.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
 - `tests/nix-trace.nix`: the Nix scenario, run on Debian 13
   ([below](#the-nix-scenario)).
@@ -764,50 +799,43 @@ including under `/usr`, that must land in the upper; asserts the ESP is
 read-only in the hidden root, the units the hidden root does not need (the
 boot-loader and root-filesystem units) masked there where the decoy has them
 and needed by no decoy unit, and systemd's GPT auto-generator masked in each
-hidden session and unmasked after each way back; runs `emergency`, which
-soft-reboots back to the plain decoy, where the PID-file service starts again;
-asserts the kernel log names no session drop-in and no failed unmount of the
-hidden volume; before each way back plants what would reach the decoy's
-journal past the kmsg cursor or through journald's sockets
-(`nails_e2e.journal_tail`: a unit that stops after the hidden journald and
-logs through each socket, and a lingering unit whose stop command writes to
-`/run`, each proving in the ring buffer that it ran, the lingering unit
-only where the way back's last step ends it and not after an emergency,
-which kills it itself), and after it asserts
-that the decoy's journal holds none of it and no other line of the hidden
-session past the cursor but PID 1's own generic last lines, which a plain
-soft-reboot logs too, and a device-mapper volume's teardown lines, that the
-decoy's start opened none of journald's sockets anew where the hidden start
-had not either (the decoy's own shutdown can close one before systemd 258),
-that the
-lingering unit's file in `/run` is gone, and that `/run/nextroot` and the
-line that removes it are gone; runs a second session
-that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
+hidden session and unmasked after each cold boot; runs `emergency`, which
+powers the machine off, and boots the same disk cold (`py/power_off.py`).
+After that boot the decoy root is plain, the hidden mapping and NAILS's
+runtime folder are gone, the canaries are not on the decoy, no unit is
+failed, the PID-file service starts again, the masks, the GPT auto-generator
+and the boot automounts are the decoy's own, PID 1 has no timeout guard, the
+kernel log names no session drop-in and no failed unmount of the hidden
+volume, and the decoy's unattended-upgrades log has gained no stop line. It
+then runs a second session that ends with `deactivate`, which powers off as
+well, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
 volume keeps the unit's stop from unmounting it, and writing canaries of its
-own; rehearses on that session
-(`rehearse plant` in it, a refused scan there, and after the plain
-`deactivate` a clean scan of the raw decoy devices in the same boot, which on
-Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
-host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
-NixOS suite) with null and positive controls, the positive control's token in
-the file's contents only. It turns the decoy's disk swap off before the first
-hidden root exists, and the swap is off in both sessions, before each entry,
-before the rehearsal's scan and before the clean image (the baseline and
-positive-control images are taken in boots of the pristine image, with no
-hidden root). With the swap line of the fstab kept, the first session sees
-its unit skipped and `swap.target` reached, and its way back turns the swap on
-again, which the scenario asserts and turns off at once; the second session
-runs with the line made `noauto`, which masks its unit in the session and
-keeps the swap off through the way back. It asserts masked at runtime the units
+own. That session plants a rehearsal (`rehearse plant`, and a scan there,
+which must be refused). The rehearsal's scan on the decoy is not run: it needs
+the hidden root again, which lives in RAM here and is gone with the
+power-off, so the disk-image check looks for the rehearsal's token and files
+instead. After the second cold boot the scenario asserts the same as after
+the first, and that `blk-availability.service` stops with its own command
+again and the boot filesystems are mounted. It then runs the host-side decoy
+disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
+null and positive controls, the positive control's token in the file's
+contents only. It turns the decoy's disk swap off before the first hidden
+root exists, and the swap is off in both sessions, before each entry and
+before the clean image (the baseline and positive-control images are taken in
+boots of the pristine image, with no hidden root). With the swap line of the
+fstab kept, the first session sees its unit skipped and `swap.target`
+reached, and the cold boot after it turns the swap on again, which the
+scenario asserts and turns off at once. The second session runs with the
+line made `noauto`, which masks its unit in the session and keeps the swap
+off through the cold boot after it. It asserts masked at runtime the units
 NAILS masks in the hidden root that the decoy has loaded, the fstab swap units
-in the second session and the ESP's automount, the residue report of each activation free
-of warnings (the first session's loop device is detached before the second
-entry), an ESP that systemd mounts on demand bound read-only at its mount point
-in each hidden session, with its automount masked there and back on the decoy
-after each way back (the first entry finds the ESP mounted, the second idle,
-with only its automount there), and the rehearsal's scan exiting 9 with the
-blind spot on a btrfs root's device, 0 on any other root. The disk-image check
+in the second session and the ESP's automount, the residue report of each
+activation free of warnings, and an ESP that systemd mounts on demand bound
+read-only at its mount point in each hidden session, with its automount
+masked there and back on the decoy after each cold boot (the first entry
+finds the ESP mounted, the second idle, with only its automount there). The
+disk-image check
 looks for the canaries of both sessions, for the canary files' names and for
 the token the rehearsal planted, which its files carry in their names. Before
 each image it also reads the decoy root's files through the decoy's kernel,
@@ -831,20 +859,21 @@ compressed file written and deleted that the raw scan and the read through the
 kernel miss and the carve and an older root find. `btrfs restore` reads the
 older roots only, since it cannot read about 11,000 inline zstd extents of the
 arch-boxes image, which the kernel and the carve read. It lists the failed
-units seven times, on the decoy before the first switch, right after each
-switch (in both hidden sessions and on the decoy after both ways back) and in
-both hidden sessions again just before the way back, compares each listing
-with the entry's `knownFailedUnits`, and checks that the `platform` row of
-`check` warns about every unit listed there
-([Known failures](#known-failures)).
+units seven times: on the decoy before the first switch and after each of the
+two cold boots, and in both hidden sessions right after the entry and again
+just before the session's end. It compares each listing with the entry's
+`knownFailedUnits`, and checks that the `platform` row of `check` warns about
+every unit listed there ([Known failures](#known-failures)).
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
-helpers. The scenario therefore runs its lifecycle in one QEMU process (a
-soft-reboot keeps the kernel and QEMU) and, before each image, mirrors the live
-disk into `<state_dir>/vm.qcow2` over QMP, where `disk_forensics.snapshot` picks
-it up. A soft-reboot carries `/run` but not the mounts below it, so the scenario
-mounts the 9p share again after every switch.
+helpers. The scenario therefore runs its lifecycle in one QEMU process: a
+soft-reboot keeps the kernel and QEMU, and a session's power-off pauses QEMU,
+whose reset then boots the same disk cold. Before each image it mirrors the
+live disk into `<state_dir>/vm.qcow2` over QMP, where
+`disk_forensics.snapshot` picks it up. A soft-reboot carries `/run` but not
+the mounts below it, and a cold boot keeps neither, so the scenario mounts the
+9p share again and writes its config after every switch and boot.
 
 ### The Nix scenario
 
@@ -864,18 +893,19 @@ it, as a build user in the build sandbox. It asserts that:
   group in `/etc/group`, and the copies shadow-utils keeps of the account
   files, each naming them, lie in the root overlay's upper on the hidden
   volume, and `check` skips its `decoy-nix-trace` row in the session;
-- after `deactivate`, the decoy has none of the paths the check looks for but
-  the test driver's `/nix`, no account file or copy of one names a build user
-  or the group, no system shell startup file holds a hook, no daemon unit is
-  known, and the row says what it said before the session;
-- the decoy's image, taken after the way back, lists below `/nix` what the
+- `deactivate` powers the machine off, and the image of the disk as the
+  power-off left it lists below `/nix` what the
   baseline image listed and, beyond what the baseline lists, none of the
   installer's files, deleted entries included, and its bytes hold neither the
   nonce nor the name of a store path the session wrote, nor, beyond what the
   baseline holds, the name of a store path the installer copies or one of
   three lines it writes: a build user's line in `/etc/passwd`, its
   `build-users-group` setting and its shell hook;
-- installed and used on the decoy itself, the positive control, Nix is named
+- after the cold boot of that disk, the decoy has none of the paths the check
+  looks for but the test driver's `/nix`, no account file or copy of one names
+  a build user or the group, no system shell startup file holds a hook, no
+  daemon unit is known, and the row says what it said before the session;
+- installed and used on the decoy itself in that boot, the positive control, Nix is named
   by the row, each path the check looks for that the install left included,
   and so are the group and the build users in the account files and in their
   copies; the decoy's image lists the store paths and holds the nonce, the
@@ -893,14 +923,16 @@ on a system without one; the decoy's next boot mounts them again.
 ### The unattended-upgrades scenario
 
 unattended-upgrades' shutdown helper waits for logind's shutdown signal, which
-activation and the way back with `deactivate` send, as `systemctl soft-reboot`
-does. `tests/apt-shutdown.nix` (`<image>-apt-shutdown`) shows
+activation sends, as `systemctl soft-reboot` does. `tests/apt-shutdown.nix` (`<image>-apt-shutdown`) shows
 what it does at a switch and that the refusals keep it off the decoy disk
 ([decoy requirements](../../docs/decoy-requirements.md#unattended-upgrades)).
 It starts a daily run as `apt-daily-upgrade.timer` does and holds it at its
 first step, the power check, with a stand-in for `on_ac_power` on a tmpfs of
 its own, put first in the run's `PATH` by a runtime drop-in: the run holds its
-lock and runs no dpkg. It starts `apt-daily.service` as `apt-daily.timer` does
+lock and runs no dpkg. Each of the four sessions ends with a power-off, after
+which the same disk boots cold (`py/power_off.py`), so what the decoy's
+helper wrote at the switch is still there for the next checks. It starts
+`apt-daily.service` as `apt-daily.timer` does
 and holds it the same way twice, with a wrapper of `unattended-upgrade` that
 holds its download run before it starts, and with an `on_ac_power` that holds
 the started run once it holds the lock. It asserts that:
@@ -928,11 +960,10 @@ the started run once it holds the lock. It asserts that:
   the helper logs no shutdown-mode run; with `--allow-persistent-decoy` the
   activation goes through and the decoy's helper logs its shutdown-mode run on
   the decoy disk at the switch, the positive control, and on an image without
-  python3-gi the helper started again at the way back writes its two lines;
+  python3-gi the helper the next cold boot starts writes its two lines;
 - with the decoy's helper stopped but enabled and the setting still on,
-  `check` only warns, the activation goes through, and at the way back
-  (`deactivate`) the session's copy logs its shutdown-mode run into the upper
-  on the hidden volume, while the decoy's log gains none;
+  `check` only warns, the activation goes through, and after the session's
+  end (`deactivate`) the decoy's log has gained no shutdown-mode line;
 - with the setting's line deleted after the decoy's helper started with it,
   `apt-config` reads the setting off, but `check` refuses, as no file sets it
   and `apt.conf.d` changed after the helper started; with
@@ -979,9 +1010,12 @@ must find:
 }
 ```
 
-`hiddenSession` and `afterReturn` map each unit that must be failed when the
-scenario lists the failed units in both hidden sessions, or on the decoy after
-both ways back, to a line its failed start logs. `notInImage` lists the units
+`hiddenSession` maps each unit that must be failed when the scenario lists the
+failed units in both hidden sessions to a line its failed start logs.
+`afterReturn` stays in the table because `ci/distro_images.py` checks for
+exactly these three keys, but no listing reads it: no session goes back to
+the decoy, and the decoy's start after a session is a cold boot, where no unit
+may be failed, as on the first boot. `notInImage` lists the units
 the release's warning names that the image does not install, so the scenario
 cannot see them: the cloud image has no CUPS, and the printing half of the
 Ubuntu 26.04 warning rests on a check by hand. Ubuntu 24.04 lists nothing, so
@@ -992,15 +1026,14 @@ A listing sees only the units failed at that moment. It misses a unit that
 fails after the last listing of its phase, and one that fails but starts again
 before the next listing, which includes a unit that fails while a switch stops
 the old system and that the new system starts again. Each hidden session is
-listed twice, right after its entry and just before its way back, since the
-way back resets every unit that failed in the session, so no listing on the
-decoy can see one.
+listed twice, right after its entry and just before its end, since a unit
+that failed in the session is gone with the power-off.
 
 The scenario fails when:
 
-- a listing holds a unit that the list does not name: on the decoy before the
-  first switch (where nothing may be failed), right after a switch or in a
-  hidden session before its way back;
+- a listing holds a unit that the list does not name: on the decoy, before
+  the first switch or after a cold boot (where nothing may be failed), or in a
+  hidden session;
 - a listed unit failed, but what it logged since its latest start lacks its
   line, so it fails in another way;
 - a `notInImage` unit is in the image, which asks for it to move to the phases
@@ -1033,17 +1066,21 @@ phase where none was failed.
 
 `records.nix` runs `tests/session-records.nix` on Debian 13 and Ubuntu 24.04,
 as one host driver per distribution (`<distro>-records`). A whole-root session
-returns to the decoy through a soft-reboot, and the decoy's own writers record
-that start: on Debian 13 wtmpdb's boot writer, which the cloud image lacks and
-the scenario installs over the guest's network, and on Ubuntu 24.04 the classic
-wtmp boot record of systemd 255. In one QEMU process the scenario power-cycles
-the decoy for a reference, keeps a session until the kernel has been up for
-more than five minutes (wtmpdb's threshold), deactivates, and asserts that the
-session added one boot, as a power cycle does: named reboot, dated at the way
-back, no earlier than anything before it, and no crash. It also asserts that
-the pieces the way back leaves in `/run` are gone and that `/run` is `noexec`
-again where the decoy had it so. A plain soft-reboot afterwards is the positive
-control and must leave the trace. NixOS is not in it: its records already read
+never goes back to the decoy: it ends with a power-off, and the decoy's next
+start is a cold boot. Its records must read as one plain power cycle. The
+decoy's writers are, on Debian 13, wtmpdb's boot writer, which the cloud image
+lacks and the scenario installs over the guest's network, and on Ubuntu 24.04
+the classic wtmp boot record of systemd 255. On one disk (QEMU pauses at each
+power-off and is reset into a cold boot of the same disk, `py/power_off.py`)
+the scenario power-cycles the decoy for a reference (`systemctl poweroff` and
+a cold boot), runs a session, deactivates, which powers off, boots the disk
+cold, and asserts that the session added one boot, as a power cycle does:
+named reboot, dated at the cold boot, no earlier than anything before it, and
+no crash. The readers in `lib/records.py` keep the names they got for the way
+back a session once took (`wtmpdb_way_back_problems`,
+`classic_way_back_problems`); they judge any start of the decoy against one
+power cycle's. A plain soft-reboot afterwards is the positive control and must
+leave the trace a soft-reboot leaves, so a pass is not vacuous. NixOS is not in it: its records already read
 as a power cycle. CI runs it in the records suite of `distro-e2e.yml`, and its
 driver runs by hand as the refusal's below.
 
@@ -1058,7 +1095,7 @@ instead. What could still give a session away there is a record of the session
 itself: a console login through PAM's login stack runs in the hidden session
 and must write its lastlog2 row and its wtmp records there, and a failed login,
 a wrong password for root that an unprivileged user gives `su`, its btmp
-record, none of which may be on the decoy after the way back (its lastlog2 and
+record, none of which may be on the decoy after its cold boot (its lastlog2 and
 btmp as they were, its wtmp without a record on the login's terminal), with
 the same logins on the decoy as the positive control.
 ### The access-time scenarios
@@ -1067,7 +1104,7 @@ the same logins on the decoy as the positive control.
 binary, and on Fedora 44, with the test-only build that admits Fedora's row of
 the family table (`lib/admitted.nix`), as one host driver per image
 (`<image>-access-times`). It finds the reads of the decoy disk that NAILS makes
-and a plain soft-reboot does not, on a root mounted `relatime`: before each
+and a plain soft-reboot or power cycle does not, on a root mounted `relatime`: before each
 phase it sets the access time of every entry of the decoy disk's filesystems two
 days back, so that each read in the phase updates one, and after it lists the
 entries read and not changed since. It leaves two places unaged whose change
@@ -1075,13 +1112,17 @@ times NAILS judges, as the aging would have NAILS refuse the entry: apt's
 configuration, which NAILS compares with the start of Debian's
 unattended-upgrades helper (its entries still show a read, as their access times
 are older than a day), and `/etc/selinux/config`, which `lsm-status` compares
-with the boot (a read of it may not show). Two plain soft-reboots of the decoy into
-itself, one before and one after the sessions, each with the hidden root
-mounted as for a session, are the controls: what the decoy's own stop and start
-read. Every read in the window of `nails check` is
-a finding. In two sessions, one left by `deactivate` and one by the emergency, a
-read before the way back started must be one a control's stop made, and a read
-after it one a control's stop or start made. A link that NAILS' own lookups
+with the boot (a read of it may not show). Four controls, each with the
+hidden root mounted as for a session, show what the decoy's own stop and start
+read: a plain soft-reboot of the decoy into itself and a plain power cycle
+(the decoy's own power-off and a cold boot of the same disk), each once
+before and once after the sessions. Every read in the window of `nails check`
+is a finding. In two sessions, one ended by `deactivate` and one by the
+emergency, each of which powers off and is followed by a cold boot of the
+same disk (`py/power_off.py`), a read before the end was asked for must be
+one a control's stop made, and a read after it one a control's stop or start
+made. A cold boot loses `/run` and the share's mount, so the scenario reads
+the boot's access times first and only then sets those up again. A link that NAILS' own lookups
 follow or read, and udevd's listing of its rule and link directories, which it
 makes whenever it handles a kernel event, are listed and do not fail the
 scenario; every other finding does. Every command of the scenario that
@@ -1090,9 +1131,10 @@ in a mount namespace whose every mount is noatime, so the scenario's own reads
 never count. The run prints its whole report, every phase's reads with their
 times, between `=== ACCESS-TIME REPORT ===` lines, and for each session PID 1's
 journal from the activation to the switch, which PID 1 writes at debug level
-for that time, so a read can be lined up with what PID 1 did. An activation,
-`deactivate` or emergency that exits non-zero while the system is not stopping
-has not switched, and the run fails at once with its output. CI runs it in the
+for that time, so a read can be lined up with what PID 1 did. An activation
+that exits non-zero while the system is not stopping has not switched, and the
+run fails at once with its output; a `deactivate` or emergency that fails
+shows its output on the console, and the run fails at once too. CI runs it in the
 records suite of `distro-e2e.yml`.
 
 ### The refusal of Fedora and Arch
@@ -1192,12 +1234,14 @@ with every repository disabled and started, then the documented fixes; the
 locate database; lsm-status, enforcing and after `setenforce 0`; check clean;
 a failed console login, which btmp must record); a plain soft-reboot; a
 second power cycle, so that the first entry starts from a cold boot as an
-operator's does; a session ended with `deactivate`; a package the decoy
-removes after that session; a second session as a user through sudo with the
-fresh-home persona and the sleep guard on (`block`), ended with the
-emergency; and a last plain soft-reboot. Before the first entry the decoy
-makes a bind mount with a userspace option, which libmount keeps in utab, and
-before each entry the operator logs in on the decoy's console (tty4), as an
+operator's does, whose changes on the decoy disk are a control too; a session
+ended with `deactivate`; a package the decoy removes after that session; a
+second session as a user through sudo with the fresh-home persona and the
+sleep guard on (`block`), ended with the emergency; and a last plain
+soft-reboot. Each session ends with a power-off: QEMU pauses, and its reset
+boots the same disk cold (`py/power_off.py`). The hidden volume is a disk of
+its own, backed by a file on the driver's host, so every boot finds it again.
+Before each entry the operator logs in on the decoy's console (tty4), as an
 operator does before activating.
 In each session it asserts SELinux enforcing, the labels of `/`, `/home` and
 `/var`, the type a copied-up and a new file take, NAILS's processes outside
@@ -1216,59 +1260,32 @@ watcher's sweep, the rule's fallback, runs once an hour in the gate's
 sessions, so it cannot set the disk read-only in the rule's place. The first
 session also plants the rehearsal, whose scan it must refuse. The second
 leaves zram0 set up with a swap area out of use and the marker on it, as a
-stop whose reset failed leaves a device, for its way back to clean. Each
-session starts a unit ordered before journald, without the default dependencies, so
-that it stops after the hidden journald and logs a line through each of
-journald's sockets as it does (`/dev/log`, its standard output, the native
-socket), and as its last step runs 8000 programs, which push the kernel's
-process numbers far past a cold boot's. After each way back it asserts the
-session's kernel log marker absent from the decoy's journal, which holds no
-kernel record of the session and none logged before the switch's last step
-ended, the cursor's effect, since the decoy's journald rewrites the cursor
-file before the gate can read it; none of the late unit's lines in the
-decoy's journal, judged only where its stop came after the hidden journald's,
-and no other audit record or line the hidden root sent to journald's sockets
-after its journald stopped, which the soft-reboot keeps open for the decoy's
-journald: audit records numbered up to the hidden root's last before the
-switch's last step, syslog and native lines the kernel took in before that
-step ended, and standard output lines of a process numbered at or above what
-the session pushed the counter to; a line logged after the way back in the
-decoy's journal, the positive control of that reading; no line of the
-decoy's start that opens one of journald's sockets anew, which a plain
-soft-reboot carries listening; each socket PID 1 listens on for journald,
-with its socket inode and its label, and the state and start time of
-journald's socket units as they were at the cold boot; `/run` at every depth,
-udev's device database aside, held against `/run` right before the entry and
-the shapes of what the plain soft-reboots added there (a new journal stream,
-session or unit file of the decoy's own start, its numbers left out), with
-`/run/udev/rules.d` and `/run/systemd/system` as the decoy had them, the
-session's file and NAILS's runtime folder gone, and `/run/nextroot` gone, the
-reconcile step's pieces left to their own check; `utab` given back, the bind mount's line under its new
-mount ID; `/run/initramfs` unchanged; the attached disk writable again; none
-of the session's files on the decoy; the SELinux booleans as they were; the
-failed units: none of NAILS's, none the hidden root masks, and no other but
-one the first plain soft-reboot left failed, a zram setup unit never; the zram
-devices, their swap and zram-generator's units as at the cold boot, with the
-session's marker on none of them; and
-the login and boot records changed only by the boot a power cycle adds, with
-no record of a login or a failed login made in the session: wtmp keeps the
-operator's console login, dated before the entry, and lastlog2, where the
-release keeps it (Fedora 45), the operator's last login before the entry,
-since pam_lastlog2 keeps one row a user and writes one at each of the
-operator's commands too, with no row dated inside the session; and the
-units of the consoles the way back's start ran (a getty on tty1 on Fedora
-44, kmscon on Fedora 45), by their main processes and by the records they
-wrote in wtmp, numbered below what the session pushed the counter to and in
-the power-of-two range the cold boot gave each. After the first way back the
-rehearsal's scan must find nothing and name the btrfs root, which compresses,
-as not checked. Across each way back the decoy's disk mounts must change only
-where a plain soft-reboot changes them: every file and folder whose contents
-or inode, its labels among its extended attributes, changed since right
-before the entry, held against those that changed across either plain
-soft-reboot, the login record files aside, and a unit's private temporary
-folder counted by its unit, since each start of the unit names a new one. A
-path the decoy's own start changes at every switch therefore shows nothing of
-a session. In this driver, once auditd is off, the gate masks
+stop whose reset failed leaves a device, which the power-off clears. After
+each session's power-off and the cold boot it asserts SELinux enforcing; the
+plain decoy root; the session's file in `/run` and NAILS's runtime folder
+gone; the attached disk writable again; none of the session's files on the
+decoy; the SELinux booleans as they were; the failed units: none of NAILS's,
+none the hidden root masks, and no other but one the first plain soft-reboot
+left failed, a zram setup unit never; the zram devices, their swap and
+zram-generator's units as at the cold boot, with the session's marker on none
+of them; and the login and boot records changed only by the boot a power
+cycle adds, with no record of a login or a failed login made in the session:
+wtmp keeps the operator's console login, dated before the entry, and
+lastlog2, where the release keeps it (Fedora 45), the operator's last login
+before the entry, since pam_lastlog2 keeps one row a user and writes one at
+each of the operator's commands too, with no row dated inside the session.
+In the boot after the first session the rehearsal's scan must find nothing
+and name the btrfs root, which compresses, as not checked. Across each
+session, its power-off and the cold boot, the decoy's disk mounts must change
+only where a plain soft-reboot or a plain power cycle changes them: every file
+and folder whose contents or inode, its labels among its extended attributes,
+changed since right before the entry, held against those that changed across
+the plain soft-reboots and the cold power cycle before the first entry, the
+login record files aside, and a unit's private temporary folder counted by
+its unit, since each start of the unit names a new one. A path the decoy's
+own stop or start changes therefore shows nothing of a session. The gate
+reads the kernel log up to the moment it asks for the power-off, so a denial
+logged during the power-off itself is not judged. In this driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
 them one that keeps every process from being audited, and has the kernel
 record every program run from below `/run`, with the domain it runs in, and
@@ -1276,8 +1293,8 @@ apart from those every program run from a file labelled as runtime data
 (`var_run_t`, `init_var_run_t`, `tmpfs_t`), the label a copy of NAILS in
 `/run` has where nothing labels it as a program. Each step the
 run has NAILS's copies run must be among them (the watcher, the sleep guard,
-the last step of each switch, the reconcile step and the disk guard, which no
-process listing catches), none in `init_t` and none, run or refused, from a
+the last step of each entry and the disk guard, which no process listing
+catches), none in `init_t` and none, run or refused, from a
 copy labelled as runtime data, and a program the gate runs from such a file
 in each root must be recorded as one. Every
 AVC denial and SELinux error is counted from the boot before NAILS ran, from
