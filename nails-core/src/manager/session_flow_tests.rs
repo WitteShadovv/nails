@@ -236,6 +236,7 @@ fn plan(hidden: &Path) -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        write_tripwire: None,
     }
 }
 

@@ -129,6 +129,7 @@ fn the_units_outside_the_fstab_are_kept_off_in_the_hidden_root_as_fstab_lines() 
             tail: None,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
+            write_counters: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         let dropin = paths

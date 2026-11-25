@@ -90,6 +90,7 @@ impl World {
             tail: None,
             selinux: &crate::whole_root::selinux::KERNEL,
             start: crate::whole_root::program_label::Started::by_hand(),
+            write_counters: None,
         }
     }
     /// Where the way back reads and writes the network state: a fake
@@ -2150,4 +2151,53 @@ fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
     let calls = systemctl_calls(&world);
     assert!(!calls.contains("poweroff"), "{calls}");
     assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+}
+
+/// Where the plan records the write tripwire's disks, the entry takes their
+/// counters last, into the runtime directory; without the disks, or without a
+/// sysfs to read, it takes none.
+#[test]
+fn the_entry_takes_the_write_tripwire_s_baseline_last() {
+    use crate::whole_root::write_counters::{BASELINE_NAME, Baseline, Layout, WatchedDisk};
+    let world = World::new();
+    let sysfs_root = world.dir.path().join("sys");
+    let disk = sysfs_root.join("devices/pci0/vda");
+    fs::create_dir_all(disk.join("device")).unwrap();
+    fs::write(disk.join("dev"), "252:0\n").unwrap();
+    fs::write(disk.join("stat"), "1 0 8 0 1 0 77 0 0 0 0 0 0 3 0 0 0\n").unwrap();
+    fs::create_dir_all(sysfs_root.join("dev/block")).unwrap();
+    std::os::unix::fs::symlink(&disk, sysfs_root.join("dev/block/252:0")).unwrap();
+    let layout = Layout {
+        disks: vec![WatchedDisk {
+            name: "vda".into(),
+            dev: "252:0".into(),
+            partitions: Vec::new(),
+            allowed: Vec::new(),
+        }],
+    };
+    let baseline = world.runtime().join(BASELINE_NAME);
+
+    for (recorded, sysfs, taken) in [
+        (Some(layout.clone()), true, true),
+        (Some(layout.clone()), false, false),
+        (None, true, false),
+    ] {
+        let _ = fs::remove_file(&baseline);
+        let mut plan = armed(Direction::Enter);
+        plan.write_tripwire = recorded;
+        world.init_in_nextroot(&plan.hidden.init);
+        world.write_plan(&plan);
+        let env = Env {
+            write_counters: sysfs.then(|| crate::whole_root::disk_guard::Sysfs {
+                root: sysfs_root.clone(),
+            }),
+            ..world.env(true, 1_000)
+        };
+        assert_eq!(run(&env), Outcome::Entered);
+        let read = Baseline::load(&baseline);
+        assert_eq!(read.is_some(), taken, "{sysfs} {taken}");
+        if let Some(read) = read {
+            assert_eq!(read.sectors.get("252:0"), Some(&80));
+        }
+    }
 }

@@ -436,6 +436,7 @@ impl<F: Filesystem> NailsManager<F> {
             program_label: crate::session::program_label::for_host(self.host_profile()),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
+            write_tripwire: self.config.session_mounts.write_tripwire,
             accepted_decoy_storage,
             window_launcher: options.window_launcher.as_ref(),
         };

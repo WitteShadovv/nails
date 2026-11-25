@@ -438,6 +438,13 @@ pub struct Plan {
         skip_serializing_if = "crate::whole_root::fresh_pids::Record::is_empty"
     )]
     pub pids: crate::whole_root::fresh_pids::Record,
+    /// The decoy disks the write tripwire watches, and the hidden volume's
+    /// partitions it allows (`[session_mounts] write_tripwire`, see
+    /// [`crate::whole_root::write_counters`]): the entry's last step takes
+    /// their counters, the session watcher powers off at the first write
+    /// they show. Absent where the tripwire is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write_tripwire: Option<crate::whole_root::write_counters::Layout>,
 }
 
 /// Why a plan could not be used.
@@ -664,6 +671,7 @@ pub(crate) fn sample() -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        write_tripwire: None,
     }
 }
 

@@ -155,10 +155,11 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live. `fresh-home` gives the operator an empty home, created in the upper at the first entry. See [Persona modes](#persona-modes). |
 | `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy (or powering off where the watcher cannot read the session plan), only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
-| `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert` and `session_mounts.read_only` both `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
+| `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert`, `session_mounts.read_only` and `session_mounts.write_tripwire` all `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
 | `session_mounts.alert` | boolean | `true` | Alert when a disk that is not the session's own storage, one below the hidden root included, is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
+| `session_mounts.write_tripwire` | boolean | `false` | Opt-in: power the machine off as soon as the kernel's write counters show a sector written or discarded on a disk that holds a decoy filesystem, outside the hidden volume's own partition or disk, from the switch into the hidden root on. Activation refuses a hidden volume the counters cannot tell apart from the decoy. The session watcher runs for it. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
 | `window.emergency` | `"return"`, `"poweroff"` or `"reboot"` | `"return"` | How the window's Emergency control ends a hidden session, chosen in advance since its gesture asks nothing: `return` goes back to the decoy's login screen as `nails emergency` does, or powers off where its way back does, `poweroff` powers off as `nails emergency --poweroff` does, and `reboot` reboots fully as `nails emergency --reboot` does. Only the window reads it: the hot path of `nails emergency` acts before any configuration is read. Where the window cannot be sure the session ends so, as while Verify runs or where it cannot read the setting or reach NAILS, the control powers off. See [The window's Emergency control](#the-windows-emergency-control). |
 <!-- END config-keys -->
@@ -817,6 +818,27 @@ writes.
   `deactivate` and `emergency` alike, makes exactly the disks the session set
   read-only writable again before the switch, so the decoy finds them as it
   left them.
+- **Write tripwire** (`session_mounts.write_tripwire`, opt-in). The kernel
+  counts the sectors written and discarded on every disk and partition
+  (`/sys/dev/block/<major>:<minor>/stat`), a partition's on its disk too, and
+  a device-mapper device's on every device below it. Activation records the
+  disks that hold a decoy filesystem, with their partitions, and the
+  partition (or whole disk) that is the hidden volume's alone. The last step
+  before the switch, once every decoy unit has stopped, runs a `sync` and
+  takes their counters. From then on the session watcher reads them at every
+  poll, and the first sector written to such a disk outside the hidden
+  volume's own partition, a partition table or a gap between partitions
+  included, powers the machine off through the emergency's power-off,
+  whatever `backend_watch.auto_emergency` says. So does a counter that cannot
+  be read or went down, and a partition that appeared or went. It needs no
+  list of programs that might write: it counts what reached the disk.
+  Activation refuses a hidden volume the counters cannot tell apart from the
+  decoy: one that shares a partition with it (a logical volume beside the
+  decoy's, a folder or subvolume accepted with `--allow-decoy-storage`), one
+  that is a file on a disk (a container opened through a loop device; its
+  writes also write the file's inode and the journal), a hidden root without
+  a block device, and a disk whose counters cannot be read. Keep the hidden
+  volume on a disk or partition of its own, or leave the tripwire off.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
   its users), so the decoy can mount it again normally. That includes a disk
@@ -836,6 +858,22 @@ volume or the decoy root lives on) stays writable as a whole device. Below
 the session's own, told by its path: a disk mounted there by hand raises no
 alert, the watcher does not set it read-only again once it is mounted there,
 and the way back leaves it mounted. Mount nothing there.
+
+The write tripwire measures; it does not prevent. A write is on the disk when
+the watcher sees it, up to one `backend_watch.poll_interval_secs` later, and the
+power-off that follows is a clean shutdown, which writes what such a shutdown
+writes to the decoy's filesystems. It sees only what the kernel's block layer
+counts: SCSI and NVMe passthrough requests (`SG_IO`, NVMe admin and I/O
+commands) are not counted unless the queue counts passthrough, and neither is
+what a device writes on its own (firmware, SMART logs, wear levelling). EFI
+variables, a TPM and other stores outside the disks are not watched at all,
+nor is a disk that holds no decoy filesystem at activation (a second disk the
+decoy does not mount, a USB drive), nor a disk attached later: those are what
+`read_only` is for. Until the watcher starts in the hidden boot nothing powers
+off, though what was written since the switch counts at its first poll. Where
+the last step before the switch could not take the counters, the watcher takes
+its own when it starts, and what was written before that does not count. A root
+user in the hidden session can stop the watcher.
 
 ## Sleep policy
 

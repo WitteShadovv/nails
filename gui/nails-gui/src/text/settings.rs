@@ -175,6 +175,10 @@ pub fn setting(key: &str) -> (&'static str, &'static str) {
             "Other disks read-only",
             "Make every other disk read-only for the session, so nothing is written to it.",
         ),
+        "session_mounts.write_tripwire" => (
+            "Power off at a write to the decoy disks",
+            "Turn the computer off as soon as the decoy's disks show a write outside the hidden              volume's own partition or disk. It sees the write once it is on the disk.",
+        ),
         "sleep_policy.mode" => (
             "When the computer would sleep",
             "Sleep keeps the whole session in memory, its key included.",
