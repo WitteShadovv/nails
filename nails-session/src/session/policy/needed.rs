@@ -62,7 +62,8 @@ struct Reach {
     sure: bool,
     /// Whether the line on the way that needs the `noauto` mount names it
     /// ([`Need::Requires`]), so that it does not start while the mount is
-    /// masked, rather than requiring it as the mount for a path
+    /// masked, or may, through an option NAILS cannot read
+    /// ([`Need::Unread`]), rather than requiring it as the mount for a path
     /// ([`Need::MountsFor`]), which may hold nothing up.
     holds: bool,
 }
@@ -141,9 +142,15 @@ pub(super) fn needed_below(
     let may_require = !reached.iter().any(|reach| reach.sure);
     // Where a target surely requires the mount, the targets a line that
     // names it holds up are named, else those a line requires as the mount
-    // for a path, which may not be held up.
+    // for a path, which may not be held up. Where a target only may require
+    // it, the lines on the way that may hold it up count: where none names
+    // it, or may, the target may be reached even where it requires them.
     let held = reached.iter().any(|reach| reach.sure && reach.holds);
-    let by_path = !may_require && !held;
+    let by_path = if may_require {
+        !reached.iter().any(|reach| reach.holds)
+    } else {
+        !held
+    };
     let mut targets: Vec<String> = Vec::new();
     let mut lines: Vec<PathBuf> = Vec::new();
     for reach in reached
@@ -280,7 +287,7 @@ fn boot_targets(
         let line = &entries[other];
         // A line another one requires starts, `noauto` or not.
         let sure = sure && matches!(how, Need::Requires | Need::MountsFor);
-        let holds = holds.unwrap_or(how == Need::Requires);
+        let holds = holds.unwrap_or(matches!(how, Need::Requires | Need::Unread));
         if seen.iter().any(|&(read, was_sure, did_hold)| {
             read == other && (was_sure || !sure) && (did_hold || !holds)
         }) {

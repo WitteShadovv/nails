@@ -153,10 +153,16 @@ fn a_backslash_on_the_way_makes_only_its_own_step_a_may() {
     let Decision::Mask { unreached, .. } = at(&decisions, "/data") else {
         panic!("{decisions:?}");
     };
+    // The option after the backslash may name the mount, so the warning says
+    // that where the target requires the line, it is not reached.
     assert!(
         matches!(
             unreached.as_ref().map(|u| &u.origin),
-            Some(Origin::Needed { may: true, .. })
+            Some(Origin::Needed {
+                may: true,
+                by_path: false,
+                ..
+            })
         ),
         "{unreached:?}"
     );
