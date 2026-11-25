@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::{execute, status_exit_code};
+use super::{execute, status_exit_code, unknown_fix};
 use crate::cli::args::StatusArgs;
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::status::Posture;
@@ -114,4 +114,27 @@ fn a_corrupt_record_on_the_decoy_is_unknown_and_fails_closed() {
     assert_eq!(output.status.code(), Some(6), "stdout={stdout}");
     assert!(stdout.contains("UNKNOWN"), "stdout={stdout}");
     assert!(!stdout.contains('\u{001b}'), "stdout={stdout}");
+}
+
+/// Where the place is unknown, the last line says what to do by what failed:
+/// a mount table that could not be read asks for a run where `/proc` is
+/// mounted, a state file that could not be read for its access, and where
+/// root may read it the `sudo` line comes first.
+#[test]
+fn the_unknown_status_names_the_fix_for_what_could_not_be_read() {
+    let denied = || std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+    let table = nails_core::NailsError::io("/proc/self/mountinfo", denied());
+    let state = nails_core::NailsError::io("/var/lib/nails/state.json", denied());
+    assert_eq!(
+        unknown_fix(None, &table),
+        "Run status again where /proc is mounted and readable"
+    );
+    assert_eq!(
+        unknown_fix(None, &state),
+        "Fix access to the state file, then run status again"
+    );
+    assert_eq!(
+        unknown_fix(Some("sudo nails status"), &state),
+        "Run it as root: sudo nails status"
+    );
 }
