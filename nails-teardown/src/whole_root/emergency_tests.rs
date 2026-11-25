@@ -118,7 +118,7 @@ fn the_hidden_side_without_a_flag_ends_the_session_in_a_power_off() {
     plan.write_atomic(&h.runtime_dir.join(crate::whole_root::plan::PLAN_NAME))
         .unwrap();
     let mut report = HotReport::new(Side::Hidden, Finish::Default);
-    hidden(&plan, &h, &mut report);
+    hidden(Some(&plan), &h, &mut report);
     assert_eq!(phases(&report), ["kill-shells", "enqueue", "kill"]);
     assert_eq!(report.dispatched, Some(Finish::Poweroff));
     assert_eq!(report.fallback, None);
@@ -142,9 +142,46 @@ fn the_hidden_side_asks_selinux_nothing() {
     let mut plan = sample();
     plan.program_label = Some(crate::whole_root::program_label::PROGRAM_LABEL.to_string());
     let mut report = HotReport::new(Side::Hidden, Finish::Default);
-    hidden(&plan, &h, &mut report);
+    hidden(Some(&plan), &h, &mut report);
     assert_eq!(report.dispatched, Some(Finish::Poweroff));
     assert!(selinux.labels_written().is_empty() && selinux.questions().is_empty());
+}
+
+/// Where the emergency runs: a hidden root is told by its root overlay with
+/// the plan's upper; without a plan, an overlay root is a hidden root whose
+/// plan is gone, and a mount table that cannot be read cannot be told from
+/// one. Only a plain root without a plan is no session.
+#[test]
+fn the_side_fails_closed_where_it_cannot_be_told() {
+    use crate::mountinfo::parse_mountinfo;
+    let plan = sample();
+    let hidden = parse_mountinfo(&format!(
+        "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/run/x,upperdir={},workdir=/w\n",
+        plan.upper.display()
+    ));
+    let other_overlay = parse_mountinfo(
+        "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/a,upperdir=/b,workdir=/c\n",
+    );
+    let plain = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    assert_eq!(side_of(Some(&plan), Some(&hidden)), Side::Hidden);
+    assert_eq!(side_of(Some(&plan), Some(&plain)), Side::Decoy);
+    assert_eq!(side_of(Some(&plan), None), Side::Hidden);
+    assert_eq!(side_of(None, Some(&hidden)), Side::Hidden);
+    assert_eq!(side_of(None, Some(&other_overlay)), Side::Hidden);
+    assert_eq!(side_of(None, None), Side::Hidden);
+    assert_eq!(side_of(None, Some(&plain)), Side::None);
+}
+
+/// A hidden root without its plan ends in a power-off too, with the system's
+/// `systemctl`.
+#[test]
+fn a_hidden_root_without_its_plan_powers_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let h = host(dir.path());
+    let mut report = HotReport::new(Side::Hidden, Finish::Default);
+    hidden(None, &h, &mut report);
+    assert_eq!(phases(&report), ["kill-shells", "enqueue", "kill"]);
+    assert_eq!(report.dispatched, Some(Finish::Poweroff));
 }
 
 /// A full reboot asked for stays a full reboot: the firmware boots the decoy
@@ -154,7 +191,7 @@ fn the_hidden_side_reboots_when_asked() {
     let dir = tempfile::tempdir().unwrap();
     let h = host(dir.path());
     let mut report = HotReport::new(Side::Hidden, Finish::Reboot);
-    hidden(&sample(), &h, &mut report);
+    hidden(Some(&sample()), &h, &mut report);
     assert_eq!(report.dispatched, Some(Finish::Reboot));
 }
 
@@ -328,7 +365,7 @@ fn a_requested_power_off_takes_the_same_path() {
     let dir = tempfile::tempdir().unwrap();
     let h = host(dir.path());
     let mut report = HotReport::new(Side::Hidden, Finish::Poweroff);
-    hidden(&sample(), &h, &mut report);
+    hidden(Some(&sample()), &h, &mut report);
     let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
     assert_eq!(names, ["kill-shells", "enqueue", "kill"]);
     assert_eq!(report.dispatched, Some(Finish::Poweroff));

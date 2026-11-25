@@ -2749,9 +2749,11 @@ of this changelog for that version becomes the release notes word for word, and
   open again. Nothing on the screen says why. The only parts still best effort are the masks of
   units the hidden root does not need (the fstab policy binds the boot filesystems read-only) and
   the cleanup of `utab`, which lives in RAM.
-- The emergency no longer reads a mount table it cannot read as the decoy's. With a session plan
-  it then takes the hidden session's end, the power-off, where it used to clean up as on the decoy
-  and leave a hidden session running.
+- The emergency no longer reads a mount table it cannot read as the decoy's. It then takes the
+  hidden session's end, the power-off, where it used to clean up as on the decoy, or do nothing,
+  and leave a hidden session running. A plain `emergency` in a hidden root whose session plan is
+  gone powers off too: it tells that root by its root overlay, which no supported decoy has. It
+  used to find no plan and do nothing.
 - Limits: `systemctl --force soft-reboot` typed in the hidden session with a tree at
   `/run/nextroot` skips the step, and a root user in the session can remove the step's drop-in and
   guards from `/run`. RAM keeps data for a while after the power-off, so leave the machine off for

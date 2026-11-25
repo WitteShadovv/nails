@@ -19,8 +19,10 @@
 //!    PID 1 has it queued by then.
 //!
 //! A hidden session never goes back to the decoy's kernel, so the emergency
-//! without a flag ([`Finish::Default`]) powers off there. When even the power
-//! action cannot be enqueued, it asks the kernel directly.
+//! without a flag ([`Finish::Default`]) powers off there. It does so in a
+//! hidden root whose plan is gone as well, which it tells by the root overlay
+//! ([`side_of`]). When even the power action cannot be enqueued, it asks the
+//! kernel directly.
 //!
 //! [`session_end`]: crate::whole_root::session_end::session_end
 //!
@@ -42,7 +44,7 @@
 //! or the hidden volume, and nothing logs; the caller prints and logs the
 //! report afterwards, if it still can.
 
-use crate::mountinfo::read_mountinfo;
+use crate::mountinfo::{MountEntry, read_mountinfo};
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
@@ -195,20 +197,11 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     if host.act {
         tools::survive_session_stop();
     }
-    // A mount table that cannot be read cannot tell the hidden root from the
-    // decoy: with a plan, the emergency then takes the hidden session's end,
-    // which is safe on either side, where the decoy side's cleanup would let
-    // a hidden session run on.
     let entries = read_mountinfo().ok();
-    let side = match (&plan, &entries) {
-        (Some(_), None) => Side::Hidden,
-        (Some(p), Some(entries)) if ret::in_hidden_root(entries, p) => Side::Hidden,
-        (Some(_), Some(_)) => Side::Decoy,
-        (None, _) => Side::None,
-    };
+    let side = side_of(plan.as_ref(), entries.as_deref());
     let mut report = HotReport::new(side, requested);
     match (side, plan) {
-        (Side::Hidden, Some(plan)) => hidden(&plan, host, &mut report),
+        (Side::Hidden, plan) => hidden(plan.as_ref(), host, &mut report),
         (Side::Decoy, Some(plan)) => decoy_side(&plan, host, requested, &mut report),
         _ => {
             if requested != Finish::Default {
@@ -218,6 +211,32 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     }
     report.elapsed = start.elapsed();
     report
+}
+
+/// Where the emergency runs, from the session `plan` and the mount table
+/// (`entries`, `None` where it cannot be read). The hidden root is told by its
+/// root overlay, whose upper the plan names. Fail closed where that cannot be
+/// told: with a plan and no mount table it is the hidden session; without a
+/// plan, a root that is an overlay is a hidden root whose plan is gone (no
+/// supported decoy has an overlay root: the entry refuses one), and so is a
+/// machine whose mount table cannot be read. Only a plain root without a plan
+/// is no session at all. The hidden session's end is a power-off, which is
+/// safe on either side, where the decoy side's cleanup, or nothing, would let
+/// a hidden session run on.
+fn side_of(plan: Option<&Plan>, entries: Option<&[MountEntry]>) -> Side {
+    match (plan, entries) {
+        (Some(_), None) | (None, None) => Side::Hidden,
+        (Some(plan), Some(entries)) if ret::in_hidden_root(entries, plan) => Side::Hidden,
+        (Some(_), Some(_)) => Side::Decoy,
+        (None, Some(entries)) if root_is_overlay(entries) => Side::Hidden,
+        (None, Some(_)) => Side::None,
+    }
+}
+
+/// Whether `/` is an overlay in `entries`, as the hidden root's is.
+fn root_is_overlay(entries: &[MountEntry]) -> bool {
+    crate::mountinfo::top_mount_at(entries, Path::new("/"))
+        .is_some_and(|root| root.fstype == "overlay")
 }
 
 /// The decoy side: an activation left a plan (and perhaps a next root). A
@@ -237,7 +256,7 @@ fn decoy_side(plan: &Plan, host: &Host, requested: Finish, report: &mut HotRepor
     }
     let unloaded = decoy(plan, host, report);
     if requested != Finish::Default {
-        dispatch(plan, host, requested, report);
+        dispatch(Some(plan), host, requested, report);
         pending = drop_switch(plan, host, report);
     }
     // What was enqueued, if anything: a power-off stands in for a reboot
@@ -315,9 +334,9 @@ fn force(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
     });
 }
 
-/// The hidden session: its end, or the full reboot asked for, enqueued, and
-/// every hidden program killed.
-fn hidden(plan: &Plan, host: &Host, report: &mut HotReport) {
+/// The hidden session, with its plan or without: its end, or the full reboot
+/// asked for, enqueued, and every hidden program killed.
+fn hidden(plan: Option<&Plan>, host: &Host, report: &mut HotReport) {
     let finish = match report.requested {
         Finish::Default => Finish::session_end(),
         asked => asked,
@@ -337,14 +356,15 @@ fn hidden(plan: &Plan, host: &Host, report: &mut HotReport) {
 }
 
 /// Enqueue `finish`, falling back to a power-off and then to the kernel.
-fn dispatch(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
+fn dispatch(plan: Option<&Plan>, host: &Host, finish: Finish, report: &mut HotReport) {
     kill_shells(host, report);
     report.timed("enqueue", |report| {
         if !host.act {
             report.dispatched = Some(finish);
             return;
         }
-        let systemctl = tools::find(plan.tools.systemctl.as_deref(), "systemctl");
+        let recorded = plan.and_then(|plan| plan.tools.systemctl.as_deref());
+        let systemctl = tools::find(recorded, "systemctl");
         enqueue(systemctl.as_deref(), finish, report);
     });
 }

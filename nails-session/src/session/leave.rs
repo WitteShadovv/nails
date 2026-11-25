@@ -27,7 +27,7 @@ use nails_teardown::whole_root::{logind, tools};
 use std::path::{Path, PathBuf};
 
 /// Enqueues a systemd target: tests replace it. It asks PID 1 whether the
-/// guards the way back checks hold as a [`GuardHost`].
+/// runtime guards of a switch hold as a [`GuardHost`], which the entry checks.
 pub trait TargetHost: GuardHost {
     /// Enqueue `target`. An error means it is known not to have been taken:
     /// nothing is left that would start it later.

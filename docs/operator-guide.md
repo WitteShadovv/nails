@@ -793,9 +793,10 @@ looks like a plain shutdown.
   tell the hidden root from the decoy. It then takes the hidden session's end,
   which is safe on either side, never the decoy side's cleanup, which would
   leave a hidden session running.
-- Without the session plan, a plain `emergency` finds nothing to act on and
-  does nothing. Use `emergency --poweroff` there, which needs no plan (see
-  "The session plan is gone" under [Specific situations](#specific-situations)).
+- Without the session plan, emergency tells a hidden root by its root
+  overlay, which no supported decoy has, and powers off there too. Where it
+  cannot read the mount table at all, it also powers off. On a plain root
+  without a plan it does nothing.
 - Emergency runs before argument parsing, the configuration and logging, and
   reads nothing on the hidden volume to act. It logs its timed phases to the
   hidden-volume log afterwards, while it still can.
@@ -2871,15 +2872,14 @@ no access time meanwhile. `nails recover` gives each mount the mode it had,
 from the session plan; a reboot does too.
 
 **Deactivation refuses or fails** in the hidden session. Use `nails emergency`:
-it kills every hidden program and powers off. Without the session plan a plain
-`emergency` does nothing (next paragraph): use `nails emergency --poweroff`
-there.
+it kills every hidden program and powers off, with the session plan or
+without.
 
 **The session plan is gone** (`nails status` reports the hidden root without
 its session plan: the plan in `/run/overlay-runtime` is missing, unreadable, or
 was written by another NAILS version). `deactivate` still powers off, as it
-needs no plan. A plain `emergency` finds no plan and does nothing.
-`nails emergency --poweroff` needs no plan either.
+needs no plan. `emergency` needs none either: it tells the hidden root by its
+root overlay and powers off.
 
 **The switch is refused** (the decoy's programs close for the entry, then the
 machine powers off). Right before PID 1 switches, NAILS checks the hidden

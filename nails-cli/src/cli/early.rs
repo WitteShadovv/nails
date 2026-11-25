@@ -20,7 +20,10 @@
 //!   disk that appears (`[session_mounts] read_only`):
 //!   `nails_teardown::whole_root::disk_guard` makes it read-only unless the
 //!   session uses it, and the process ends at once, with no output and no log.
-//! - **`reconcile-records`**, run by a one-shot unit the way back leaves for an
+//! - **`reconcile-records`** and **`boot-writer`** served the way back, which
+//!   is gone: only units the way back left started them, and nothing leaves
+//!   those units any more. They stay until a removal of their own.
+//! - **`reconcile-records`**, run by a one-shot unit the way back left for an
 //!   FHS decoy's first start: `nails_teardown::whole_root::boot_records` makes
 //!   the login and boot records read as a clean power cycle and removes itself,
 //!   then the process ends at once, with no output and no log.
@@ -37,8 +40,7 @@
 //! once. One that still runs elsewhere does not do its work there. [`end_of`]
 //! decides which end each takes ([`UnitEnd`]), and `dispatch` acts on it: the
 //! watcher and the sleep guard power the machine off through the emergency's
-//! hot path, as the emergency does where its way back's last step would not
-//! start right; the reconcile step leaves the records as they are and only
+//! hot path; the reconcile step leaves the records as they are and only
 //! cleans up after itself
 //! (`nails_teardown::whole_root::boot_records::clean_up`); the boot writer's
 //! drop-in starts the writer as the decoy runs it.

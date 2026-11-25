@@ -246,7 +246,7 @@ fn recorded_backend<F: Filesystem>(fs: &F, hidden_root: &Path) -> Result<Vec<Str
             place,
             std::io::Error::other(
                 "NAILS cannot read it, so it cannot tell which device-mapper devices hold the \
-                 hidden volume, and the way back could not close one it does not know",
+                 hidden volume, and could not close one it does not know",
             ),
         )),
         None => Ok(chain.dm_names),
