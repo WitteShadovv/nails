@@ -1,19 +1,24 @@
-"""Follow a whole-root session across its soft-reboots, for the NixOS test driver.
+"""Follow a whole-root session across its switches, for the NixOS test driver.
 
-``nails activate``, ``nails deactivate`` and ``nails emergency`` end by
-enqueueing ``soft-reboot.target``: PID 1 stops every userspace process (the
-driver's backdoor shell included), switches root and starts a fresh userspace,
-which starts the backdoor again. The driver's ``wait_for_console_text`` reads
-one queued console line per second and a soft-reboot prints a few hundred, so
-these helpers poll the driver's full console log instead (appended directly by
-its reader thread), fail at once if the new userspace lands in emergency mode or
-PID 1 freezes, if the trigger failed without enqueueing the switch or if QEMU
-exits, and reconnect when the new backdoor announces itself. This is the
-mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved. A
-switch that is to power the machine off instead is followed to the power-off,
-and fails as soon as a new userspace comes up (:func:`follow_power_off`). A
-switch or a power-off that never ends is reported with what PID 1 waits on and
-the SysRq dumps (:mod:`nails_e2e.stall`).
+``nails activate`` ends by enqueueing ``soft-reboot.target``: PID 1 stops every
+userspace process (the driver's backdoor shell included), switches root and
+starts a fresh userspace, which starts the backdoor again. The driver's
+``wait_for_console_text`` reads one queued console line per second and a
+soft-reboot prints a few hundred, so these helpers poll the driver's full
+console log instead (appended directly by its reader thread), fail at once if
+the new userspace lands in emergency mode or PID 1 freezes, if the trigger
+failed without enqueueing the switch or if QEMU exits, and reconnect when the
+new backdoor announces itself. This is the mechanism the soft-reboot spike
+(now ``soft-reboot-mechanics``) proved.
+
+A hidden session never goes back to the decoy: ``nails deactivate``, ``nails
+emergency``, the watcher's automatic emergency and the window's Emergency
+power the machine off, and so does the transition step when an entry fails.
+:func:`follow_power_off` follows such an ending until the kernel said it
+powered off, and fails as soon as a new userspace comes up instead;
+:func:`boot_decoy` then starts the machine again and waits for the decoy's
+cold boot. A switch or a power-off that never ends is reported with what PID 1
+waits on and the SysRq dumps (:mod:`nails_e2e.stall`).
 """
 
 from __future__ import annotations
@@ -99,6 +104,8 @@ class Machine(Protocol):
 
     def wait_for_shutdown(self) -> None: ...
 
+    def start(self) -> None: ...
+
     def get_console_log(self) -> str: ...
 
 
@@ -111,6 +118,14 @@ class Timings(TypedDict):
     grey_out: float | None
     trigger_to_backdoor: float
     trigger_to_settled: float
+
+
+class PowerOffTimings(TypedDict):
+    """Host-side timing of one ending that powered the machine off: the guest
+    has no clock left to read once it is off."""
+
+    label: str
+    trigger_to_off: float
 
 
 class _ReconnectTimeout(Exception):
@@ -459,31 +474,41 @@ def wait_for_power_off(machine: Machine, timeout: float = 300.0) -> None:
 
 def follow_power_off(
     machine: Machine,
-    trigger: str,
+    trigger: str | None,
     label: str,
     deadline_s: float = 600.0,
-) -> None:
-    """Run ``trigger`` (a shell command that enqueues a switch) and follow the
-    switch until the machine powers off instead of switching: QEMU exits and
-    the kernel said it powered off, as :func:`wait_for_real_power_off` proves.
+    console_index: int | None = None,
+) -> PowerOffTimings:
+    """Run ``trigger`` (a shell command that ends the hidden session, or
+    enqueues a switch that is to power off) and follow the machine until it
+    powers off: QEMU exits and the kernel said it powered off, as
+    :func:`wait_for_real_power_off` proves.
 
-    The trigger runs as :func:`follow_soft_reboot` runs it. The wait fails at
-    once when a new userspace's backdoor announces itself (the switch went
-    through), when the new userspace is stuck, and when the trigger failed
-    without enqueueing the switch. A machine that neither powers off nor
-    switches within ``deadline_s`` is reported with what PID 1 waits on.
+    The trigger runs as :func:`follow_soft_reboot` runs it. ``trigger=None``
+    waits for an ending something else starts (the watcher's automatic
+    emergency, a key typed in the window); ``console_index`` then names where
+    in the console log to start looking, so an ending that began before the
+    call is not missed. The wait fails at once when a new userspace's backdoor
+    announces itself (the machine switched or rebooted instead), when the new
+    userspace is stuck, and when the trigger failed without enqueueing
+    anything. A machine that neither powers off nor switches within
+    ``deadline_s`` is reported with what PID 1 waits on. Returns the host-side
+    time from the trigger to QEMU's exit.
     """
-    console_index = len(machine.full_console_log)
-    _start_trigger(machine, trigger)
+    if console_index is None:
+        console_index = len(machine.full_console_log)
+    started = time.monotonic()
+    if trigger is not None:
+        _start_trigger(machine, trigger)
     machine.connected = False
-    deadline = time.monotonic() + deadline_s
+    deadline = started + deadline_s
     while True:
         lines = machine.full_console_log[console_index:]
         failed = trigger_failure(lines)
         if failed is not None:
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
             raise AssertionError(
-                f"{label}: the trigger failed ({failed}) and never switched"
+                f"{label}: the trigger failed ({failed}) and never powered off"
             )
         came_up = [line for line in lines if BACKDOOR_MARKER in line]
         stuck = stuck_lines(lines)
@@ -504,4 +529,20 @@ def follow_power_off(
         time.sleep(
             0.5
         )  # sync-lint: allow sleep -- polls the console log under the deadline above
+    off = time.monotonic()
     wait_for_real_power_off(machine, timeout=30)
+    timings: PowerOffTimings = {"label": label, "trigger_to_off": off - started}
+    machine.log(f"TIMING: {timings}")
+    return timings
+
+
+def boot_decoy(machine: Machine) -> None:
+    """Start the machine again after a power-off and wait for the decoy's cold
+    boot: the plain decoy root (:func:`assert_decoy_root`), the hidden mapping
+    closed and no NAILS runtime directory. The hidden volume stays closed, as
+    after any boot: a test that goes on opens it again as its setup does."""
+    machine.start()
+    machine.wait_for_unit("multi-user.target")
+    assert_decoy_root(machine)
+    assert not backend_open(machine), "the hidden mapping is open after a cold boot"
+    machine.succeed("test ! -e /run/overlay-runtime")

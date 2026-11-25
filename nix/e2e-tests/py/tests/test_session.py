@@ -32,6 +32,7 @@ class FakeMachine:
         self.pending = lines
         self.outputs = outputs or {}
         self.connects = 0
+        self.starts = 0
         self.logged: list[str] = []
         self.process: Any = None
         self.qmp_client: Any = None
@@ -69,6 +70,10 @@ class FakeMachine:
 
     def wait_for_shutdown(self) -> None:
         self.connected = False
+
+    def start(self) -> None:
+        self.starts += 1
+        self.full_console_log = ["boot"]
 
     def get_console_log(self) -> str:
         return "\n".join(self.full_console_log)
@@ -316,9 +321,35 @@ class FollowPowerOffTest(unittest.TestCase):
         )
         machine.process = self.Exited()
         with mock.patch.object(session, "time", NoPolling):
-            session.follow_power_off(machine, "nails activate -y", "hang-in")
+            timings = session.follow_power_off(machine, "nails activate -y", "hang-in")
         self.assertFalse(machine.connected)
         self.assertEqual(machine.connects, 0)
+        self.assertEqual(timings["label"], "hang-in")
+        self.assertGreaterEqual(timings["trigger_to_off"], 0.0)
+
+    def test_an_ending_something_else_starts_is_followed_from_its_index(self) -> None:
+        machine = FakeMachine([])
+        # The watcher began the ending before the call: its lines are in the
+        # log already, and nothing is run.
+        index = len(machine.full_console_log)
+        machine.full_console_log.extend(
+            ["overlay-runtime-monitor: backend gone", "[   71.3] reboot: Power down"]
+        )
+        machine.process = self.Exited()
+        with (
+            mock.patch.object(session, "_start_trigger") as started,
+            mock.patch.object(session, "time", NoPolling),
+        ):
+            session.follow_power_off(machine, None, "watcher", console_index=index)
+        started.assert_not_called()
+        self.assertFalse(machine.connected)
+
+    def test_a_backdoor_before_the_index_is_not_a_switch(self) -> None:
+        machine = FakeMachine(["[   71.3] reboot: Power down"])
+        machine.full_console_log.append("backdoor: connecting to host...")
+        machine.process = self.Exited()
+        with mock.patch.object(session, "time", NoPolling):
+            session.follow_power_off(machine, "nails deactivate -y", "deactivate")
 
     def test_a_switch_that_goes_through_fails_at_once(self) -> None:
         machine = FakeMachine(
@@ -518,6 +549,48 @@ class TriggerReportTest(unittest.TestCase):
         self.assertIn(
             "(exit status 1 while the system was running)", str(raised.exception)
         )
+
+
+class BootDecoyTest(unittest.TestCase):
+    """The cold boot of the decoy after a session's power-off."""
+
+    class Booted(FakeMachine):
+        def __init__(self, mapper_open: bool, root: str = "ext4") -> None:
+            super().__init__([], {"findmnt -no FSTYPE /": root})
+            self.mapper_open = mapper_open
+            self.commands: list[str] = []
+
+        def succeed(self, *commands: str, timeout: int | None = None) -> str:
+            self.commands.append(commands[0])
+            return super().succeed(*commands, timeout=timeout)
+
+        def execute(
+            self,
+            command: str,
+            check_return: bool = True,
+            check_output: bool = True,
+            timeout: int | None = 900,
+        ) -> tuple[int, str]:
+            if command.startswith("test -e /dev/mapper/"):
+                return (0 if self.mapper_open else 1, "")
+            return super().execute(command, check_return, check_output, timeout)
+
+    def test_the_machine_starts_again_on_the_plain_decoy(self) -> None:
+        machine = self.Booted(mapper_open=False)
+        session.boot_decoy(machine)
+        self.assertEqual(machine.starts, 1)
+        self.assertIn("test ! -e /run/overlay-runtime", machine.commands)
+
+    def test_an_open_mapping_after_the_boot_fails(self) -> None:
+        machine = self.Booted(mapper_open=True)
+        with self.assertRaises(AssertionError) as raised:
+            session.boot_decoy(machine)
+        self.assertIn("hidden mapping is open", str(raised.exception))
+
+    def test_an_overlay_root_after_the_boot_fails(self) -> None:
+        machine = self.Booted(mapper_open=False, root="overlay")
+        with self.assertRaises(AssertionError):
+            session.boot_decoy(machine)
 
 
 class PureHelpersTest(unittest.TestCase):

@@ -3,8 +3,9 @@
 # Once the hidden filesystem that holds the root overlay's upper is full, every
 # new write in the hidden root returns ENOSPC. Leaving must not depend on free
 # space there: both a normal `nails deactivate` and the `emergency` panic button
-# have to soft-reboot back to the plain decoy, release the hidden mapping and
-# leave no hidden /run residue while the upper has nothing left to allocate.
+# have to power the machine off for real while the upper has nothing left to
+# allocate, and the next cold boot is the plain decoy with the hidden mapping
+# closed.
 
 _:
 let
@@ -18,12 +19,11 @@ in
     "faults"
     "security"
   ];
-  # Four soft-reboots (two sessions) at about 15 s each, plus setup.
+  # Two sessions (a soft-reboot in, a power-off and a cold boot out) at about
+  # 30 s each, plus setup.
   globalTimeout = 1500;
 
   testScript = _: ''
-    from nails_e2e import session
-
     ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${backendFault.emergencyOutcomeFn}
@@ -53,16 +53,13 @@ in
         "minimum_space_mb = 100\n"
         "EOF"
     )
-    run_before = session.run_entries(machine)
 
     with subtest("deactivate completes on a full upper"):
         canonical_activate(CONFIG, "--overlay-only", "activate-1")
         fill_upper()
-        wall = session.wall_clock(machine)
-        # canonical_deactivate asserts the plain decoy and the closed mapping.
+        # canonical_deactivate follows the power-off and asserts the cold
+        # boot's plain decoy with the mapping closed.
         canonical_deactivate(CONFIG, "deactivate-full")
-        residue = session.carried_run_residue(machine, run_before, wall)
-        assert not residue, f"hidden /run residue on the decoy: {residue}"
 
     with subtest("emergency completes on a full upper"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -70,9 +67,7 @@ in
         machine.succeed("rm -f /mnt/data/fill")
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
         fill_upper()
-        wall = session.wall_clock(machine)
         outcome = emergency_outcome(f"nails --config {CONFIG} emergency", "emergency-full")
-        assert outcome == "decoy", "emergency on a full upper powered off instead of returning"
-        assert_fault_exit(outcome, run_before, wall)
+        assert_fault_exit(outcome)
   '';
 }

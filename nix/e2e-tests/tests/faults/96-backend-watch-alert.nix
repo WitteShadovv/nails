@@ -10,9 +10,10 @@
 # With `auto_emergency = true` a failure that outlasts the debounce runs the
 # emergency itself. This test drives that whole path: activate, check the RAM
 # copy and the watcher unit, log the operator in, yank the backing device, check
-# the alert, then wait (bounded) for the watcher's emergency to land the
-# machine on the plain decoy, or powered off, with nothing of the watcher left
-# behind.
+# the alert, then wait (bounded) for the watcher's emergency to power the
+# machine off for real (it always powers off: a hidden session never goes back
+# to the decoy), and check that the next cold boot is the plain decoy with
+# nothing of the watcher left.
 #
 # The alert goes to the owner of the active session on seat0, as that account:
 # testuser logs in on the console, and a notification server on testuser's
@@ -43,7 +44,7 @@ in
   };
 
   testScript = _: ''
-    from nails_e2e import desktop, session
+    from nails_e2e import desktop
 
     ${testHelpers.canonicalActivateFn}
     ${backendFault.emergencyOutcomeFn}
@@ -73,7 +74,6 @@ in
         "debounce_secs = 30\n"
         "EOF"
     )
-    run_before = session.run_entries(machine)
 
     with subtest("activate a hidden session"):
         canonical_activate(CONFIG, "--overlay-only", "activate")
@@ -101,7 +101,6 @@ in
         # Swap the dm table for an error target in place so the hidden
         # filesystem returns EIO; the node stays because the hidden mounts hold
         # it open.
-        wall = session.wall_clock(machine)
         console_mark = len(machine.full_console_log)
         machine.succeed("dmsetup wipe_table --force data")
 
@@ -115,14 +114,13 @@ in
         assert alert["app_name"] == "System", alert
         assert "nails" not in (alert["summary"] + alert["body"]).lower(), alert
 
-    with subtest("auto_emergency takes the machine out of the hidden session on its own"):
+    with subtest("auto_emergency powers the machine off on its own"):
         # Nothing is run here: the watcher's emergency fires after the debounce.
-        # Follow the console from before the yank, so a fast switch is not
+        # Follow the console from before the yank, so a fast power-off is not
         # missed.
         outcome = emergency_outcome(None, "watcher-emergency", console_index=console_mark)
-        machine.log(f"the watcher's emergency ended: {outcome}")
-        assert_fault_exit(outcome, run_before, wall)
-        if outcome == "decoy":
-            machine.fail(f"systemctl is-active {watch_unit}")
+        assert_fault_exit(outcome)
+        machine.fail(f"systemctl is-active {watch_unit}")
+        machine.fail(f"test -e /run/systemd/system/{watch_unit}")
   '';
 }

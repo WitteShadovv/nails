@@ -2,8 +2,8 @@
 # machine off when the backend fails past the debounce, where its settings ask
 # for the automatic emergency.
 #
-# A return to the decoy needs the session plan in /run/overlay-runtime, and
-# without it does nothing at all. This test makes the plan unreadable in a
+# The watcher's automatic emergency powers off with or without the session
+# plan in /run/overlay-runtime. This test makes the plan unreadable in a
 # hidden session (it no longer parses) and starts the watcher again, so it
 # takes the hidden root from its copy of the settings. One neutral desktop
 # alert then says that a failure powers the machine off. The backing device is
@@ -38,7 +38,7 @@ in
   };
 
   testScript = _: ''
-    from nails_e2e import desktop, session
+    from nails_e2e import desktop
 
     ${testHelpers.canonicalActivateFn}
     ${backendFault.emergencyOutcomeFn}
@@ -75,7 +75,6 @@ in
         "debounce_secs = 30\n"
         "EOF"
     )
-    run_before = session.run_entries(machine)
 
     with subtest("activate a hidden session"):
         canonical_activate(CONFIG, "--overlay-only", "activate")
@@ -85,8 +84,7 @@ in
         uid = desktop.login_on_console(machine)
 
     with subtest("a watcher that cannot read the session plan says it powers off"):
-        # The plan no longer parses, so a return to the decoy has nothing to
-        # go by. Started again, the watcher takes the hidden root from its
+        # The plan no longer parses. Started again, the watcher takes the hidden root from its
         # copy of the settings.
         machine.succeed(f"printf 'not a plan' > {runtime_dir}/plan.json")
         machine.succeed(f"systemctl restart {watch_unit}")
@@ -99,7 +97,6 @@ in
         assert_neutral(alert)
 
     with subtest("the backing device is yanked out from under the hidden root"):
-        wall = session.wall_clock(machine)
         console_mark = len(machine.full_console_log)
         machine.succeed("dmsetup wipe_table --force data")
 
@@ -115,8 +112,6 @@ in
         # Nothing is run here: the watcher powers off on its own. Follow the
         # console from before the yank, so a fast power-off is not missed.
         outcome = emergency_outcome(None, "watcher-power-off", console_index=console_mark)
-        machine.log(f"the watcher's emergency ended: {outcome}")
-        assert outcome == "off", outcome
-        assert_fault_exit(outcome, run_before, wall)
+        assert_fault_exit(outcome)
   '';
 }

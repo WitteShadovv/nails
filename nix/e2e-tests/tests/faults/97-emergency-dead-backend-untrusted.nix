@@ -4,9 +4,9 @@
 # not the RAM copy, after the state file was corrupted and the backing device
 # then died: the config and the state on the hidden volume are both
 # unreadable. The emergency's hot path works from the plan in /run before any
-# config or state is read, so neither may stop it: the machine must leave the
-# hidden session within a bound, back on the plain decoy (hidden mapping
-# released, no hidden /run residue) or powered off.
+# config or state is read, so neither may stop it: the machine must power off
+# for real within a bound, and the next cold boot is the plain decoy with the
+# hidden mapping closed.
 
 _:
 let
@@ -23,8 +23,6 @@ in
   globalTimeout = 1200;
 
   testScript = _: ''
-    from nails_e2e import session
-
     ${testHelpers.canonicalActivateFn}
     ${backendFault.emergencyOutcomeFn}
     ${backendFault.assertFaultExitFn}
@@ -40,7 +38,6 @@ in
         "minimum_space_mb = 100\n"
         "EOF"
     )
-    run_before = session.run_entries(machine)
 
     with subtest("activate a hidden session"):
         canonical_activate(CONFIG, "--overlay-only", "activate")
@@ -49,10 +46,8 @@ in
         machine.succeed("printf 'not json' > /mnt/data/state.json && sync")
         machine.succeed("dmsetup wipe_table --force data")
 
-    with subtest("emergency leaves the hidden session within the bound"):
-        wall = session.wall_clock(machine)
+    with subtest("emergency powers off within the bound"):
         outcome = emergency_outcome(f"nails --config {CONFIG} emergency --json", "emergency")
-        machine.log(f"emergency with a dead config and state ended: {outcome}")
-        assert_fault_exit(outcome, run_before, wall)
+        assert_fault_exit(outcome)
   '';
 }

@@ -158,23 +158,26 @@
         return status, payload.get("data", payload)
   '';
 
-  # Deactivation powers the VM off. The driver's wait_for_shutdown() waits on
-  # QEMU without a deadline, so a deactivation that never finished held the
-  # test until globalTimeout and reported nothing. This waits on the QEMU
-  # process with a deadline and fails with guest diagnostics instead.
   # The standard way out of a hidden session in a test: `nails deactivate -y`
-  # soft-reboots back to the decoy; follow the switch, reconnect, and check
-  # that the plain decoy root is back and the hidden backend closed itself.
-  # `sudo=True` runs nails through sudo, as an operator does. Returns the
-  # in-guest timings of the switch.
+  # ends the session and powers the machine off (a hidden session never goes
+  # back to the decoy). Follow it until the kernel said it powered off, with
+  # no new userspace in between (session.follow_power_off), then start the
+  # machine again and wait for the decoy's cold boot: the plain decoy root,
+  # the hidden mapping closed and no NAILS runtime directory
+  # (session.boot_decoy). `boot=False` leaves the machine off, for a test that
+  # ends there or inspects its disks first. The hidden volume is closed after
+  # the boot: a test that goes on opens it again as its setup does, and
+  # anything it kept in /run is gone. `sudo=True` runs nails through sudo, as
+  # an operator does. Returns the host-side time from the trigger to the
+  # power-off.
   canonicalDeactivateFn = ''
-    def canonical_deactivate(config_path, label="deactivate", sudo=False):
+    def canonical_deactivate(config_path, label="deactivate", sudo=False, boot=True):
         import shlex
 
         # Aliased, so the test's own `session` import is never shadowed.
         from nails_e2e import session as _session
 
-        timings = _session.follow_soft_reboot(
+        timings = _session.follow_power_off(
             machine,
             ("sudo " if sudo else "")
             + "nails --config "
@@ -182,8 +185,34 @@
             + " deactivate -y",
             label,
         )
-        _session.assert_decoy_root(machine)
-        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        if boot:
+            _session.boot_decoy(machine)
+        return timings
+  '';
+
+  # `nails emergency` in the hidden session: it kills the session's shells,
+  # enqueues poweroff.target and kills the rest, so the machine powers off.
+  # Followed and booted again as canonical_deactivate does. `extra_args` are
+  # emergency's flags (`--json` among them; its output is discarded, because
+  # the shell that ran it is gone); `--reboot` is no power-off and is not for
+  # this helper.
+  canonicalEmergencyFn = ''
+    def canonical_emergency(config_path, label="emergency", extra_args="", sudo=False, boot=True):
+        import shlex
+
+        from nails_e2e import session as _session
+
+        timings = _session.follow_power_off(
+            machine,
+            ("sudo " if sudo else "")
+            + "nails --config "
+            + shlex.quote(config_path)
+            + " emergency "
+            + extra_args,
+            label,
+        )
+        if boot:
+            _session.boot_decoy(machine)
         return timings
   '';
 
