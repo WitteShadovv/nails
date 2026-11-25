@@ -16,8 +16,8 @@ name: Test images
 #            manifest, and deletes the older builds beyond the newest three
 #            that no images.json of main, next or this commit pins. It
 #            deletes nothing, and replaces no asset of the same name, unless
-#            it could read all three images.json, and it never replaces a
-#            pinned asset
+#            it read the images.json of all three (a branch that does not
+#            exist pins nothing), and it never replaces a pinned asset
 #   verify   downloads the asset from its public URL and checks its SHA-256
 #
 # Every build gets a name of its own (the ISO version, the UTC date, the run
@@ -223,8 +223,14 @@ jobs:
           for ref in main next "$SHA"; do
             if table=$(gh api -H "Accept: application/vnd.github.raw+json" \
               "repos/$REPOSITORY/contents/nix/distro-tests/images.json?ref=$ref" 2> "$RUNNER_TEMP/read-error"); then
-              if ! jq -r --arg family "$FAMILY" \
-                '.[] | .source | select(.kind == "mirror" and .family == $family and .asset != null) | .asset' \
+              # Every string in the table that names one of this family's
+              # builds counts as a pin, wherever it stands, so a table of
+              # another shape keeps more, never less. Anything but a non-empty
+              # object is no table this step can trust.
+              if [ -z "$table" ] || ! jq -r --arg family "$FAMILY" \
+                'if type == "object" and length > 0
+                 then .. | strings | select(startswith($family + "-") and endswith(".qcow2"))
+                 else error("not a table") end' \
                 <<< "$table" >> "$pinned"; then
                 complete=no
                 echo "::warning::images.json of $ref is not the table this step reads."
