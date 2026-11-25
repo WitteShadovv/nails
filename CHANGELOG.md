@@ -1305,36 +1305,42 @@ of this changelog for that version becomes the release notes word for word, and
   attach the device or remove the line. A mask of a line for `/usr` no longer masks or records
   `usr.automount`, which systemd never makes.
 - The warning for a masked `noauto` mount that a line or unit the boot starts for a target needs
-  says that the target will not be reached only where that line or unit names the mount
-  (`x-systemd.requires=`, `Requires=`), or a mount, swap or automount unit linked in a target's
-  `.requires` directory does, and only then does `nails status` list the mask. Where it requires the
-  mount only as the mount for a path (a mount point below it, its source,
-  `x-systemd.requires-mounts-for=`, `RequiresMountsFor=`), the warning says that the target may not
-  be reached, and the mask is not listed: systemd 260.5 started a tmpfs below a masked mount, and
-  units that name a path in it with `x-systemd.requires-mounts-for=` or `RequiresMountsFor=`,
-  without the mount, and reached `local-fs.target`. For a line below the mount, or one naming it
-  with `x-systemd.requires-mounts-for=`, NAILS said that the target will not be reached, and listed
-  the mask, and for a line below it with a backslash in its options, that where the target requires
-  that line, it is not reached. The same holds where such a mount is skipped and the skip is masked
-  after all, as a drop-in of the decoy's resets its start conditions or NAILS cannot tell what it
-  pulls in: the warning said that the target will not be reached, and `nails status` listed the
-  mask, also where the units the target requires need the mount only for a path, and also where
-  NAILS reads only that a target may require the line, through an option it cannot read or a line
-  with a backslash. Such a skip masked after all now gets the warning that the target may not be
-  reached, and nothing is listed, unless a mount, swap or automount unit linked in a target's
-  `.requires` directory names the mount with `Requires=`, or the line's own unit is linked there:
-  systemd refuses that unit, or the target's own requirement, while the mount is masked, so the
-  warning says that the target will not be reached, and `nails status` lists the mask. Where the
-  line's device is not there, its warning says that the target will not be reached, naming that
-  unit, in place of the one that said may, and the mask is listed with the device. And it holds for
-  the warning that a skipped unit requires a unit the session masks: one that needs it only for a
-  path, such as the mount of an unmounted parent directory with `nofail`, may still start, and the
-  warning now says "the hidden systemd may not start" it, "so the boot target that requires it may
-  not be reached". Where the walk of its pulls finds a chain that names the masked unit, after one
-  for a path or a want, such as `Requires=` on a service that requires it, the warning says "the
-  hidden systemd cannot start" it, "so the boot target that requires it is not reached", and names
-  that chain. `nails status` lists such a unit as skipped and does not say that its target is not
-  reached.
+  says that the target will not be reached only where a chain of requirements from that line or
+  unit, or from a mount, swap or automount unit linked in a target's `.requires` directory, through
+  a service too, ends in a step that names the mount (`x-systemd.requires=`, `Requires=`,
+  `BindsTo=`, a link in a `.requires` directory), or where the line's own unit is linked there, and
+  only then does `nails status` list the mask. Where it requires the mount only as the mount for a
+  path (a mount point below it, its source, `x-systemd.requires-mounts-for=`, `RequiresMountsFor=`),
+  the warning says that the target may not be reached, and the mask is not listed: systemd 260.5
+  started a tmpfs below a masked mount, and units that name a path in it with
+  `x-systemd.requires-mounts-for=` or `RequiresMountsFor=`, without the mount, and reached
+  `local-fs.target`. For a line below the mount, or one naming it with
+  `x-systemd.requires-mounts-for=`, NAILS said that the target will not be reached, and listed the
+  mask, and for a line below it with a backslash in its options, that where the target requires that
+  line, it is not reached. The same holds where such a mount is skipped and the skip is masked after
+  all, as a drop-in of the decoy's resets its start conditions or NAILS cannot tell what it pulls
+  in: the warning said that the target will not be reached, and `nails status` listed the mask, also
+  where the units the target requires need the mount only for a path, and also where NAILS reads
+  only that a target may require the line, through an option it cannot read or a line with a
+  backslash. Such a skip masked after all now gets the warning that the target may not be reached,
+  and nothing is listed, unless a mount, swap or automount unit linked in a target's `.requires`
+  directory names the mount (`Requires=`, `BindsTo=`), itself or as the last step of a chain of
+  requirements NAILS reads (through a service, say), or the line's own unit is linked there: systemd
+  refuses that unit, or the target's own requirement, while the mount is masked, so the warning says
+  that the target will not be reached, and `nails status` lists the mask. In two rare cases it says
+  so, and lists the mask, where systemd ignores the step and reaches the target, and no disk is
+  mounted in either: a chain with a step for a path (`RequiresMountsFor=`) to a unit the session
+  masks only later, as a skip it masks after all, and a link of the line's own name in a `.requires`
+  directory that points to `/dev/null`. Where the line's device is not there, its warning says that
+  the target will not be reached, naming that unit, in place of the one that said may, and the mask
+  is listed with the device. And it holds for the warning that a skipped unit requires a unit the
+  session masks: one that needs it only for a path, such as the mount of an unmounted parent
+  directory with `nofail`, may still start, and the warning now says "the hidden systemd may not
+  start" it, "so the boot target that requires it may not be reached". Where the walk of its pulls
+  finds a chain that names the masked unit, after one for a path or a want, such as `Requires=` on a
+  service that requires it, the warning says "the hidden systemd cannot start" it, "so the boot
+  target that requires it is not reached", and names that chain. `nails status` lists such a unit as
+  skipped and does not say that its target is not reached.
 - The list of the decoy filesystems that `nails check` and `activate --dry-run` print, and
   activation's own list, name a `noauto` line whose mask yields to a unit file of its name that a
   boot target links as left to that unit file, and a skip the hidden session masks after all as

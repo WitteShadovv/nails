@@ -44,19 +44,24 @@ pub struct KeptOff {
     /// target may require them, or that what requires them needs them only as
     /// the mount for a path (a mount point below, `RequiresMountsFor=`,
     /// `x-systemd.requires-mounts-for=`), not by name: systemd 260.5 started
-    /// such a unit without a masked mount. A unit a boot target links in its
-    /// `.requires` directory that names it takes it out again
+    /// such a unit without a masked mount. A mount, swap or automount unit a
+    /// boot target links in its `.requires` directory that names it takes it
+    /// out again
     /// ([`super::super::mount_units::kept_off`]). Where such a skip is masked
     /// after all, the warning says the target may not be reached, and the
     /// mask is not recorded as a required one.
     pub unsure: Vec<String>,
     /// The units the decisions mask for a boot target that needs them only
     /// for a path, or only may require them ([`super::Origin::Needed`] with
-    /// `may` or `by_path`), that a unit a target links in its `.requires`
-    /// directory names: the target is not reached, the mask is recorded
+    /// `may` or `by_path`), that a mount, swap or automount unit a target
+    /// links in its `.requires` directory names: the warning says the target
+    /// will not be reached, the mask is recorded
     /// ([`required_masks`](Self::required_masks)), and the unit pass's
     /// warning, which names that unit, stands in place of the decision's own
-    /// ([`KeptOff::warning`]).
+    /// ([`KeptOff::warning`]). systemd reaches the target all the same, with
+    /// no disk mounted, where it ignores a step on the way: a step for a path
+    /// into a unit the session masks only later, as a skip it masks after
+    /// all, or a link of the mount's own name that points to `/dev/null`.
     pub sure_needed: Vec<String>,
 }
 

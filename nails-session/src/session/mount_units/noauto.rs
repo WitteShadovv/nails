@@ -58,9 +58,10 @@ pub(super) fn yield_masks(
 /// unit file of the same name to the hidden systemd, NAILS cannot tell which
 /// of them the hidden systemd reads: the unit stays masked, with a warning,
 /// recorded where a boot target requires that line or unit file
-/// ([`MaskCause::ConflictingLines`]). Otherwise, where a unit a boot target
-/// links in its `.requires` directory (`native`) that the session does not
-/// keep off requires it through a chain of requirements NAILS reads
+/// ([`MaskCause::ConflictingLines`]). Otherwise, where a mount, swap or
+/// automount unit a boot target links in its `.requires` directory
+/// (`native`) that the session does not keep off requires it through a chain
+/// of requirements NAILS reads
 /// ([`pulls::requires_among`]), it is kept off as a line the boot mounts:
 /// skipped where its device is there, and masked with a warning where it is
 /// not ([`KeptOff::needed_noauto`]). The warning says the target will not be
@@ -193,12 +194,12 @@ pub(super) fn weigh_masks(
 
 /// Weigh what NAILS reads as held up only for a path, or only may be
 /// ([`KeptOff::unsure`], [`Origin::Needed`] with `may` or `by_path`),
-/// against the units a boot target links in its `.requires` directory
-/// (`native`): the skips among [`KeptOff::unsure`], and each mount the
-/// decisions mask for a target that needs it only for a path, or only may
-/// require it, without recording it. Where such a unit names the mount, as
-/// the link itself does or as the unit requires it through a chain of
-/// requirements NAILS reads whose last step names it
+/// against the mount, swap and automount units a boot target links in its
+/// `.requires` directory (`native`): the skips among [`KeptOff::unsure`],
+/// and each mount the decisions mask for a target that needs it only for a
+/// path, or only may require it, without recording it. Where such a unit
+/// names the mount, as the link itself does or as the unit requires it
+/// through a chain of requirements NAILS reads whose last step names it
 /// ([`pulls::requires_among`]), the unit does not start while the mount is
 /// masked, so the target is not reached: the skip leaves
 /// [`KeptOff::unsure`], so that where it is masked after all the warning
@@ -206,6 +207,13 @@ pub(super) fn weigh_masks(
 /// mask is recorded now, among [`KeptOff::sure_needed`], with a warning
 /// that names that unit in place of the decision's own
 /// ([`KeptOff::warning`]). Returns the warnings.
+///
+/// NAILS reads two rare shapes so too, where systemd ignores a step and
+/// reaches the target: a chain with a step for a path (`RequiresMountsFor=`)
+/// into a unit that [`super::kept_off`] masks only after this ran, as a skip
+/// it masks after all, and a link of the mount's own name in a `.requires`
+/// directory that points to `/dev/null`. The warning says will not there,
+/// and the mask is recorded, but no disk is mounted in either.
 pub(super) fn weigh_unsure(
     dirs: UnitDirs<'_>,
     fstab: &[FstabEntry],
