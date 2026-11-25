@@ -254,16 +254,10 @@ of this changelog for that version becomes the release notes word for word, and
   them. The page of an interrupted
   activation offers Clean Up, and that of a record that cannot be read on the decoy Reset Record,
   both `nails recover`; the window then says what the recovery did, without naming a device, and
-  checks again. A hidden session's page deactivates: Deactivate… asks with what the return to the
-  decoy would not put back, in the engine's words, and offers both endings, Power Off, the suggested
-  one, and Return to Decoy; Power Off asks the engine for the plan of a power-off and applies it
-  without asking again. Where the plan says the way back turns the return into a power-off, the
-  question says first, in the CLI's words, that the session ends with the machine powering off
-  instead of returning, and where that holds whatever happens before the way back runs it offers no
-  Return to Decoy. After Return to Decoy on a plan whose return may power off, the page says so in
-  the CLI's words. The page then reads "Ending the Hidden Session", takes no input but the Emergency
-  control and, where the hidden volume could not be marked to close, says so without naming its
-  device; a session still there a minute later gets its Close back, and the page names the Emergency
+  checks again. A hidden session's page deactivates: Deactivate… asks once, says that the session
+  ends and the computer powers off, and offers Power Off alone, which applies the plan of the
+  power-off. The page then reads "Ending the Hidden Session" and takes no input but the Emergency
+  control; a session still there a minute later gets its Close back, and the page names the Emergency
   control and the power button. A hidden session's window has the Emergency control at the start of
   its header bar, on every page until it fires: also before the helper answered, once it is gone, on
   that page and above an open question, whose dimming keeps everything else out of reach. Held, its
@@ -2549,12 +2543,8 @@ of this changelog for that version becomes the release notes word for word, and
   read a success. Without `--json` the output is unchanged: it still comes before the switch, which
   ends the terminal.
 - `nails deactivate` in a hidden root whose session plan in `/run` is missing or cannot be read
-  refuses at once, before it asks anything, with exit 6 and `emergency --poweroff` as the next step.
-  It asked for confirmation, printed that the session was ending and that the decoy would start in
-  a few seconds, and only then failed with exit 1, pointing at a plain `emergency`, which finds no
-  plan there either and does nothing. After a way back that fails, its hint no longer says a plain
-  `emergency` returns to the decoy: it returns where it can prepare the return and powers off where
-  it cannot.
+  now powers off, as it does with the plan: a power-off needs none. It used to ask for
+  confirmation, print that the decoy would start in a few seconds and only then fail.
 - `nails deactivate` and `nails emergency` name each hidden backend device they could not mark for
   deferred removal (the hidden session removed `dmsetup`, say) once the soft-reboot is enqueued:
   it stays open after the switch, its key in RAM, until power-off. `deactivate` logged such a
@@ -2716,10 +2706,9 @@ of this changelog for that version becomes the release notes word for word, and
   read `/etc/sudoers` and `/sys/fs/pstore` where, as on most systems, only root can read them.
 - `nails deactivate` that cannot take its lock, a hidden root that cannot be looked up among the
   causes, refuses before the switch as before, and now names `emergency`, which ends the session
-  without the lock: it returns to the decoy where it can prepare the return and powers off where it
-  cannot (`next.command` is `emergency` under `--json`). A lock that another `nails` operation holds
-  still names only that operation, since it may be a way back already under way. A state record that
-  cannot be written before the switch stops the way back the same way, with the error
+  without the lock: it powers off at once (`next.command` is `emergency` under `--json`). A lock that another `nails` operation holds
+  still names only that operation, since it may be a deactivation already under way. A state record
+  that cannot be written before the power-off stops it the same way, with the error
   `invalid_state` where it was `deactivation_failed`.
 - A sleep guard (`sleep_policy.mode` `block` or `teardown`) whose copy of the settings in `/run`
   could not be read, did not parse or was missing fell back to `warn` and exited, so the session ran

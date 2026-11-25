@@ -68,7 +68,7 @@ pub struct ActivateArgs {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DeactivateArgs {
-    /// `--poweroff`: power off instead of returning to the decoy.
+    /// `--poweroff`: kept for the wire format; deactivate always powers off.
     pub poweroff: bool,
 }
 
@@ -274,35 +274,34 @@ pub struct PlanAdvisory {
     pub fix: Option<String>,
 }
 
-/// The data of the answer to [`super::Op::DeactivatePlan`] in a hidden session
-/// with a way back. (Anywhere else the answer is the envelope `nails
-/// deactivate` prints, and there is no token.)
+/// The data of the answer to [`super::Op::DeactivatePlan`] in a hidden
+/// session. (Anywhere else the answer is the envelope `nails deactivate`
+/// prints, and there is no token.) A hidden session never goes back to the
+/// decoy, so the plan always powers off: `poweroff` is `true`, `warnings` is
+/// empty and `powers_off_instead` is `None`. The fields stay for the wire
+/// format.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeactivatePlanData {
-    /// Whether the apply powers off instead of returning to the decoy.
+    /// Whether the apply powers off: always `true`.
     pub poweroff: bool,
-    /// What the return will not put back, one sentence each.
+    /// Kept for the wire format; always empty.
     pub warnings: Vec<String>,
-    /// Why the return powers the machine off instead of returning to the
-    /// decoy, as far as the hidden session can tell before the switch: what
-    /// the way back cannot undo. Never for the plan of a power-off.
+    /// Kept for the wire format; always `None`.
     #[serde(default)]
     pub powers_off_instead: Option<PowerOffInstead>,
     /// The token the apply request carries back.
     pub token: String,
 }
 
-/// Why a return to the decoy powers the machine off instead.
+/// Kept for the wire format of [`DeactivatePlanData`]: why a return to the
+/// decoy powered the machine off instead, from the days of the way back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PowerOffInstead {
-    /// What the way back cannot undo, as the start of a sentence: "The way
-    /// back cannot delete tunl0, which the kernel keeps".
+    /// What the way back could not undo, as the start of a sentence.
     pub what: String,
-    /// Whether it powers off whatever happens before the way back runs: a
-    /// link the kernel keeps never goes. Otherwise it powers off unless that
-    /// changes before then.
+    /// Whether it powered off whatever happened before the way back ran.
     pub certain: bool,
 }
 
