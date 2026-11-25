@@ -46,7 +46,7 @@
     if [ "''${up%%.*}" -ge 8 ]; then
       exec 3<>/dev/ttyS0
       echo 'blkstat-mark hold' >&3
-      timeout 15 head -n 1 <&3 >/dev/null || true
+      timeout --foreground 15 head -n 1 <&3 >/dev/null || true
       echo 'blkstat-mark release' >&3
     fi
     MARK

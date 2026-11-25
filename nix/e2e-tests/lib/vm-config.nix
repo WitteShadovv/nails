@@ -97,9 +97,11 @@
     script = ''
       read -r up _ < /proc/uptime
       if [ "''${up%%.*}" -ge 8 ]; then
+        # The console becomes this shell's controlling terminal: head reads it
+        # in the foreground, or the kernel would stop it (SIGTTIN).
         exec 3<>/dev/ttyS0
         echo 'blkstat-mark hold' >&3
-        timeout 15 head -n 1 <&3 >/dev/null || true
+        timeout --foreground 15 head -n 1 <&3 >/dev/null || true
         echo 'blkstat-mark release' >&3
       fi
     '';
