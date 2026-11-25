@@ -1152,7 +1152,7 @@ of this changelog for that version becomes the release notes word for word, and
   takes its fail-closed end: the last step refuses the switch, and on the way back powers off first;
   the emergency, which cannot tell then which side it runs on, powers off at once past PID 1's queue
   (or reboots, as asked), and its JSON names the side `unknown`; `activate`, `deactivate`, `discard`
-  and `recover` refuse, and so do the `rehearse` steps but an `--offline` scan, which reads only the
+  and `recover` refuse, and so do the `rehearse` steps but an `--offline` scan, which scans only the
   images it is given; the way back's preparation stops before it unmounts or mounts anything; the
   detach of the next root and of the runtime directory detaches what it can but never takes the tree
   for gone, so nothing below it is removed; and the read-only guard and the watcher's sweep keep
@@ -1166,11 +1166,13 @@ of this changelog for that version becomes the release notes word for word, and
   it offers at most a hidden session's (Verify, Rehearsal and Settings), never Discard Hidden
   Changes, Set Up Hidden Volume or Activation Options. An offline verify, which says how to mount
   each place of the decoy that holds nothing under the root, took the device of such a place for one
-  not mounted here: it now says the table could not be read and gives the mount for either case. A
-  mount table that is not there at all, where `/proc` is not mounted, now counts as one that cannot
-  be read in verify, in the NixOS check `suspicious-nails-reference` and in the record of the hidden
-  volume's device-mapper stack too, which took it for an empty table. A list of swaps that cannot be
-  read fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy root whose
+  not mounted here: it now says the table could not be read and asks for a run where it can be, with
+  no mount, as no one mount writes nothing in every case. Verify now takes a mount table that is not
+  there at all, where `/proc` is not mounted, for one that cannot be read, where it took it for an
+  empty table. The NixOS check `suspicious-nails-reference` and the record of the hidden volume's
+  device-mapper stack take it so too, but in a run neither gets that far: the check's automount
+  guard and activation read the table first and stop there. A list of swaps that cannot be read
+  fails `rehearse scan`, and the way back then resets no zram device. A btrfs decoy root whose
   subvolume name is not valid UTF-8 is refused, and so is an overlay layer at such a path: the
   option text `mount(2)` takes cannot hold that name unchanged. A btrfs mount whose `subvol=` holds
   an octal escape (a space in the subvolume's name) now counts as that subvolume in the
@@ -2464,7 +2466,7 @@ of this changelog for that version becomes the release notes word for word, and
   disk with that filesystem in a partition or a device below or above it (a loop device or a mapping
   built on the partition), which the scan reads from sysfs. A `--device` the scan cannot place
   against such a folder is not checked either. The scan sees an eCryptfs folder only while it is
-  mounted, and never in an `--offline` scan, which reads no mount table.
+  mounted, and never in an `--offline` scan, whose targets never use the mount table.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up

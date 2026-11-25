@@ -595,7 +595,8 @@ impl Rehearsal {
         // container, or storage the scan does not identify reports "not
         // checked", and so does a --device that holds the folder of an
         // eCryptfs mount, which sysfs shows for a whole disk too. An offline
-        // scan reads no mount table, so no eCryptfs mount reaches it.
+        // scan's targets never use the mount table, so no eCryptfs mount
+        // reaches it.
         if options.offline {
             return Ok(options
                 .images

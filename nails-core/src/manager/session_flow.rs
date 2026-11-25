@@ -236,9 +236,10 @@ fn accepted_decoy_storage<F: Filesystem>(
 ///
 /// # Errors
 ///
-/// The mount table, or a place in sysfs on the way down the stack, is there
-/// but cannot be read: the stack may hold a mapping the record would lack,
-/// which the way back would then leave open with its key.
+/// The mount table cannot be read or is not there, or a place in sysfs on
+/// the way down the stack is there but cannot be read: the stack may hold a
+/// mapping the record would lack, which the way back would then leave open
+/// with its key.
 fn recorded_backend<F: Filesystem>(fs: &F, hidden_root: &Path) -> Result<Vec<String>> {
     let Some(chain) = crate::backend_lock::resolve_backend_chain(fs, hidden_root)? else {
         return Ok(Vec::new());
