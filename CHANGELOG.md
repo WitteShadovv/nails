@@ -1273,11 +1273,22 @@ of this changelog for that version becomes the release notes word for word, and
   mount, as before, or a mount unit linked in a boot target's `.requires` directory requires it
   through requirements NAILS reads, such as `Requires=`, the line is kept off as a line the boot
   mounts: skipped where its device is there, so that the target is reached, and listed by
-  `nails check` as skipped, and masked with a warning where it is not. Its automount stays masked
-  either way. Where the lines of the fstab only want the mount, such as a tmpfs below it with
-  `nofail`, the line stays masked, and a mount unit in a `.requires` directory that requires it is
-  not weighed against it: that unit does not start, and nothing warns of its target. A skipped unit
-  whose pulls
+  `nails check` as skipped, and masked with a warning where it is not. Its automount stays masked,
+  as the line's own mask has it, except where it is skipped: where a second fstab line for the
+  mount point gives `x-systemd.automount`, where a unit a boot target links requires the
+  automount, and where an automount unit file of its name that a target links is decided as a
+  skip. Where the
+  lines of the fstab only want the mount, such as a tmpfs below it with `nofail`, the mount stays
+  masked, and a mount unit in a `.requires` directory that requires it is not weighed against that
+  mask, only against that of the automount: such a unit that requires the mount by name does not
+  start. Nothing warns of its target where the session leaves the unit to the hidden systemd, and a
+  unit of a decoy disk the session skips gets the warning that it requires a unit the session
+  masks. Two more cases fail closed, with a warning, and `nails status` lists the mask: where the
+  units the fstab generator made for an automount line that is gone from the fstab since the decoy
+  started are still in place, as no `systemctl daemon-reload` ran, the mount of a needed `noauto`
+  line for the same mount point may be masked as one the lines disagree about, and a skipped unit
+  that only wants (`Wants=`) the automount a needed `noauto` line keeps masked is masked, as its
+  pulls reach a mount the session masks. A skipped unit whose pulls
   reach the mount is masked as before. Another unit that requires the mount by name, whose pulls
   NAILS does not read, does not start, and nothing warns of a target it keeps from being reached. A
   unit file of the line's name in `/etc/systemd/system` or `/run/systemd/system`, which systemd

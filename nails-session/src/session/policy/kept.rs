@@ -31,9 +31,10 @@ pub struct KeptOff {
     /// each once with why it is masked rather than skipped.
     pub required_masks: Vec<RequiredMask>,
     /// The units among [`masks`](Self::masks) that only the mask of a
-    /// `noauto` line holds ([`Decision::is_noauto_mask`]): a unit that pulls
-    /// one in reads it as a decoy disk the session keeps off by that mask
-    /// alone ([`super::super::mount_units`]).
+    /// `noauto` line holds ([`Decision::noauto_held`]: that mask, and the
+    /// automount the decision for such a line carries where a line needs its
+    /// mount): a unit that pulls one in reads it as a decoy disk the session
+    /// keeps off by that mask alone ([`super::super::mount_units`]).
     pub noauto_masks: Vec<String>,
     /// The units masked because what describes them disagrees, where only a
     /// skip of which NAILS reads that a boot target may require it took part
