@@ -3139,8 +3139,10 @@ then: `deactivate` refuses before it asks anything, with exit 6, and a plain
 **The mount table cannot be read** (`nails status` reports the place as unknown
 and names `/proc/self/mountinfo`). Without the table NAILS cannot tell the
 hidden session from the decoy, so nothing that needs it goes on: `activate`,
-`deactivate`, `discard`, `recover` and the `rehearse` steps refuse, the last
-step before a switch refuses the switch and on the way back powers off first,
+`deactivate`, `discard`, `recover` and the `rehearse` steps refuse (an
+`--offline` scan, which reads only the images it is given, still runs), the
+last step before a switch refuses the switch and on the way back powers off
+first,
 and `emergency` with a session plan powers off at once (`--reboot` reboots).
 The window refuses a menu entry's start, and opened from a terminal it shows
 its Emergency control from the start. Run the command again

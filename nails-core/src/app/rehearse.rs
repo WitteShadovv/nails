@@ -239,25 +239,41 @@ pub(crate) fn named_operator(env: &RuntimeEnv, user: &str) -> Result<TargetUser,
     }
 }
 
+/// How a step reads where it runs, for the hidden volume at a root: the
+/// live probe, or a test's.
+type Probe = fn(&Path) -> std::io::Result<SessionView>;
+
+/// [`crate::session::probe`] of the running system.
+fn live_probe(hidden_root: &Path) -> std::io::Result<SessionView> {
+    crate::session::probe(&crate::session::Paths::system(), hidden_root)
+}
+
 /// The rehearsal service for a resolved configuration.
 pub struct Rehearsal {
     config: Config,
+    probe: Probe,
 }
 
 impl Rehearsal {
     /// The service for `config`.
     pub fn new(config: Config) -> Self {
-        Self { config }
+        Self {
+            config,
+            probe: live_probe,
+        }
+    }
+
+    /// The service with `probe` in place of the live probe.
+    #[cfg(test)]
+    fn probed_by(self, probe: Probe) -> Self {
+        Self { probe, ..self }
     }
 
     /// The live hidden session this runs in, from the live mount table and
     /// plan, `None` outside one; a failure where the mount table cannot be
     /// read.
     fn live_session(&self) -> Result<Option<LiveSession>, RehearseFailure> {
-        live_session_or_refuse(crate::session::probe(
-            &crate::session::Paths::system(),
-            &self.config.hidden_volume_root,
-        ))
+        live_session_or_refuse((self.probe)(&self.config.hidden_volume_root))
     }
 
     fn load(&self) -> Result<Option<RehearsalState>, String> {
@@ -419,7 +435,15 @@ impl Rehearsal {
         let (token, state) = self
             .scan_token(options)
             .map_err(|e| RehearseFailure::new(ExitStatus::InvalidState, "no_token", e))?;
-        let here = Here::read(self.live_session()?);
+        // An offline scan reads only the images it is given, and nothing it
+        // decides rests on the session: a mount table that cannot be read
+        // does not stop it, and it then runs as outside a session, which only
+        // the next step it names reads.
+        let session = match self.live_session() {
+            Err(_) if options.offline => None,
+            session => session?,
+        };
+        let here = Here::read(session);
         if refuses_same_session(
             state.as_ref(),
             &here,
