@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -386,6 +387,9 @@ class Oracle:
         self.errors: list[str] = []
         self.allowed: dict[str, list[Range]] = {}
         self.serial = 0
+        #: Held by every step that reads or changes the window, from the test
+        #: script's thread and from the watch thread (:func:`install`).
+        self.lock = threading.RLock()
 
     # The QMP side.
 
@@ -393,6 +397,7 @@ class Oracle:
         client = self.machine.qmp_client
         if client is None:
             raise RuntimeError("the machine has no QMP client")
+        _serialize(client)
         reply = client.send(command, args or {})
         return reply.get("return")
 
@@ -744,10 +749,32 @@ def _ext4_writers(
 #: The attribute an installed oracle is kept in on its machine.
 _ATTRIBUTE = "_nails_block_write_oracle"
 
+#: Serializes every QMP command sent through a machine's client: the watch
+#: thread's and those of the test script's thread, the oracle's own and any
+#: other (a test's set-action, say).
+_QMP_LOCK = threading.RLock()
 
-def install(machine: Any, tools: dict[str, str]) -> Oracle:
+
+def _serialize(client: Any) -> None:
+    """Make ``client.send`` take :data:`_QMP_LOCK`, once per client."""
+    if getattr(client, "_nails_serialized", False):
+        return
+    send = client.send
+
+    def serialized(*args: Any, **kwargs: Any) -> Any:
+        with _QMP_LOCK:
+            return send(*args, **kwargs)
+
+    client.send = serialized
+    client._nails_serialized = True
+
+
+def install(machine: Any, tools: dict[str, str], watch: bool = True) -> Oracle:
     """Watch ``machine`` with the oracle. Wraps its ``wait_for_shutdown`` and
-    ``crash`` so a power-off or crash closes an open window first."""
+    ``crash`` so a power-off or crash closes an open window first, and, with
+    ``watch``, starts a thread that finishes a power-off QEMU paused for while
+    a window is open, so a test that waits for the power-off in a loop of its
+    own (on ``machine.process``) sees QEMU exit."""
     oracle = Oracle(machine, tools)
     setattr(machine, _ATTRIBUTE, oracle)
     original_wait = machine.wait_for_shutdown
@@ -759,13 +786,33 @@ def install(machine: Any, tools: dict[str, str]) -> Oracle:
         return original_wait(*args, **kwargs)
 
     def crash(*args: Any, **kwargs: Any) -> Any:
-        if oracle.window is not None and _running(machine):
-            oracle.close("a crash")
+        with oracle.lock:
+            if oracle.window is not None and _running(machine):
+                oracle.close("a crash")
         return original_crash(*args, **kwargs)
 
     machine.wait_for_shutdown = wait_for_shutdown
     machine.crash = crash
+    if watch:
+        threading.Thread(
+            target=_watch, args=(machine, oracle), name="block-writes", daemon=True
+        ).start()
     return oracle
+
+
+def _watch(machine: Any, oracle: Oracle) -> None:
+    """The watch thread: every half second, finish a power-off QEMU paused for
+    while a window is open."""
+    while True:
+        time.sleep(0.5)  # sync-lint: allow sleep -- the watch thread's pace
+        try:
+            if oracle.window is None or not _running(machine):
+                continue
+            with oracle.lock:
+                if paused_at_shutdown(machine):
+                    finish_power_off(machine)
+        except Exception as e:  # noqa: BLE001 - the thread must go on
+            oracle.errors.append(f"the watch thread failed: {e}")
 
 
 def oracle_of(machine: Any) -> Oracle | None:
@@ -803,16 +850,19 @@ def finish_power_off(machine: Any) -> None:
     oracle = oracle_of(machine)
     if oracle is None:
         return
-    oracle.close("a power-off")
-    # The monitor's quit, as the driver's own crash() sends it: a QMP quit
-    # can end QEMU before its reply, which the driver's QMP reader would
-    # wait for without end.
-    try:
-        machine.send_monitor_command("quit")
-    except Exception:  # noqa: BLE001 - QEMU exits as it answers
-        process = getattr(machine, "process", None)
-        if process is not None and process.poll() is None:
-            process.terminate()
+    with oracle.lock:
+        if oracle.window is None:
+            return
+        oracle.close("a power-off")
+        # The monitor's quit, as the driver's own crash() sends it: a QMP
+        # quit can end QEMU before its reply, which the driver's QMP reader
+        # would wait for without end.
+        try:
+            machine.send_monitor_command("quit")
+        except Exception:  # noqa: BLE001 - QEMU exits as it answers
+            process = getattr(machine, "process", None)
+            if process is not None and process.poll() is None:
+                process.terminate()
 
 
 def wait_for_exit(machine: Any, timeout: float | None) -> bool:
@@ -838,7 +888,8 @@ def before_switch(machine: Any, label: str) -> bool:
     if oracle is None or oracle.window is not None:
         return False
     try:
-        oracle.open(label)
+        with oracle.lock:
+            oracle.open(label)
     except Exception as e:  # noqa: BLE001 - recorded, raised at the end
         oracle.errors.append(f"{label}: the window could not be opened: {e}")
         return False
@@ -853,8 +904,10 @@ def at_hold(machine: Any, opened_here: bool) -> int:
     guest in the burst of lines a switch prints, so a wait of fixed length
     would end before the host saw the hold line."""
     oracle = oracle_of(machine)
-    if oracle is not None and oracle.window is not None:
-        oracle.cut(SESSION if opened_here else "after the way back")
+    if oracle is not None:
+        with oracle.lock:
+            if oracle.window is not None:
+                oracle.cut(SESSION if opened_here else "after the way back")
     cut_at = len(machine.full_console_log)
     _, release = hold_and_release(machine.full_console_log[-200:])
     send = getattr(machine, "send_console", None)
@@ -875,7 +928,21 @@ def after_switch(
     it when this switch opened it and did not land there, and close it on the
     way back, at the cut."""
     oracle = oracle_of(machine)
-    if oracle is None or oracle.window is None:
+    if oracle is None:
+        return
+    with oracle.lock:
+        _after_switch(oracle, label, opened_here, cut_at, release_at, hidden)
+
+
+def _after_switch(
+    oracle: Oracle,
+    label: str,
+    opened_here: bool,
+    cut_at: int | None,
+    release_at: int | None,
+    hidden: bool,
+) -> None:
+    if oracle.window is None:
         return
     if cut_at is not None and release_at is not None and release_at < cut_at:
         oracle.errors.append(
@@ -903,18 +970,23 @@ def finish(machines: list[Any]) -> None:
         oracle = oracle_of(machine)
         if oracle is None:
             continue
-        if oracle.window is not None:
-            if _running(machine):
-                oracle.close("the end of the test")
-            else:
-                oracle.errors.append(
-                    f"{oracle.window.label}: QEMU ended without the oracle"
-                )
-                oracle.window = None
+        with oracle.lock:
+            _finish_one(machine, oracle)
     for machine in machines:
         oracle = oracle_of(machine)
         if oracle is not None:
             oracle.raise_on_findings()
+
+
+def _finish_one(machine: Any, oracle: Oracle) -> None:
+    """Close ``oracle``'s open window live, or note that QEMU ended with it."""
+    if oracle.window is None:
+        return
+    if _running(machine):
+        oracle.close("the end of the test")
+    else:
+        oracle.errors.append(f"{oracle.window.label}: QEMU ended without the oracle")
+        oracle.window = None
 
 
 def tools_on_path() -> dict[str, str]:

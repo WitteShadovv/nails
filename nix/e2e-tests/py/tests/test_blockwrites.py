@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import unittest
 from typing import Any
 from unittest import mock
@@ -109,7 +110,7 @@ class FakeMachine:
 
 def installed() -> tuple[FakeMachine, blockwrites.Oracle]:
     machine = FakeMachine()
-    oracle = blockwrites.install(machine, {"qemu_img": "qemu-img"})
+    oracle = blockwrites.install(machine, {"qemu_img": "qemu-img"}, watch=False)
     return machine, oracle
 
 
@@ -179,6 +180,37 @@ class Ranges(unittest.TestCase):
         self.assertEqual(
             blockwrites.sector_text([(0, 512)] * 3, limit=1), "0 and 2 more"
         )
+
+
+class Threads(unittest.TestCase):
+    def test_the_watch_thread_finishes_a_paused_power_off(self) -> None:
+        machine = FakeMachine()
+        oracle = blockwrites.install(machine, {"qemu_img": "qemu-img"})
+        blockwrites.before_switch(machine, "activate")
+        machine.qmp_client.status = "shutdown"
+        deadline = time.monotonic() + 10
+        while blockwrites.watching(machine) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(blockwrites.watching(machine))
+        self.assertEqual(machine.monitor, ["quit"])
+        self.assertEqual(oracle.errors, [])
+
+    def test_every_qmp_command_is_sent_under_one_lock(self) -> None:
+        machine, oracle = installed()
+        inside: list[bool] = []
+        send = machine.qmp_client.send
+
+        def probe(command: str, args: dict[str, Any] | None = None) -> Any:
+            got = blockwrites._QMP_LOCK.acquire(blocking=False)
+            inside.append(got)
+            if got:
+                blockwrites._QMP_LOCK.release()
+            return send(command, args)
+
+        machine.qmp_client.send = probe  # type: ignore[method-assign]
+        oracle._qmp("query-status")
+        self.assertEqual(inside, [True])
+        self.assertTrue(getattr(machine.qmp_client, "_nails_serialized", False))
 
 
 class Marks(unittest.TestCase):
