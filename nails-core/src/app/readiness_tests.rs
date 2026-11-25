@@ -216,6 +216,7 @@ fn decoy_filesystems_list_each_decision_but_the_entries_left_as_they_are() {
         root.path(),
         &mounts,
         Path::new("/mnt/data"),
+        &|_| false,
     );
     // Each row is `<path>: <decision>`, a mask followed by its reason in
     // the policy's own words.
@@ -279,6 +280,7 @@ fn decoy_filesystems_make_no_lookup_behind_an_automount_point() {
         &root,
         &mounts,
         Path::new("/mnt/data"),
+        &|_| false,
     );
     let usr_local = root.join("usr/local");
     assert!(
@@ -309,6 +311,7 @@ fn decoy_filesystems_make_no_lookup_behind_an_automount_point() {
         Path::new("/"),
         &mounts,
         Path::new("/mnt/data"),
+        &|_| false,
     );
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert!(
@@ -338,6 +341,7 @@ fn decoy_filesystems_name_an_fstab_that_cannot_be_read() {
             &root,
             &mounts,
             Path::new("/mnt/data"),
+            &|_| false,
         )
     };
     let elsewhere = Snapshot::read(&RealFilesystem, &root);
@@ -386,6 +390,7 @@ fn decoy_filesystems_name_an_fstab_behind_an_automount_point_once() {
         &root,
         &mounts,
         Path::new("/mnt/data"),
+        &|_| false,
     );
     // A unit directory below the point gets a line of its own, which names
     // the point: the fstab's lookup, behind the same point, adds none.
@@ -430,6 +435,7 @@ fn decoy_filesystems_read_no_fstab_that_links_behind_an_automount_point() {
         &root,
         &mounts,
         Path::new("/mnt/data"),
+        &|_| false,
     );
     assert_eq!(
         rows,
@@ -440,6 +446,67 @@ fn decoy_filesystems_read_no_fstab_that_links_behind_an_automount_point() {
             point = point.display()
         )]
     );
+}
+
+/// A noauto line of a decoy disk whose mount a tmpfs mount unit that
+/// local-fs.target requires needs (`Requires=`) is skipped in the hidden
+/// session where its disk is there, not masked: the list says skipped, as
+/// the fstab-policy row does. It said masked, as the decision for the line
+/// alone does. Where the target only wants the tmpfs, or the disk is not
+/// there, the line stays masked, and the list says so.
+#[test]
+fn decoy_filesystems_list_a_noauto_line_the_hidden_session_skips_as_skipped() {
+    let present = |_: &Path| true;
+    let absent = |_: &Path| false;
+    let cases: [(&str, crate::session::policy::Present<'_>, bool); 3] = [
+        ("requires", &present, true),
+        ("wants", &present, false),
+        ("requires", &absent, false),
+    ];
+    for (links, there, skipped) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("etc")).unwrap();
+        std::fs::write(
+            root.join("etc/fstab"),
+            "/dev/vda2 / ext4 defaults 0 1\n/dev/vdy1 /r/a ext4 noauto 0 2\n",
+        )
+        .unwrap();
+        let units = root.join("etc/systemd/system");
+        std::fs::create_dir_all(units.join(format!("local-fs.target.{links}"))).unwrap();
+        std::fs::write(
+            units.join("r-t9.mount"),
+            "[Unit]\nRequires=r-a.mount\nAfter=r-a.mount\n[Mount]\nWhat=tmpfs\nWhere=/r/t9\n\
+             Type=tmpfs\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "../r-t9.mount",
+            units.join(format!("local-fs.target.{links}/r-t9.mount")),
+        )
+        .unwrap();
+        let mounts =
+            nails_teardown::mountinfo::parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+        let rows = decoy_filesystems(
+            &RealFilesystem,
+            &Snapshot::from_table(mounts.clone()),
+            &root,
+            &mounts,
+            Path::new("/mnt/data"),
+            there,
+        );
+        let line = "(noauto, but a unit that pulls it in would have the hidden session mount it \
+                    read-write)";
+        let expected = if skipped {
+            format!("/r/a: skipped {line}")
+        } else {
+            format!("/r/a: masked {line}")
+        };
+        assert!(
+            rows.contains(&expected),
+            "{links}, skipped {skipped}: {rows:?}"
+        );
+    }
 }
 
 /// `count` tallies exactly the entries whose status matches the one asked
@@ -721,6 +788,7 @@ fn decoy_filesystems_without_a_mount_table_say_so() {
         &MockFilesystem::new(),
         Err(std::io::Error::other("no proc")),
         Path::new("/mnt/data"),
+        &|_| false,
     );
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert!(
