@@ -1243,8 +1243,9 @@ of this changelog for that version becomes the release notes word for word, and
   subvolume root written so in a `subvol=` or `X-mount.subdir=` option or a bind's device. It ends a
   comment where Nix's lexer ends it, a block comment at its first `*/` whatever quotes it holds,
   also one right after a word (`true/* a 5" disk */`), and a `#` comment at a carriage return too,
-  and `''` in a name or a URI (`let a'' = 1; in a''`) starts no string, as in Nix. A `luks.devices`
-  block after such a place names its mapping as it does elsewhere. Before, these lines passed.
+  a carriage return in code is a blank, and `''` in a name or a URI (`let a'' = 1; in a''`, also
+  `2 +a''`) starts no string, as in Nix. A `luks.devices` block after such a place names its
+  mapping as it does elsewhere. Before, these lines passed.
 
 - The residue report of every activation, and `nails verify`, count the loop device under the
   hidden volume's own crypt mapping as the hidden volume's. With the hidden volume in a LUKS or

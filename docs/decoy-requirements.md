@@ -942,8 +942,10 @@ logind.
   its first `*/`, whatever quotes it holds (`/* a 5" disk */`), also one
   that starts right after a word (`true/* … */`), and a `#` comment at a
   carriage return as well as at the end of the line, so what follows the
-  carriage return is code. `''` in a name or a URI (`a''`,
-  `http://example.org/a''`) starts no string, as in Nix. So a
+  carriage return is code, where Nix reads a carriage return as a blank.
+  `''` in a name or a URI (`a''`, also right after an operator as in
+  `2 +a''`, and `http://example.org/a''`) starts no string, as in Nix, while
+  after a path (`./a''`) it does. So a
   `luks.devices` block after such a place names its mapping as it does
   anywhere else. What a reading by quotes alone finds there counts as
   well, as before: one that takes such a quote for the start of a string
