@@ -110,7 +110,14 @@ class ValidateTest(unittest.TestCase):
         self.assertEqual(di.validate({"x": upstream_entry(firmware="uefi")}), [])
         self.assertEqual(di.validate({"x": upstream_entry(firmware="bios")}), [])
         problems = di.validate({"x": upstream_entry(firmware="coreboot")})
-        self.assertEqual(problems, ["x: unknown firmware 'coreboot'"])
+        self.assertEqual(
+            problems, ['x: firmware must be "bios" or "uefi", not \'coreboot\'']
+        )
+        # A value that is no string is a finding too, not a TypeError.
+        problems = di.validate({"x": upstream_entry(firmware=["uefi"])})
+        self.assertEqual(
+            problems, ['x: firmware must be "bios" or "uefi", not [\'uefi\']']
+        )
 
     def test_a_pinned_and_an_unpinned_mirror_entry_are_well_formed(self) -> None:
         self.assertEqual(di.validate({"a": mirror_entry()}), [])

@@ -191,8 +191,8 @@ def _problems_for_entry(name: str, entry: object) -> list[str]:
         except ValueError:
             out.append(f"{name}: upstreamUntil must be null or YYYY-MM-DD")
     firmware = entry.get("firmware", "bios")
-    if firmware not in KNOWN_FIRMWARE:
-        out.append(f"{name}: unknown firmware {firmware!r}")
+    if not isinstance(firmware, str) or firmware not in KNOWN_FIRMWARE:
+        out.append(f"{name}: firmware must be \"bios\" or \"uefi\", not {firmware!r}")
     out.extend(_source_problems(name, entry, entry["source"]))
     out.extend(_known_failed_problems(name, entry.get("knownFailedUnits")))
     return out
