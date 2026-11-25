@@ -142,6 +142,7 @@
     "memory": 2048,
     "enabled": false,
     "upstreamUntil": null,
+    "firmware": "uefi",
     "prepare": "archlinux",
     "source": {
       "kind": "mirror",
