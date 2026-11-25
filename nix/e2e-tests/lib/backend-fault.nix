@@ -37,7 +37,7 @@
             if stuck:
                 machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
                 raise AssertionError(f"{label}: the next userspace is stuck: {stuck[0]}")
-            if any(session.BACKDOOR_MARKER in line for line in lines):
+            if session.backdoor_announced(lines):
                 break
             if machine.process is not None and machine.process.poll() is not None:
                 machine.log(f"{label}: the machine powered off")

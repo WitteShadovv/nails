@@ -219,7 +219,10 @@ distroVm.buildVmTest {
         # status (at.trigger_output), so the failure says what NAILS said.
         # Nothing asks the backdoor anything after a failed trigger: the
         # driver counts it as gone from the start of the trigger, and would
-        # wait for a new one that never comes.
+        # wait for a new one that never comes. The new backdoor's announcement
+        # counts where a kernel line on the console cut it in two as well
+        # (session.backdoor_announced): an audit record of the new
+        # userspace's start can land in the middle of it.
         console_index = len(vm.full_console_log)
         state = f"$({QUIET} /usr/bin/systemctl is-system-running 2>/dev/null)"
         copy = ""
@@ -250,7 +253,7 @@ distroVm.buildVmTest {
                     f"{label}: the trigger failed ({failed}) and never switched"
                     + ("" if said is None else f"; it printed:\n{said}")
                 )
-            if any(session.BACKDOOR_MARKER in line for line in lines):
+            if session.backdoor_announced(lines):
                 break
             exited = vm.process.poll() if vm.process is not None else None
             assert exited is None, f"{label}: QEMU exited ({exited})"

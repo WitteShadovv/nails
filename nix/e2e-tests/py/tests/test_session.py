@@ -212,6 +212,23 @@ class FollowSoftRebootTest(unittest.TestCase):
         self.assertEqual(machine.connects, 1)
 
 
+    def test_an_announcement_cut_by_a_kernel_message_still_reconnects(self) -> None:
+        # As a Fedora console showed it: an audit record in the middle of the
+        # announcement, and another kernel line before its rest.
+        machine = FakeMachine(
+            [
+                "Soft-rebooting.",
+                f"connecting to ho{KERNEL_LINE}",
+                "[   13.394700] audit: type=1334 audit(1795599944.300:1613): op=UNLOAD",
+                "st...",
+            ]
+        )
+        session.follow_soft_reboot(
+            machine, "nails deactivate -y", "leave", deadline_s=5
+        )
+        self.assertEqual(machine.connects, 1)
+
+
 class PowerOffTest(unittest.TestCase):
     def test_a_power_off_that_never_ends_says_what_pid1_waits_on(self) -> None:
         class Running:
@@ -338,6 +355,16 @@ class FollowPowerOffTest(unittest.TestCase):
             "hang-in: the machine did not power off: it switched",
         )
         self.assertEqual(machine.connects, 0)
+
+    def test_a_cut_announcement_fails_at_once(self) -> None:
+        machine = FakeMachine([f"connecting to h{KERNEL_LINE}", "ost..."])
+        machine.process = self.Running()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_power_off(machine, "nails activate -y", "hang-in")
+        self.assertIn("it switched", str(raised.exception))
 
     def test_a_stuck_userspace_fails_at_once(self) -> None:
         machine = FakeMachine(["Reached target Emergency Mode"])
@@ -524,6 +551,28 @@ class PureHelpersTest(unittest.TestCase):
     def test_pid1_timestamps_are_read_in_seconds(self) -> None:
         values = session.parse_pid1_timestamps("A=1500000\nB=\nC=x\n")
         self.assertEqual(values, {"A": 1.5})
+
+    def test_uncut_lines_put_a_cut_line_together_and_keep_the_kernels(self) -> None:
+        kernel = "[    7.5] audit: type=1130"
+        self.assertEqual(
+            session.uncut_lines(
+                [
+                    KERNEL_LINE,
+                    f"connecting{KERNEL_LINE}",
+                    f" to ho{kernel}",
+                    kernel,
+                    "st...",
+                ]
+            ),
+            [KERNEL_LINE, KERNEL_LINE, kernel, kernel, "connecting to host..."],
+        )
+        # A rest that has not arrived yet: the start stays a line of its own.
+        self.assertEqual(
+            session.uncut_lines([f"connecting to ho{KERNEL_LINE}"]),
+            [KERNEL_LINE, "connecting to ho"],
+        )
+        self.assertFalse(session.backdoor_announced([f"connecting to ho{KERNEL_LINE}"]))
+        self.assertEqual(session.uncut_lines(["a", "", "b"]), ["a", "", "b"])
 
     def test_stuck_lines_name_the_markers_only(self) -> None:
         self.assertEqual(
