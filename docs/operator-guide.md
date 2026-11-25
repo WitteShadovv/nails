@@ -356,7 +356,10 @@ Keep all of it `root`-owned on the hidden volume.
      entries require it only as the mount for a path (a mount point below it, a
      source, `x-systemd.requires-mounts-for=`): systemd 260.5 started a tmpfs
      below a masked mount, and one naming it with
-     `x-systemd.requires-mounts-for=`, without the mount.
+     `x-systemd.requires-mounts-for=`, without the mount. Where a mount unit
+     linked in a target's `.requires` directory names the mount with
+     `Requires=`, or the entry's own unit is linked there, the warning says
+     that the target will not be reached all the same.
      `nofail` with any value counts as `nofail`. An entry kept off that gives
      an option of systemd's own (`x-systemd.`, `x-initrd.`) whose effect on
      what its units pull in NAILS does not read, or one with a backslash, is
