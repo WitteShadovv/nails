@@ -152,8 +152,8 @@ Each file is an object:
     `systemctl soft-reboot` the probe ends with: `1` when the image
     soft-rebooted once without a new boot.
   - `failedUnitsAfterSoftReboot` -- the units that show as failed after that
-    soft-reboot, with no NAILS involved (list of unit names); every way back is
-    a soft-reboot, so these are the units the way back would have to mask.
+    soft-reboot, with no NAILS involved (list of unit names); the entry into a
+    hidden session is a soft-reboot, so these are the units a switch meets.
   - `avcsAfterSoftReboot` -- the denials logged after those of the plain boot
     were read: what the soft-reboot and the userspace after it were denied.
     While auditd is down, from its stop on the way down to its start after the

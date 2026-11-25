@@ -30,8 +30,8 @@ let
     done
     apt-get install -y wtmpdb
     # The boot writer records the boot row on start and the shutdown time on
-    # stop; enable it so the power cycle, the way back and the control
-    # soft-reboot all exercise it.
+    # stop; enable it so the power cycles, the session's entry and the
+    # control soft-reboot all exercise it.
     systemctl enable wtmpdb-update-boot.service
   '';
 
@@ -59,8 +59,7 @@ in
   # Every scenario can run: nix-vm-test pins both images.
   runnable = builtins.attrNames drivers;
   # The seconds a run gets, from the boot to its last assertion: an install, a
-  # power cycle, a session kept until the kernel has been up past wtmpdb's five
-  # minutes, the way back and a control soft-reboot. A hosted run stops the
-  # driver after them.
+  # power cycle, a session ended by a power-off and a cold boot, and a control
+  # soft-reboot. A hosted run stops the driver after them.
   timeout = 1800;
 }

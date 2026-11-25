@@ -5,9 +5,10 @@
 # nix-vm-test. The scenario proves the whole-root session end to end on a
 # non-NixOS host (systemd >= 254): activation soft-reboots the stock cloud image
 # into an overlay of its own root, every hidden write (including /usr) lands on
-# the hidden root, every mounted boot filesystem stays read-only, and
-# deactivation and emergency soft-reboot back to the plain decoy without a trace
-# on the decoy disk. Before the first entry, check refuses a noauto line of the
+# the hidden root, every mounted boot filesystem stays read-only, and the
+# emergency and deactivate each power the machine off (a hidden session never
+# goes back to the decoy), after which the decoy boots cold without a trace on
+# its disk. Before the first entry, check refuses a noauto line of the
 # decoy's fstab below the hidden root (fstab-policy, exit 4), and its
 # lsm-status row passes, naming the security modules the kernel runs: SELinux
 # does not run on these images. The decoy runs blk-availability.service as
@@ -16,68 +17,67 @@
 # without /boot or the ESP mounted, keeps its hidden volume through that unit's
 # stop. local-fs.target requires those boot filesystems, so the second session
 # skips their units rather than masking them: the target is reached, and their
-# fsck never runs on the decoy disk. A decoy service that keeps a PID
-# file in /run starts again after an emergency killed its hidden copy, and a
-# Ctrl+C during the pre-flight checks cancels an activation, whose notice says
-# it wrote nothing to the decoy disk. The second
-# session is also a rehearsal, run the way `nails rehearse` guides it: plant in
-# the session (a scan there is refused), a plain deactivate, then on the decoy,
-# in the same boot, the hidden root opened again and a scan of the raw decoy
-# devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
-# reports no soft-reboot count, only the session's entry time tells the two
-# apart. The scenario lists the failed units on the decoy before the first
-# switch and right after each switch, and in each hidden session again just
-# before its way back, which resets the units that failed in the session.
-# Where the image table lists what the image is known to fail
-# (`knownFailedUnits`), each listing must hold exactly the units listed for
-# its phase (none before the first switch), each failed with its known line,
-# and the `platform` row of `check` must warn about every unit listed; without
-# a list they are only printed. A listing sees only what is failed at that
-# moment: a unit that failed while a switch stopped the old system and that
-# the new system started again is not in it, nor is one that fails and
-# starts again between two listings, nor one that fails after the last. After
-# the second session, which pushes the kernel's process numbers far on, the
-# getty the decoy starts again carries a number in the power-of-two range the
-# decoy's fresh boot gave it, and logind a number below the one the session
-# pushed the counter to. Each switch goes through logind: a program that
-# blocks shutdown makes the activation refuse, a program that holds the
-# shutdown back (a delay inhibitor) keeps the first entry waiting, with status
-# showing it activating and recover leaving it alone, and one in the second
-# session holds the way back and leaves the proof of logind's signal on the
-# hidden volume. Each entry ends the decoy's unattended-upgrades shutdown
-# helper on logind's signal, as an ordinary shutdown does: the unit does not
-# fail at the switch, and neither its log on the decoy disk nor the session's
-# copy gains a stop line. In each session the hidden PID 1 has the session's
-# timeout guard for soft-reboot.target (a switch that hangs until its job
-# timeout powers off), and after each way back the decoy's PID 1 has its
-# own unit again.
+# fsck never runs on the decoy disk. A decoy service that keeps a PID file in
+# /run starts again at the cold boot after the emergency killed its hidden
+# copy, and a Ctrl+C during the pre-flight checks cancels an activation, whose
+# notice says it wrote nothing to the decoy disk. The second session plants a
+# rehearsal, run the way `nails rehearse` guides it (a scan in the planting
+# session is refused); its scan on the decoy needs the hidden root again,
+# which lives in RAM here and is gone with the power-off, so the leak check
+# below looks for the rehearsal's token instead. The scenario lists the failed
+# units on the decoy before the first switch, in each hidden session right
+# after its entry and again just before its end, and on the decoy after each
+# cold boot. Where the image table lists what the image is known to fail
+# (`knownFailedUnits`), each listing in a hidden session must hold exactly the
+# units listed for `hiddenSession`, each failed with its known line, every
+# listing on the decoy must hold none, and the `platform` row of `check` must
+# warn about every unit listed; without a list they are only printed. The
+# table's `afterReturn` phase is no longer read: no session returns to the
+# decoy, and a cold boot is the decoy's own boot. A listing sees only what is
+# failed at that moment: a unit that failed while a switch stopped the old
+# system and that the new system started again is not in it, nor is one that
+# fails and starts again between two listings, nor one that fails after the
+# last. The entry goes through logind: a program that blocks shutdown makes
+# the activation refuse, and a program that holds the shutdown back (a delay
+# inhibitor) keeps the first entry waiting, with status showing it activating
+# and recover leaving it alone. Each entry ends the decoy's
+# unattended-upgrades shutdown helper on logind's signal, as an ordinary
+# shutdown does: the unit does not fail at the switch, and its log on the
+# decoy disk gains no stop line. In each session the hidden PID 1 has the
+# session's timeout guard for soft-reboot.target (a switch that hangs until
+# its job timeout powers off), and after each cold boot the decoy's PID 1 has
+# its own unit again.
+#
+# A power-off would end QEMU, and nix-vm-test's -snapshot disk with it, so
+# QEMU pauses at each session's power-off instead, and is reset into a cold
+# boot of the same disk (py/power_off.py, which also proves the kernel said it
+# powered off): the whole lifecycle stays on one disk, which the clean image
+# at the end holds. A cold boot loses the hidden root (in RAM), /run and the
+# share's mount, which the scenario makes again.
 #
 # The decoy's disk swap is turned off before the first hidden root exists, as
 # the swap check asks: the hidden root lives in RAM, where a disk swap could
-# take it onto the decoy disk. It is off in both sessions, before each entry,
-# before the rehearsal's scan and before the clean image; the baseline and
-# positive-control images are taken in boots of the pristine image, which turn
-# it on, with no hidden root there. With its fstab line kept, as most users keep it, the decoy
-# turns the swap on again at every boot, the way back's included: the first
-# session sees that line's unit skipped and swap.target reached, and after its
-# way back the scenario asserts the swap came on and turns it off at once,
-# while the first session's file container is still in RAM (encrypted where
-# the image has cryptsetup). The second session runs with the line made
-# noauto, which no boot turns on: it sees the unit masked, and the swap stays
-# off through its way back. Every unit NAILS masks in the hidden root is masked
-# at runtime only (masked-runtime), never as a file of the root. The residue
-# report each activation writes before the switch holds no warning: the loop
-# device under the hidden root's LUKS mapping counts as the hidden volume's,
-# and the first session's loop device is detached before the second entry. An
-# ESP that systemd's GPT auto-generator mounts on demand at /efi, as on
-# arch-boxes, is bound read-only at /efi in each hidden session, with its
-# automount masked there at runtime, and the decoy's automount is back after
-# each way back. The first entry finds the ESP mounted, the second idle, with
-# only its automount at /efi, as two minutes after the last access. The
-# rehearsal's scan exits 9 with a blind spot on a btrfs root's device and 0 on
-# any other image. Each session writes canaries of its own, and the leak check
-# looks for those of both sessions, for the canary files' names and for the
-# token the rehearsal planted in the second, which its files carry in their
+# take it onto the decoy disk. It is off in both sessions, before each entry
+# and before the clean image; the baseline and positive-control images are
+# taken in boots of the pristine image, which turn it on, with no hidden root
+# there. With its fstab line kept, as most users keep it, the decoy turns the
+# swap on again at every boot: the first session sees that line's unit
+# skipped and swap.target reached, and after the cold boot that follows it the
+# scenario asserts the swap came on and turns it off at once. The second
+# session runs with the line made noauto, which no boot turns on: it sees the
+# unit masked, and the swap stays off through the cold boot after it. Every
+# unit NAILS masks in the hidden root is masked at runtime only
+# (masked-runtime), never as a file of the root. The residue report each
+# activation writes before the switch holds no warning: the loop device under
+# the hidden root's LUKS mapping counts as the hidden volume's. An ESP that
+# systemd's GPT auto-generator mounts on demand at /efi, as on arch-boxes, is
+# bound read-only at /efi in each hidden session, with its automount masked
+# there at runtime, and the decoy's automount is back after each cold boot.
+# The first entry finds the ESP mounted, the second idle, with only its
+# automount at /efi, as two minutes after the last access. Each session
+# writes canaries of its own, and the leak check looks for those of both
+# sessions, for the canary files' names and for the token the rehearsal
+# planted in the second, which its files carry in their
 # names. Before each image it also reads the decoy root's files through the
 # decoy's own kernel, from a read-only bind of / that moves no access time:
 # none of these may be in them, and the positive control's token must be. On a
@@ -111,13 +111,15 @@
 #   - The machine is `vm`.
 #   - The disk is the store image under QEMU `-snapshot`: guest writes vanish
 #     when QEMU exits. The lifecycle runs in one QEMU process (a soft-reboot
-#     keeps the kernel and QEMU), and each forensic image is taken by first
-#     mirroring the live disk into `<state_dir>/vm.qcow2` -- where
+#     keeps the kernel and QEMU, and a session's power-off pauses QEMU, whose
+#     reset then boots the same disk cold), and each forensic image is taken
+#     by first mirroring the live disk into `<state_dir>/vm.qcow2` -- where
 #     `disk_forensics.root_image` looks -- and then letting
 #     `disk_forensics.snapshot` shut down and convert it as usual.
 #   - The 9p share with the binary is mounted only once before the script runs.
 #     A soft-reboot carries /run (the config file survives) but not the mounts
-#     below it, so after every switch `prepare_boot()` mounts the share again.
+#     below it, and a cold boot keeps neither, so after every switch and boot
+#     `prepare_boot()` mounts the share again and writes the config.
 {
   self,
   pkgs,
@@ -171,7 +173,7 @@ distroVm.buildVmTest {
 
     # The NixOS suite's in-VM helper package, for following a soft-reboot.
     sys.path.insert(0, "${../../e2e-tests/py}")
-    from nails_e2e import journal_tail, session  # noqa: E402
+    from nails_e2e import session  # noqa: E402
 
     # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
     # the `distro-checks` flake check: where a hidden write lands, which boot
@@ -180,6 +182,7 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../py}")
     import btrfs_scan  # noqa: E402
     import distro_checks  # noqa: E402
+    import power_off  # noqa: E402
     import shutil
     import subprocess
     import tempfile
@@ -250,7 +253,8 @@ distroVm.buildVmTest {
     # A decoy service that keeps a PID file in /run the way avahi-daemon does:
     # it removes the file when it stops, and refuses to start while one is
     # left. A copy killed by an emergency in the hidden session leaves its file
-    # behind, which the way back must remove. The stop signal goes to the
+    # behind, in the hidden session's /run, which the power-off clears: the
+    # decoy's copy must start at the next cold boot. The stop signal goes to the
     # shell alone (KillMode=mixed), as a daemon removes its file itself: sent
     # to every process, it can also reach the rm the trap starts.
     pidfile_probe_script = "\n".join(
@@ -406,7 +410,7 @@ distroVm.buildVmTest {
 
 
     def assert_generated_boot_mounts_back(where):
-        # After a way back the decoy's GPT auto-generator made each automount
+        # After a cold boot the decoy's GPT auto-generator made each automount
         # again, and an access mounts the same device there.
         for unit, (point, device, fstype) in boot_automounts.items():
             state = unit_props(unit, "LoadState", "ActiveState", "FragmentPath")
@@ -680,33 +684,13 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
-    # The decoy units whose process numbers the scenario reads at the fresh boot
-    # and after the way back. The gettys write theirs into /var/log/wtmp, and
-    # the way back measures by the getty, so theirs must fall in the range a
-    # fresh boot gives them. logind is not measured where a getty runs, and a
-    # soft-reboot starts it in another order, so its number only has to come
-    # from the counter the way back set.
-    NUMBERED_UNITS = ["systemd-logind.service", "getty@tty1.service", "serial-getty@ttyS0.service"]
-    RANGED_UNITS = ["getty@tty1.service", "serial-getty@ttyS0.service"]
-
-
-    def pid_range(pid):
-        # The power-of-two range the forensic oracle keys a process number by.
-        low = 1 << (pid.bit_length() - 1)
-        return (low, 2 * low - 1)
-
-
-    def unit_numbers(label):
-        # The main process numbers of the numbered units that run now.
-        numbers = {}
-        for unit in NUMBERED_UNITS:
-            if vm.execute(f"timeout 60 bash -c 'until systemctl is-active -q {unit}; do sleep 1; done'")[0] != 0:
-                continue
-            pid = int(vm.succeed(f"systemctl show -P MainPID {unit}").strip() or "0")
-            if pid > 0:
-                numbers[unit] = pid
-        print(f"{label}: process numbers {numbers}")
-        return numbers
+    def end_session(trigger, label):
+        # The session's end powers the machine off: QEMU pauses with the
+        # disk kept, the kernel said it powered off, and the reset boots the
+        # decoy cold from that disk.
+        power_off.follow_power_off(vm, trigger, label)
+        power_off.boot_again(vm, label)
+        prepare_boot()
 
 
     def blk_availability_stop():
@@ -719,9 +703,9 @@ distroVm.buildVmTest {
 
 
     def assert_guarded_blk_availability(where):
-        # Loaded and active, its stop cleared until the way back has switched:
-        # a guard that left the unit without a command would make systemd
-        # refuse to load it ("bad-setting").
+        # Loaded and active, its stop cleared for the session: a guard that
+        # left the unit without a command would make systemd refuse to load
+        # it ("bad-setting").
         state = unit_state("blk-availability.service")
         assert state == {"LoadState": "loaded", "ActiveState": "active"}, f"{where}: {state}"
         stop = blk_availability_stop()
@@ -818,9 +802,9 @@ distroVm.buildVmTest {
 
     def assert_timeout_guard(where, loaded):
         # In a session PID 1 has the session's timeout guard loaded: a switch
-        # that hangs until soft-reboot.target's job timeout powers off. On the
-        # decoy it is gone, and the decoy's own unit forces such a switch
-        # through. The activation itself refuses unless the decoy's PID 1
+        # that hangs until soft-reboot.target's job timeout powers off. It
+        # stays for the whole session. On the decoy's cold boot it is gone,
+        # and the decoy's own unit forces such a switch through. The activation itself refuses unless the decoy's PID 1
         # reports the guard's action once it is loaded.
         guard = "/run/systemd/system/soft-reboot.target.d/zz-overlay-runtime.conf"
         action = vm.succeed(
@@ -837,8 +821,8 @@ distroVm.buildVmTest {
 
 
     def assert_gpt_auto_masked(where, masked):
-        # Masked in every hidden root; gone with the session's /run on the way
-        # back.
+        # Masked in every hidden root; gone with the session's /run at the
+        # power-off.
         rc, target = vm.execute(f"readlink {gpt_auto_mask}")
         if masked:
             assert rc == 0 and target.strip() == "/dev/null", (
@@ -979,93 +963,6 @@ distroVm.buildVmTest {
             assert rc != 0, f"{where}: {command}:\n{out}"
 
 
-    def plant_tail(label):
-        # Right before a way back: what would reach the decoy's journal past
-        # the kmsg cursor or through journald's sockets (journal_tail), a
-        # network link the session leaves up, which the way back deletes,
-        # the in-session kernel marker, the hidden filesystem's UUID and
-        # whether the hidden volume is a device-mapper device.
-        mark = f"NAILSLATE{label}"
-        linger = f"lngr{label}"
-        link = f"nlnk{label}"
-        journal_tail.plant(vm, mark, linger)
-        journal_tail.plant_link(vm, link)
-        uuid = vm.succeed("findmnt -rno UUID /mnt/data || true").strip() or None
-        fstype = vm.succeed("findmnt -rno FSTYPE /mnt/data || true").strip()
-        # The name check needs the UUID wherever the kernel would log it.
-        assert uuid or fstype != "ext4", f"no UUID for the hidden ext4 volume ({fstype})"
-        dm = vm.execute("test -e /dev/mapper/data")[0] == 0
-        marker = f"NAILSIN{label}"
-        sockets = journald_sockets()
-        journal_tail.write_marker(vm, marker)
-        return {
-            "marker": marker,
-            "mark": mark,
-            "linger": linger,
-            "link": link,
-            "uuid": uuid,
-            "dm": dm,
-            "sockets": sockets,
-        }
-
-
-    def journald_sockets():
-        # Which journald sockets the decoy has, as it shows them: the socket
-        # files' inodes and change times and the units' starts. Printed, not
-        # judged: before systemd 258 PID 1 itself closes one that receives
-        # anything once journald has stopped for a soft-reboot, and the
-        # Fedora gate judges them against the cold boot's.
-        return vm.succeed(
-            "stat -c 'socket file %n %i %z' /run/systemd/journal/socket "
-            "/run/systemd/journal/dev-log /run/systemd/journal/stdout || true; "
-            "systemctl show -p Id -p ActiveState -p ActiveEnterTimestamp "
-            "systemd-journald.socket systemd-journald-dev-log.socket "
-            "systemd-journald-audit.socket || true"
-        ).strip()
-
-
-    def assert_quiet_tail(where, planted, ended_by_step=True):
-        # After the way back: the decoy's journal holds no record of the
-        # hidden session past the kmsg cursor, nor anything the hidden root
-        # sent journald's sockets after its journald stopped; the decoy's
-        # start opened none of journald's sockets anew, nor udevd's sockets; the plants ran, and what the lingering
-        # unit's stop wrote to /run and udevd's record of the session's link
-        # are gone. The kernel's
-        # lines of a device-mapper volume's teardown are the residue the
-        # catalog names (kmsg-import). A line logged now reaches it.
-        verdict = journal_tail.judge(
-            vm,
-            planted["marker"],
-            planted["mark"],
-            planted["linger"],
-            planted["uuid"],
-            ended_by_step,
-            planted["link"],
-        )
-        print(f"=== {where}: the kernel log from the step's start to the decoy's first line ===")
-        print("\n".join(verdict.tail))
-        assert verdict.judged, f"{where}: {verdict.findings}"
-        findings = list(verdict.findings)
-        if verdict.dm_teardown and not planted["dm"]:
-            findings.extend(verdict.dm_teardown)
-        assert not findings, f"{where}: the decoy's journal holds the hidden session's records: {findings}"
-        if verdict.dm_teardown:
-            print(f"{where}: the device-mapper teardown's lines (kmsg-import): {verdict.dm_teardown}")
-        print(f"{where}: journald's sockets before: {planted['sockets']!r}, after: {journald_sockets()!r}")
-        if verdict.closed:
-            print(f"{where}: PID 1 had closed these sockets before the late writer: {verdict.closed}")
-        post = f"NAILSPOST{planted['mark']}"
-        vm.succeed(f"logger -t post {post}")
-        vm.wait_until_succeeds(f"journalctl --no-pager -o cat | grep -qF {post}", timeout=30)
-        # The empty folder the switch left goes at the decoy's start, and the
-        # line that removed it with it.
-        vm.wait_until_succeeds(
-            "! test -e /run/nextroot && ! test -e /run/tmpfiles.d/overlay-runtime-boot.conf",
-            timeout=60,
-        )
-        assert journal_tail.nextroot_left(vm) == "absent"
-
-
     def rehearse(args):
         # Captured under /run (tmpfs): nothing the test reads back may land
         # on the decoy disk the scan reads.
@@ -1179,9 +1076,6 @@ distroVm.buildVmTest {
         os.remove(baseline)
         vm.start()
         prepare_boot()
-        fresh_numbers = unit_numbers("fresh boot")
-        assert "systemd-logind.service" in fresh_numbers, fresh_numbers
-        assert any(unit in fresh_numbers for unit in RANGED_UNITS), fresh_numbers
 
     with subtest("the decoy's root, disk swap and boot automounts before any hidden root"):
         decoy_root_device, decoy_root_fstype, decoy_root_options = distro_checks.root_mount(
@@ -1202,7 +1096,7 @@ distroVm.buildVmTest {
         )
         # The hidden root is backed by a file in RAM, which a disk swap could
         # take onto the decoy disk: the swap is off before it exists, and is
-        # turned off again after each way back that turns it on (below).
+        # turned off again after each cold boot that turns it on (below).
         decoy_swaps = distro_checks.fstab_swaps(vm.succeed("cat /etc/fstab"))
         print(f"swap lines of the decoy's fstab: {decoy_swaps or 'none'}")
         quiesce_disk_swap("the decoy before the first hidden root")
@@ -1501,58 +1395,45 @@ distroVm.buildVmTest {
         )
         print(f"overlay feature options pinned on: {[t for t, _ in overlays]}")
 
-    with subtest("emergency soft-reboots back to the plain decoy"):
-        # The session's failed units once more, just before the way back: a
-        # unit that failed while the session ran is reset by the way back, so
-        # no listing on the decoy would see it.
+    with subtest("the emergency powers the machine off, and the decoy boots cold"):
+        # The session's failed units once more, just before its end.
         check_failed_units("in the first hidden session before the emergency", "hiddenSession")
-        planted = plant_tail("1")
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
-        # The way back starts the decoy's own units, so it turns the swap of
-        # each kept fstab line on again, while the first session's file is
-        # still in RAM: off with it at once.
-        back_on = quiesce_disk_swap("the decoy after the emergency")
+        end_session(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
+        # The decoy's own boot turns the swap of each kept fstab line on
+        # again: off with it at once, as before every hidden root.
+        back_on = quiesce_disk_swap("the decoy after the emergency's cold boot")
         kept = [spec for spec, options in decoy_swaps if "noauto" not in options]
         assert sorted(back_on) == sorted(kept), (
-            f"the way back turned on {back_on}; the fstab keeps {kept}"
+            f"the cold boot turned on {back_on}; the fstab keeps {kept}"
         )
-        pid1_health("after emergency")
+        pid1_health("after the emergency's cold boot")
         session.assert_decoy_root(vm)
-        # The emergency kills every unit of the session itself, the
-        # lingering one among them, before the way back's last step.
-        assert_quiet_tail("the emergency's way back", planted, ended_by_step=False)
-        check_failed_units("on the decoy after the emergency", "afterReturn")
+        check_failed_units("on the decoy after the emergency's cold boot")
         vm.fail("mountpoint -q /mnt/data")
+        vm.fail("test -e /dev/mapper/data")
+        vm.fail("test -e /run/overlay-runtime")
         for tree in canary_trees:
             vm.fail(f"test -e /{tree}/nails-canary-{tree}")
         vm.succeed("touch /usr/rw-probe && rm -f /usr/rw-probe")
-        # The emergency killed the hidden copy of the PID-file service, which
-        # left its file; the way back removed it, so the decoy's copy starts.
-        probe_report("after the emergency")
+        # The emergency killed the hidden copy of the PID-file service; the
+        # decoy's own copy starts at the cold boot.
+        probe_report("after the emergency's cold boot")
         vm.wait_for_unit("pidfile-probe.service")
         assert load_states(hidden_masked_units) == decoy_masked_units, (
             "the decoy's own units again"
         )
-        assert_gpt_auto_masked("after the emergency", masked=False)
-        assert_generated_boot_mounts_back("after the emergency")
-        assert_timeout_guard("after the emergency", loaded=False)
-        assert_quiet_kernel_log("after the emergency")
+        assert_gpt_auto_masked("after the emergency's cold boot", masked=False)
+        assert_generated_boot_mounts_back("after the emergency's cold boot")
+        assert_timeout_guard("after the emergency's cold boot", loaded=False)
+        assert_quiet_kernel_log("after the emergency's cold boot")
         assert uu_stop_lines() == decoy_uu_stops, (
             f"the first entry wrote a stop line to {uu_log} on the decoy disk"
         )
-        # The first session's loop device outlives its mapping, as the hidden
-        # root's setup attaches it without autoclear: detach it, so no file of
-        # a finished session stays in RAM, and the second activation's residue
-        # baseline sees only the volume it activates.
-        vm.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
-        first_loop = vm.succeed("cat /run/blk.dev").strip()
-        vm.succeed(f"losetup -d {shlex.quote(first_loop)}")
-        vm.wait_until_fails(f"losetup {shlex.quote(first_loop)}", timeout=60)
 
-    with subtest("a second session ends with deactivate"):
+    with subtest("a second session ends with deactivate, which powers off"):
         # The second session runs with every swap line of the decoy's fstab
         # made noauto, which no boot turns on: NAILS masks its unit in the
-        # hidden root, and the way back leaves the swap off.
+        # hidden root, and the cold boot after it leaves the swap off.
         if decoy_swaps:
             noauto = distro_checks.with_swaps_noauto(vm.succeed("cat /etc/fstab"))
             vm.succeed(f"printf %s {shlex.quote(noauto)} > /etc/fstab && systemctl daemon-reload")
@@ -1565,8 +1446,8 @@ distroVm.buildVmTest {
             # volume, and those binds kept blkdeactivate from unmounting it.
             # With neither mounted, as on a BIOS server without a separate
             # /boot (where the stop did unmount it), the session carries
-            # nothing there. The decoy mounts both again from its fstab on the
-            # way back.
+            # nothing there. The decoy's cold boot mounts both again from its
+            # fstab.
             # The fstab's boot filesystems: one systemd mounts on demand is
             # not carried below the hidden volume.
             on_demand = {point for point, _, _ in boot_automounts.values()}
@@ -1606,8 +1487,8 @@ distroVm.buildVmTest {
             masked_here + [distro_checks.swap_unit(spec) for spec, _ in decoy_swaps],
         )
         if blk_availability:
-            # The unit runs in the hidden session too; its stop stays cleared
-            # until the way back has switched.
+            # The unit runs in the hidden session too, its stop cleared for
+            # the session.
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
         assert_gpt_auto_masked("the second session", masked=True)
@@ -1626,7 +1507,9 @@ distroVm.buildVmTest {
             vm.succeed(f"test -s {shlex.quote(upper)}")
         vm.succeed("sync")
         # The rehearsal's first step, and the refusal of a scan in the
-        # planting session.
+        # planting session. Its scan on the decoy needs this hidden root
+        # again, which the power-off takes with it (it lives in RAM here):
+        # the leak check looks for its token and files instead.
         rc, out, err = rehearse("plant --user root")
         assert rc == 0, (rc, out, err)
         planted = json.loads(out)["data"]
@@ -1637,24 +1520,26 @@ distroVm.buildVmTest {
         rc, out, err = rehearse("scan")
         assert rc == 6, (rc, out, err)
         assert json.loads(out)["error"]["code"] == "same_boot", out
-        # Push the kernel's process numbers far past a fresh boot's, so the
-        # numbers after the way back mean something.
-        vm.succeed("for i in $(seq 8000); do /bin/sh -c :; done")
-        reached = int(vm.succeed("sh -c 'echo $$'").strip())
-        assert reached > 4 * max(fresh_numbers.values()), (reached, fresh_numbers)
-        # The session's failed units once more, just before the way back,
-        # which resets those that failed in the session.
+        token = json.loads(vm.succeed("cat /mnt/data/rehearse/state.json"))["token"]
+        # The files the plant wrote in the session, for the leak check: the
+        # ones named after the token, and the recent-files list, which holds
+        # it in its contents only. The plant shows each with the token hidden.
+        rehearsal_files = {
+            channel["kind"]: channel["location"].replace("<canary>", token)
+            for channel in planted["channels"]
+            if channel["kind"] in ("overlay-file", "home-file", "recent-files")
+            and "skipped" not in channel
+        }
+        assert set(rehearsal_files) == {"overlay-file", "home-file", "recent-files"}, (
+            f"the rehearsal planted no file of some kind: {sorted(rehearsal_files)}"
+        )
+        # The session's failed units once more, just before its end.
         check_failed_units("in the second hidden session before deactivate", "hiddenSession")
-        # The way back goes through logind as well: a program in the session
-        # holds it back and leaves its proof on the hidden volume.
-        hold_shutdown_back("delay-probe-hidden", "/mnt/data/delay-probe.seen", 3)
-        planted = plant_tail("2")
-        follow(f"{nails_cmd} deactivate -y", "deactivate")
+        end_session(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
-        assert_quiet_tail("deactivate's way back", planted)
-        # The noauto lines kept the swap off through the way back.
-        assert_no_disk_swap("the decoy after deactivate")
-        check_failed_units("on the decoy after deactivate", "afterReturn")
+        # The noauto lines kept the swap off through the cold boot.
+        assert_no_disk_swap("the decoy after deactivate's cold boot")
+        check_failed_units("on the decoy after deactivate's cold boot")
         assert uu_stop_lines() == decoy_uu_stops, (
             f"the second entry wrote a stop line to {uu_log} on the decoy disk"
         )
@@ -1662,11 +1547,10 @@ distroVm.buildVmTest {
         for tree in canary_trees:
             vm.fail(f"test -e /{tree}/nails-canary-{tree}")
         vm.fail("test -e /run/overlay-runtime")
-        # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
-        # has none).
-        vm.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        vm.fail("test -e /dev/mapper/data")
         if blk_availability:
-            # The decoy's own shutdown deactivates its block devices again.
+            # The decoy's own shutdown deactivates its block devices again,
+            # and its cold boot mounted the boot filesystems from the fstab.
             vm.fail("test -e /run/systemd/system/blk-availability.service.d")
             state = unit_state("blk-availability.service")
             assert state == {"LoadState": "loaded", "ActiveState": "active"}, state
@@ -1676,77 +1560,12 @@ distroVm.buildVmTest {
                 vm.succeed(f"mountpoint -q {target}")
                 unit = distro_checks.escape_path(target) + ".mount"
                 vm.fail(f"test -e /run/systemd/system/{shlex.quote(unit)}.d")
-        probe_report("after deactivate")
-        assert_gpt_auto_masked("after deactivate", masked=False)
-        assert_generated_boot_mounts_back("after deactivate")
-        assert_timeout_guard("after deactivate", loaded=False)
+        probe_report("after deactivate's cold boot")
+        assert_gpt_auto_masked("after deactivate's cold boot", masked=False)
+        assert_generated_boot_mounts_back("after deactivate's cold boot")
+        assert_timeout_guard("after deactivate's cold boot", loaded=False)
         vm.wait_for_unit("pidfile-probe.service")
-        assert_quiet_kernel_log("after deactivate")
-
-    with subtest("the decoy's gettys after the way back are numbered like a fresh boot's"):
-        back_numbers = unit_numbers("after deactivate")
-        for unit, fresh in fresh_numbers.items():
-            back = back_numbers.get(unit)
-            assert back is not None, f"{unit} ran at the fresh boot and not after the way back"
-            assert back < reached, f"{unit} is {back} after the way back; the session reached {reached}"
-            if unit in RANGED_UNITS:
-                assert pid_range(back) == pid_range(fresh), (
-                    f"{unit} is {back} after the way back, in {pid_range(back)}; the fresh boot "
-                    f"gave it {fresh}, in {pid_range(fresh)}"
-                )
-
-    with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
-        # As the operator would: unlock and mount the hidden volume again,
-        # with the disk swap still off.
-        assert_no_disk_swap("the decoy before the rehearsal's scan")
-        vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
-        # The program in the session saw logind's shutdown signal at the way
-        # back, and its copy of unattended-upgrades' helper wrote no stop line
-        # into the upper.
-        vm.succeed("test -s /mnt/data/delay-probe.seen")
-        _, out = vm.execute(
-            f"grep -c -F {shlex.quote(uu_stop_line)} /mnt/data/root/upper{uu_log} "
-            + "2>/dev/null || true"
-        )
-        assert int(out.strip() or "0") == decoy_uu_stops, (
-            f"the way back stopped the session's unattended-upgrades helper without "
-            f"logind's signal: {out.strip()} stop lines in its log in the upper"
-        )
-        token = json.loads(vm.succeed("cat /mnt/data/rehearse/state.json"))["token"]
-        print(vm.succeed("cat /proc/sys/kernel/random/boot_id; systemctl --version | head -1"))
-        rc, out, err = rehearse("status")
-        assert rc == 0, (rc, out, err)
-        next_step = json.loads(out)["data"]["next_step"]
-        assert next_step.startswith("Step 3 of 3"), next_step
-        rc, out, err = rehearse("scan")
-        assert token not in out + err, "scan printed the token"
-        print(f"the rehearsal's scan exited {rc}: {out}")
-        # It finds nothing, and names the blind spot this image has: on a
-        # btrfs root a raw scan cannot prove the canary absent, so it exits 9
-        # with the reason on the root's device; elsewhere it exits 0.
-        result = json.loads(out)["data"]["scan"]
-        problems = distro_checks.rehearse_scan_problems(
-            rc, result, decoy_root_device, rootfs, decoy_root_options
-        )
-        assert not problems, "\n".join(problems)
-        # The files the plant wrote in the session, for the leak check: the
-        # ones named after the token, and the recent-files list, which holds
-        # it in its contents only. The scan shows each with the token hidden.
-        rehearsal_files = {
-            channel["kind"]: channel["location"].replace("<canary>", token)
-            for channel in json.loads(out)["data"]["channels"]
-            if channel["kind"] in ("overlay-file", "home-file", "recent-files")
-            and "skipped" not in channel
-        }
-        assert set(rehearsal_files) == {"overlay-file", "home-file", "recent-files"}, (
-            f"the rehearsal planted no file of some kind: {sorted(rehearsal_files)}"
-        )
-        print(f"clean rehearsal scan of {[d['device'] for d in result['devices']]}")
-        # No `rehearse reset`: the root's image file sits on a tmpfs the
-        # soft-reboot detached, so the attach gate cannot tell where it lives
-        # and refuses writes there. The scan writes nothing to need it, and the
-        # rehearsal state goes with the RAM-backed volume.
-        vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
+        assert_quiet_kernel_log("after deactivate's cold boot")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
         # The canaries of the session that ended with the emergency and of the

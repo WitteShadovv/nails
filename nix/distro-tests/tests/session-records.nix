@@ -1,31 +1,37 @@
 # A cross-distro regression test for the decoy's login and boot records.
 #
-# A whole-root session returns to the decoy through a soft-reboot, and the
-# decoy's own boot writers record that start. On Debian with wtmpdb the boot row
-# would be named "soft-reboot" (or, kept from the bus within five minutes of
-# uptime, dated to the decoy's cold boot); on a service manager that keeps the
-# userspace start time across a soft-reboot (systemd 255 and earlier, classic
-# wtmp), the boot record would carry the decoy's first boot time, so the file
-# would hold a boot stamped before the shutdown that precedes it. Neither is
-# written by an ordinary power cycle. The way back neutralises both; this test
-# proves it the way the failure really happens.
+# A whole-root session never goes back to the decoy: it ends with the machine
+# powered off, and the decoy's next start is a cold boot. Its records must read
+# as one plain power cycle, with nothing of the session in them: the decoy's
+# stop at the entry dates the end of its boot as a shutdown does, every record
+# the hidden userspace writes goes to the hidden root, and the cold boot adds
+# one boot, named reboot, stamped at that boot. A soft-reboot of the decoy
+# into itself would write what an ordinary power cycle never writes: on Debian
+# with wtmpdb a boot row named "soft-reboot", and on a service manager that
+# keeps the userspace start time across a soft-reboot (systemd 255 and
+# earlier, classic wtmp) a boot record carrying the decoy's first boot time,
+# stamped before the shutdown that precedes it. The control at the end shows
+# the readers see that trace, so a vacuous pass is impossible.
 #
-# The flow on one QEMU process (so the records accumulate on one decoy disk):
+# The flow on one disk lineage (so the records accumulate on one decoy disk):
 #
 #   1. install              -- the record package the distribution ships but the
 #                              cloud image omits (wtmpdb on Debian);
-#   2. a power cycle        -- a real reboot, with the record writers installed:
-#                              the reference every assertion compares with;
-#   3. a NAILS session      -- activate, stay in the hidden session until the
-#                              kernel has been up for more than five minutes
-#                              (wtmpdb's threshold), then deactivate;
+#   2. a power cycle        -- the decoy's own power-off and a cold boot, with
+#                              the record writers installed: the reference
+#                              every assertion compares with;
+#   3. a NAILS session      -- activate, work in the session, then deactivate,
+#                              which powers the machine off, and the decoy's
+#                              next cold boot;
 #   4. assertions           -- the session added one boot, as a power cycle
-#                              does: named reboot, stamped at the way back, no
-#                              earlier than anything before it, and no crash; the
-#                              pieces the way back left in /run are gone and /run
-#                              is noexec again where the decoy had it so;
+#                              does: named reboot, stamped at the cold boot, no
+#                              earlier than anything before it, and no crash;
 #   5. a plain soft-reboot  -- no NAILS: the positive control, which must still
-#                              carry the trace, so a vacuous pass is impossible.
+#                              carry the trace.
+#
+# A power-off would end QEMU, and nix-vm-test's -snapshot disk with it, so
+# QEMU pauses at each power-off instead and is reset into a cold boot of the
+# same disk (py/power_off.py).
 #
 # Where the service manager resets the start time across a soft-reboot
 # (systemd 256 and newer) and the decoy keeps classic wtmp, as Arch does, a
@@ -37,15 +43,16 @@
 # and a login that fails, as a mistyped password does, which writes its
 # record to btmp: an unprivileged user gives su a wrong password for root.
 # Step 3 shows the logins wrote their row and their wtmp and btmp records in
-# the session, step 4 that none of them is on the decoy after the way back
+# the session, step 4 that none of them is on the decoy after its cold boot
 # (lastlog2 and btmp as they were, wtmp with no record on the login's
 # terminal), and the same logins run on the decoy afterwards are the positive
 # control: their row and their wtmp and btmp records are there.
 #
 # Records are read live in the guest and carried to the host-side readers in
-# nix/e2e-tests/lib/records.py (reading live keeps install, power cycle and
-# session in one QEMU process; a disk image would end QEMU and the next boot would
-# be the pristine cloud image again -- see lib/distro-vm.nix). It needs the
+# nix/e2e-tests/lib/records.py (reading live keeps install, power cycles and
+# session in one QEMU process; a QEMU that exits takes the disk with it, and
+# the next boot would be the pristine cloud image again -- see
+# lib/distro-vm.nix). It needs the
 # guest's network to install a record package on Debian, so it runs on
 # nix-vm-test's `driver` target, outside the Nix sandbox: on a KVM host, or in the
 # records suite of distro-e2e.yml, whose job runs the driver on a hosted KVM
@@ -108,7 +115,6 @@ distroVm.buildVmTest {
     import shlex
     import sys
     import tempfile
-    from typing import Any
 
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
@@ -118,9 +124,11 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${recordsModule}")
     import records  # ty: ignore[unresolved-import]  # noqa: E402
 
-    # The distribution scenarios' helpers, for the decoy's disk swap.
+    # The distribution scenarios' helpers, for the decoy's disk swap, and
+    # the power-off that keeps the disk.
     sys.path.insert(0, "${../py}")
     import distro_checks  # noqa: E402
+    import power_off  # noqa: E402
 
     nails = "${binShare.target}/nails"
     config = "/run/nails-records.toml"
@@ -131,19 +139,6 @@ distroVm.buildVmTest {
 
     # The terminal of the login the scenario runs (`login`).
     LOGIN_TTY = "tty5"
-
-    # wtmpdb names a boot soft-reboot, kept from the bus, once the kernel has
-    # been up for more than this; the way back must happen past it.
-    WTMPDB_UPTIME_LIMIT = 300.0
-
-    # What the way back leaves in /run for the decoy's first start; the
-    # reconcile step removes all of it.
-    WAY_BACK_PIECES = [
-        "/run/overlay-runtime-boot",
-        "/run/systemd/system/overlay-runtime-boot.service",
-        "/run/systemd/system/multi-user.target.wants/overlay-runtime-boot.service",
-        "/run/systemd/system/wtmpdb-update-boot.service.d/zz-overlay-runtime.conf",
-    ]
 
 
     def write_config():
@@ -157,8 +152,8 @@ distroVm.buildVmTest {
 
 
     def prepare_boot():
-        # Everything a soft-reboot drops: the once-mounted 9p binary share and
-        # the /run config. The record files live on the decoy root and persist.
+        # Everything a soft-reboot or a cold boot drops: the once-mounted 9p
+        # binary share and the /run config. The record files live on the decoy root and persist.
         # The apt timers are stopped, so that no daily run refuses an
         # activation.
         vm.wait_for_unit("multi-user.target")
@@ -174,24 +169,12 @@ distroVm.buildVmTest {
         vm.wait_until_succeeds("""${hiddenRoot.aptRunsEnded}""", timeout=900)
 
 
-    def qmp(command: str, arguments: dict[str, Any] | None = None) -> Any:
-        client = vm.qmp_client
-        assert client is not None, "the QMP socket is not connected"
-        reply: Any = client.send(command, arguments or {})
-        return reply["return"]
-
-
     def boot_id() -> str:
         return vm.succeed("cat /proc/sys/kernel/random/boot_id").strip()
 
 
     def guest_clock() -> float:
         return float(vm.succeed("date +%s.%N").strip())
-
-
-    def run_noexec() -> bool:
-        options = vm.succeed("findmnt -no OPTIONS /run").strip()
-        return "noexec" in options.split(",")
 
 
     def guest_bytes(path: str) -> bytes | None:
@@ -259,16 +242,12 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
-    def power_cycle(label: str) -> None:
-        # QEMU runs with -no-reboot, so a reboot would end it and the disk with
-        # it; let this one reboot reset the machine instead, then put that back
-        # so a full reboot in place of a soft-reboot still ends the test.
+    def power_cycle(trigger: str, label: str) -> None:
+        # `trigger` powers the machine off; QEMU pauses with the disk kept
+        # and is reset into a cold boot of it (power_off).
         before = boot_id()
-        qmp("set-action", {"reboot": "reset"})
-        try:
-            session.follow_soft_reboot(vm, "systemctl reboot", label)
-        finally:
-            qmp("set-action", {"reboot": "shutdown"})
+        power_off.follow_power_off(vm, trigger, label)
+        power_off.boot_again(vm, label)
         assert boot_id() != before, f"{label}: the kernel did not restart"
         prepare_boot()
         swaps = distro_checks.disk_swaps(vm.succeed("cat /proc/swaps"))
@@ -315,16 +294,6 @@ distroVm.buildVmTest {
         ]
 
 
-    def wait_for_reconcile() -> None:
-        # The reconcile one-shot runs before multi-user.target and removes its
-        # own directory; waiting for it gone makes the capture deterministic.
-        vm.execute(
-            "timeout 60 bash -c "
-            "'while test -e /run/overlay-runtime-boot; do sleep 1; done'",
-            check_return=False,
-        )
-
-
     # --- the regression -----------------------------------------------------
 
     vm.wait_for_unit("multi-user.target")
@@ -334,7 +303,7 @@ distroVm.buildVmTest {
         # The hidden root is backed by a file in RAM, which a disk swap could
         # take onto the decoy disk, and check refuses an active one. Every
         # swap line of the fstab is made noauto, so no boot turns it on again:
-        # the power cycle, the way back and the control all boot without it.
+        # the power cycles and the control all boot without it.
         fstab = vm.succeed("cat /etc/fstab")
         if distro_checks.fstab_swaps(fstab):
             noauto = distro_checks.with_swaps_noauto(fstab)
@@ -357,9 +326,8 @@ distroVm.buildVmTest {
             print(vm.succeed(install_script))
 
     with subtest("a power cycle with the record writers installed (the reference)"):
-        power_cycle("power-cycle")
+        power_cycle("systemctl poweroff", "power-cycle")
         reference = capture("power-cycle-reference")
-        decoy_noexec = run_noexec()
         # How the decoy's own tool lists the boots now; the session may add
         # no line it reads as a soft-reboot or a crash.
         reference_listing = vm.succeed("wtmpdb last -x 2>/dev/null || true")
@@ -374,7 +342,7 @@ distroVm.buildVmTest {
                 f"the power cycle wrote no classic-wtmp boot record: {reference.wtmp}"
             )
 
-    with subtest("a NAILS session past five minutes of uptime, then the way back"):
+    with subtest("a NAILS session ended by deactivate, which powers off, and a cold boot"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
@@ -397,37 +365,26 @@ distroVm.buildVmTest {
             assert any(row.get("user") == "root" for row in hidden_btmp), (
                 f"the failed login in the hidden session wrote no btmp record: {hidden_btmp}"
             )
-        # Work in the session until the kernel has been up past wtmpdb's
-        # threshold, as any real session does: below it, a writer kept from
-        # the bus dates the boot to the cold boot instead.
-        vm.succeed(
-            "timeout 600 bash -c 'while [ $(cut -d. -f1 /proc/uptime) -le "
-            f"{int(WTMPDB_UPTIME_LIMIT) + 30} ]; do sleep 5; done'"
-        )
-        uptime = session.guest_uptime(vm)
-        assert uptime > WTMPDB_UPTIME_LIMIT, f"uptime {uptime} s at the way back"
-        before_way_back = guest_clock()
-        follow(f"{nails_cmd} deactivate -y", "deactivate")
+        # The session's end: the hidden root's own records stay in the hidden
+        # root, and the decoy's next start is a cold boot.
+        before_end = guest_clock()
+        power_cycle(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
-        wait_for_reconcile()
-        after_way_back = guest_clock()
-        window = (before_way_back, after_way_back)
-        print(f"=== the way back happened within {window} at uptime {uptime} s ===")
+        vm.fail("test -e /run/overlay-runtime")
+        after_boot = guest_clock()
+        window = (before_end, after_boot)
+        print(f"=== the session ended and the decoy booted within {window} ===")
         after = capture("after-session")
 
-    with subtest("the way back leaves no piece of its own in /run, and /run noexec"):
-        for piece in WAY_BACK_PIECES:
-            vm.succeed(f"test ! -e {shlex.quote(piece)} && test ! -L {shlex.quote(piece)}")
-        now = "noexec" if run_noexec() else "executable"
-        had = "noexec" if decoy_noexec else "executable"
-        assert now == had, f"/run is {now} after the way back, where the decoy had it {had}"
-
     with subtest("after a session the records read as one clean power cycle"):
+        # The readers were written for the way back a session once took; they
+        # judge any start of the decoy against one power cycle's, within the
+        # window of the session's end and the cold boot.
         if assert_kind == "wtmpdb":
             problems = records.wtmpdb_way_back_problems(
                 reference.wtmpdb, after.wtmpdb, window
             )
-            print(f"=== wtmpdb rows after the way back ===\n{after.wtmpdb}")
+            print(f"=== wtmpdb rows after the session ===\n{after.wtmpdb}")
             assert not problems, "\n".join(problems)
             # How the decoy's own tool shows it: no new self-labelling
             # s-reboot and no new boot left open (a crash). Rows the package
@@ -439,17 +396,16 @@ distroVm.buildVmTest {
                 assert shown.count(word) == reference_listing.count(word), (
                     f"the session added a line wtmpdb last shows as {word}:\n{shown}"
                 )
-            # On systemd 256 and newer the service manager dates the way back's
-            # start itself; the row must sit just before it, as a cold boot's
-            # does before the userspace that wrote it.
+            # The row sits just before the cold boot's userspace start, as a
+            # cold boot's does before the userspace that wrote it.
             userspace = vm.succeed(
                 "systemctl show -p UserspaceTimestamp --timestamp=unix --value"
             ).strip()
             login = records.wtmpdb_boot_logins(after.wtmpdb)[-1]
-            if userspace.startswith("@") and float(userspace[1:]) >= before_way_back:
+            if userspace.startswith("@") and float(userspace[1:]) >= before_end:
                 gap = float(userspace[1:]) - login / 1e6
                 assert -1.0 <= gap <= 10.0, (
-                    f"the boot row is {gap:.3f} s before the way back's own start"
+                    f"the boot row is {gap:.3f} s before the cold boot's userspace start"
                 )
             # The writer took its fallback quietly and finished: a failed unit
             # is itself an oddity an examiner can read.
@@ -457,17 +413,17 @@ distroVm.buildVmTest {
                 "systemctl is-failed wtmpdb-update-boot.service 2>&1 || true",
                 check_return=False,
             )
-            print(f"=== wtmpdb-update-boot.service after the way back: {state.strip()} ===")
+            print(f"=== wtmpdb-update-boot.service after the session: {state.strip()} ===")
             assert state.strip() != "failed", (
-                f"the wtmpdb boot writer's service failed after the way back: {state.strip()}"
+                f"the wtmpdb boot writer's service failed after the session: {state.strip()}"
             )
         else:
             problems = records.classic_way_back_problems(
                 reference.wtmp, after.wtmp, window
             )
-            print(f"=== classic wtmp after the way back ===\n{after.wtmp}")
+            print(f"=== classic wtmp after the session ===\n{after.wtmp}")
             assert not problems, "\n".join(problems)
-            # The corrected record must read as a genuine boot: the same
+            # The cold boot's record reads as a genuine boot: the same
             # identity (reboot, the kernel release) as the power cycle's.
             after_boot = records.last_boot_record(after.wtmp)
             reference_boot = records.last_boot_record(reference.wtmp)
@@ -476,7 +432,7 @@ distroVm.buildVmTest {
                 reference_boot["user"],
                 reference_boot["host"],
             ), (
-                "the way-back boot record does not match the power cycle's boot "
+                "the boot record after the session does not match the power cycle's boot "
                 f"record (after: {after_boot}, reference: {reference_boot})"
             )
 
@@ -484,7 +440,7 @@ distroVm.buildVmTest {
         with subtest("no record of the hidden session's login is on the decoy"):
             # The decoy's lastlog2 and btmp hold what they held before the
             # session, and its wtmp no record of a session on the login's
-            # terminal: what the way back added is the boot's.
+            # terminal: what the session's end added is the cold boot's.
             rows = records.sql_rows_added(reference.lastlog2, after.lastlog2)
             assert not rows, f"the decoy's lastlog2 gained rows: {rows}"
             assert after.lastlog2 == reference.lastlog2, (
@@ -532,10 +488,8 @@ distroVm.buildVmTest {
         elif assert_kind == "classic-wtmp-reset":
             # On a service manager that resets the start time across a
             # soft-reboot, a plain soft-reboot's boot record reads as a power
-            # cycle's: classic wtmp cannot tell one, so the way back needs no
-            # correction there, and the login above is what could give a
-            # session away.
-            wait_for_reconcile()
+            # cycle's: classic wtmp cannot tell one, and the login above is
+            # what could give a session away.
             problems = records.classic_way_back_problems(
                 after.wtmp, control.wtmp, (before_control, guest_clock())
             )

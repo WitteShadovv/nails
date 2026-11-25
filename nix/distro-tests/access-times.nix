@@ -35,7 +35,8 @@ in
   inherit drivers;
   # Both images are pinned.
   runnable = builtins.attrNames drivers;
-  # The seconds a run gets: a boot, seven switches and an aging and a listing
-  # of the whole decoy disk before and after each phase.
-  timeout = 2700;
+  # The seconds a run gets: a boot, five soft-reboots, four power-offs each
+  # with a cold boot, and an aging and a listing of the whole decoy disk
+  # before and after each phase.
+  timeout = 3300;
 }

@@ -37,19 +37,21 @@
 #   knownFailedUnits
 #                  optional: the units the smoke scenario must find failed when
 #                  it lists the failed units, which it does seven times: on
-#                  the decoy before the first switch, right after each switch,
-#                  in both hidden sessions and on the decoy after both ways
-#                  back, and in both hidden sessions again just before the way
-#                  back. Absent or null, the scenario only prints them.
-#                  Otherwise the table has exactly three keys: `hiddenSession`
-#                  and `afterReturn` map each unit that must be failed at the
-#                  listings in both hidden sessions, or at those on the decoy
-#                  after both ways back, to a line its failed start logs, and
+#                  the decoy before the first switch and after each of the two
+#                  cold boots that follow a session's power-off, and in both
+#                  hidden sessions right after the entry and again just before
+#                  the session's end. Absent or null, the scenario only prints
+#                  them. Otherwise the table has exactly three keys:
+#                  `hiddenSession` maps each unit that must be failed at the
+#                  listings in both hidden sessions to a line its failed start
+#                  logs, `afterReturn` is kept for the table's shape
+#                  (ci/distro_images.py checks the three keys) and read by no
+#                  listing, since no session goes back to the decoy, and
 #                  `notInImage` lists the units the release's warning names
 #                  that the image does not install, so the scenario cannot see
-#                  them. Any other unit failed at a listing after a switch, or
-#                  any unit failed at the one before the first switch, fails
-#                  the scenario; so does a listed unit that is not failed at a
+#                  them. Any other unit failed at a listing in a session, or
+#                  any unit failed at a listing on the decoy, fails the
+#                  scenario; so does a listed unit that is not failed at a
 #                  listing of its phase or whose failed start did not log its
 #                  line, a `notInImage` unit the image now has, and a
 #                  `platform` row of `check` that does not warn and name every

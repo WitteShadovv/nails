@@ -71,10 +71,11 @@ let
     "ubuntu-26.04"
   ];
   aptShutdownName = name: "${name}-apt-shutdown";
-  # One boot, ten switches (a plain soft-reboot during each held run, then
-  # four sessions in and out), and waits of up to ten minutes for each daily
-  # run to reach its hold and five for it to end.
-  aptShutdownTimeout = 2400;
+  # One disk, a plain soft-reboot during each held run, then four sessions,
+  # each entered by a soft-reboot and ended by a power-off and a cold boot of
+  # the same disk, and waits of up to ten minutes for each daily run to reach
+  # its hold and five for it to end.
+  aptShutdownTimeout = 2700;
   aptShutdowns = lib.listToAttrs (
     map (
       name: lib.nameValuePair (aptShutdownName name) (makeAptShutdown name enabledImages.${name})

@@ -60,6 +60,7 @@ let
       ./py/distro_checks.py
       ./py/fedora_gate.py
       ./py/fedora_rpms.py
+      ./py/power_off.py
       ./py/selinux_gate.py
     ];
   };
@@ -178,8 +179,9 @@ let
   };
 
   # A run: a power cycle, the decoy's checks with an offline install, a plain
-  # soft-reboot, two sessions and their ways back, a last plain soft-reboot,
-  # and the kernel log read whole at every step.
+  # soft-reboot, a second power cycle, two sessions each ended by a power-off
+  # and a cold boot of the same disk, a last plain soft-reboot, and the kernel
+  # log read whole at every step.
   gateTimeout = 5400;
 
   gateFor =
@@ -221,14 +223,13 @@ let
         sys.path.insert(0, "${../e2e-tests/py}")
         sys.path.insert(0, "${gatePy}")
         sys.path.insert(0, "${recordsModule}")
-        from nails_e2e import session, utab  # noqa: E402
+        from nails_e2e import session  # noqa: E402
         import fedora_gate  # noqa: E402
         import records  # noqa: E402
 
         fedora_gate.run(
             vm,
             session,
-            utab,
             records,
             json.loads(${builtins.toJSON (builtins.toJSON settings)}),
         )

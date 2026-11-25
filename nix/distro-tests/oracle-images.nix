@@ -19,9 +19,9 @@
 #   control   the same disk after one plain reboot, powered off;
 #   control2  the same disk after a second plain reboot and the live
 #             controls (below), powered off: no hidden session has run on it;
-#   after     the same disk after one more boot, a full hidden session
-#             (activate, work in the session, deactivate) and the way back,
-#             powered off.
+#   after     the same disk after one more boot and a full hidden session
+#             (activate, work in the session, deactivate), which powers the
+#             machine off: a hidden session never goes back to the decoy.
 #
 # The oracle scans before, control and after, and before, control and
 # control2 the same way, with control2 in the place of after. That second
@@ -168,6 +168,7 @@ let
         sys.path.insert(0, "${./py}")
         import btrfs_scan  # noqa: E402
         import distro_checks  # noqa: E402
+        import power_off  # noqa: E402
 
         nails = "${binShare.target}/nails"
         config = "/run/nails-oracle.toml"
@@ -258,14 +259,16 @@ let
 
 
         def image(name):
-            # Power the guest off; QEMU pauses instead of exiting (set-action
-            # below), so the paused disk is copied whole, and the guest's
-            # shell is gone until the next boot.
+            # Power the guest off, unless a session's end did already; QEMU
+            # pauses instead of exiting (set-action below), so the paused
+            # disk is copied whole, and the guest's shell is gone until the
+            # next boot.
             device, size = root_device()
-            assert vm.shell is not None
-            vm.shell.send(b"poweroff\n")
-            vm.connected = False
-            wait_status("shutdown")
+            if qmp("query-status")["status"] != "shutdown":
+                assert vm.shell is not None
+                vm.shell.send(b"poweroff\n")
+                vm.connected = False
+                wait_status("shutdown")
             target = os.path.join(forensics, f"{name}.raw")
             if os.path.exists(target):
                 os.remove(target)
@@ -465,7 +468,7 @@ let
             settle()
             image("control2")
 
-        with subtest("a full hidden session and the way back"):
+        with subtest("a full hidden session, ended by deactivate's power-off"):
             boot_again()
             vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
             print(vm.succeed(f"{nails_cmd} check --overlay-only 2>&1"))
@@ -492,15 +495,11 @@ let
             assert on_partition(SESSION_ADDRESS, hidden_device), (
                 f"the session token is not on the hidden root's device {hidden_device}"
             )
-            follow(f"{nails_cmd} deactivate -y", "deactivate")
-            status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
-            assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
-            session.assert_decoy_root(vm)
-            vm.fail("test -e /home/oracle")
-            vm.fail("grep -E ' /mnt/data|/dev/mapper/data' /proc/mounts")
+            # deactivate powers the machine off; QEMU pauses with the disk as
+            # the power-off left it, and the kernel said it powered off.
+            power_off.follow_power_off(vm, f"{nails_cmd} deactivate -y", "deactivate")
 
-        with subtest("image the decoy after the way back: after"):
-            settle()
+        with subtest("image the decoy as the session's power-off left it: after"):
             image("after")
 
         print(f"before.raw, control.raw, control2.raw and after.raw are in {forensics}")

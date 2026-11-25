@@ -18,20 +18,24 @@ Three kinds of phase are judged:
 
 - ``nails check`` on an idle decoy. Every read in it is a finding.
 - A **control**: a plain ``systemctl soft-reboot`` of the decoy into itself,
-  started with no read of the decoy's own (the scenario's ``noatime-run``).
-  Its reads before the new userspace's start are what the decoy's own stop
-  reads, the ones after it what the decoy's own start reads
+  or a plain power cycle (``systemctl poweroff`` and a cold boot of the same
+  disk), started with no read of the decoy's own (the scenario's
+  ``noatime-run``). Its reads before the new userspace's start are what the
+  decoy's own stop reads, the ones after it what the decoy's own start reads
   (:func:`control_of`).
-- A **flow**: an activation, a session and the way back. A read before the
-  way back started (the *way in*: the activation, the decoy's stop and the
-  entry step) is a finding unless a control's stop read the same path; a read
-  after it (the *way back*: the step that runs in the hidden root, the decoy's
-  start and NAILS' pieces there) is a finding unless a control's stop or start
-  read it. The hidden session reads the decoy through a read-only lower, which
-  updates no access time, so no read falls between the two.
+- A **flow**: an activation, a session and its end, which powers the machine
+  off (a hidden session never goes back to the decoy), and the decoy's next
+  cold boot. A read before the end was asked for (the *way in*: the
+  activation, the decoy's stop and the entry step) is a finding unless a
+  control's stop read the same path; a read after it (the *end*: the
+  power-off in the hidden root and the decoy's cold boot) is a finding unless
+  a control's stop or start read it. The hidden session reads the decoy
+  through a read-only lower, which updates no access time, so no read falls
+  between the two.
 
-A path the decoy's own soft-reboot reads at the same point is no finding:
-NAILS reading it too leaves nothing a plain switch does not. Everything else
+A path the decoy's own soft-reboot or power cycle reads at the same point is
+no finding: NAILS reading it too leaves nothing a plain switch or power cycle
+does not. Everything else
 is: a program NAILS starts, a file, a directory or a link it reads, a module
 the kernel loads for it, a unit file the service manager loads because NAILS
 asked about it.
@@ -55,7 +59,7 @@ from dataclasses import dataclass
 #: Where a finding was read.
 CHECK = "check"
 WAY_IN = "way in"
-WAY_BACK = "way back"
+END = "end"
 
 
 @dataclass(frozen=True)
@@ -123,8 +127,8 @@ def reads_since(listing: Listing) -> list[Stamp]:
 
 @dataclass(frozen=True)
 class Control:
-    """The paths a plain soft-reboot read before its new userspace started
-    (its stop) and after (its start)."""
+    """The paths a plain soft-reboot or power cycle read before its new
+    userspace started (its stop) and after (its start)."""
 
     stop: frozenset[str]
     start: frozenset[str]
@@ -149,7 +153,8 @@ def merge(controls: Sequence[Control]) -> Control:
 
 @dataclass(frozen=True)
 class Finding:
-    """A read of the decoy disk that no plain soft-reboot explains."""
+    """A read of the decoy disk that no plain soft-reboot or power cycle
+    explains."""
 
     window: str
     path: str
@@ -162,18 +167,16 @@ def judge_check(reads: Iterable[Stamp]) -> list[Finding]:
     return [Finding(CHECK, s.path, s.atime, s.kind) for s in reads]
 
 
-def judge_flow(
-    reads: Iterable[Stamp], way_back: int, control: Control
-) -> list[Finding]:
+def judge_flow(reads: Iterable[Stamp], end: int, control: Control) -> list[Finding]:
     """The reads of a flow that the controls do not explain (see the module
-    docs). ``way_back`` is when the way back was asked for."""
+    docs). ``end`` is when the session's end was asked for."""
     findings = []
     for s in reads:
-        if s.atime < way_back:
+        if s.atime < end:
             if s.path not in control.stop:
                 findings.append(Finding(WAY_IN, s.path, s.atime, s.kind))
         elif s.path not in control.stop and s.path not in control.start:
-            findings.append(Finding(WAY_BACK, s.path, s.atime, s.kind))
+            findings.append(Finding(END, s.path, s.atime, s.kind))
     return sorted(findings, key=lambda f: (f.atime, f.path))
 
 

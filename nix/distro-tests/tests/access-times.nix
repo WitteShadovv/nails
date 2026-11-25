@@ -5,20 +5,29 @@
 # the moment of the read. A program NAILS starts on the decoy, a file it reads
 # without O_NOATIME, a unit file the service manager loads because NAILS asked
 # about it, or a kernel module the kernel loads for it leaves the moment of the
-# activation or of the way back on the decoy disk, where a plain switch leaves
-# none. This scenario finds every such read, on the stock cloud image, in the
-# way nix/distro-tests/py/access_times.py describes:
+# activation or of the session's end on the decoy disk, where a plain switch
+# or power cycle leaves none. This scenario finds every such read, on the
+# stock cloud image, in the way nix/distro-tests/py/access_times.py describes:
 #
 #   1. before each phase every entry of the decoy disk's filesystems is aged
 #      two days, so that each read in the phase shows once;
-#   2. two controls: a plain soft-reboot of the decoy into itself, with the
-#      hidden root mounted as for a session, before and after the sessions,
-#      show what the decoy's own stop and start read;
+#   2. four controls, with the hidden root mounted as for a session: a plain
+#      soft-reboot of the decoy into itself and a plain power cycle (the
+#      decoy's own power-off and a cold boot of the same disk), each before
+#      and after the sessions, show what the decoy's own stop and start read;
 #   3. `nails check` on the idle decoy: every read in its window is NAILS';
-#   4. two sessions: an activation, work in the session and the way back,
-#      once with `deactivate` and once with the emergency. A read before the
-#      way back started must be one a control's stop made, a read after it
-#      one a control's stop or start made.
+#   4. two sessions: an activation, work in the session and its end, once
+#      with `deactivate` and once with the emergency, each of which powers
+#      the machine off (a hidden session never goes back to the decoy), and
+#      the decoy's next cold boot. A read before the end was asked for must
+#      be one a control's stop made, a read after it one a control's stop or
+#      start made.
+#
+# A power-off would end QEMU, and nix-vm-test's -snapshot disk with it, so
+# QEMU pauses at each power-off instead and is reset into a cold boot of the
+# same disk (py/power_off.py). Each cold boot loses /run and the share's
+# mount: the walker reads the boot's access times first, and only then are
+# the share, the binary in /run and the configuration made again.
 #
 # A read of a file or a directory that no control explains fails the
 # scenario. A link NAILS' own lookups follow or read is listed and does not
@@ -119,12 +128,14 @@ distroVm.buildVmTest {
 
     sys.path.insert(0, "${../py}")
     import access_times as at  # noqa: E402
+    import power_off  # noqa: E402
 
     image_name = "${cfg.name}"
     # The share's mount does not survive a switch: the binary is kept in /run,
-    # which every switch carries, and copied to the hidden volume, where it
+    # which a soft-reboot carries, and copied to the hidden volume, where it
     # runs; the helper and the walker are kept on the decoy disk, in a
-    # directory the walker leaves out (see the header).
+    # directory the walker leaves out (see the header). A cold boot loses
+    # /run and the share's mount, which after_cold_boot() makes again.
     SHARE = "${share.target}"
     STORE = "/run/atime"
     TOOLS = "/var/lib/atime-harness"
@@ -135,6 +146,7 @@ distroVm.buildVmTest {
     # Filled in once the operator account exists (see the header).
     OPERATOR_ENV = ""
     NAILS_CMD = f"{NAILS} --config {CONFIG}"
+    SERIAL = power_off.SERIAL_CONSOLE
     RAM_NAILS_CMD = f"/run/overlay-runtime/control --config {CONFIG}"
     UNRESOLVED = "Target user could not be resolved"
     AGE_SECONDS = 2 * 86400
@@ -267,6 +279,27 @@ distroVm.buildVmTest {
         )
 
 
+    def power_cycle(trigger, label):
+        # The machine powers off (QEMU pauses, the disk kept) and boots cold
+        # from the same disk; settled, the walker can read what it read.
+        power_off.follow_power_off(vm, trigger, label)
+        power_off.boot_again(vm, label)
+        settle()
+
+
+    def after_cold_boot():
+        # What a cold boot lost, made again once its reads are read: the
+        # share's mount, the binary in /run and the configuration.
+        vm.succeed(
+            "mkdir -p ${share.target} && "
+            + "{ mountpoint -q ${share.target} || "
+            + "mount -t 9p -o defaults,trans=virtio,version=9p2000.L,cache=loose,msize=268435456 "
+            + "${share.tag} ${share.target}; }"
+        )
+        vm.succeed(f"mkdir -p {STORE} && cp {SHARE}/nails {STORE}/")
+        write_config()
+
+
     def phase_start(label):
         # Age the decoy disk, let what the aging woke settle, start base64 once
         # (the driver's own program, see the header) and take the reference
@@ -301,12 +334,16 @@ distroVm.buildVmTest {
         assert out != "overlay", f"the root is still the overlay: {out}"
 
 
-    def control(label):
-        # The decoy as a session leaves it: the hidden root mounted, so the
-        # control's stop handles that mount as the way in does.
+    def control(label, cold=False):
+        # The decoy with the hidden root mounted, as a session enters it, so
+        # the control's stop handles that mount as the way in does. `cold`
+        # takes a plain power cycle instead of a plain soft-reboot.
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         ref = phase_start(label)
-        switch(quiet("systemctl soft-reboot"), label)
+        if cold:
+            power_cycle(quiet("systemctl poweroff"), label)
+        else:
+            switch(quiet("systemctl soft-reboot"), label)
         on_decoy()
         shutdown, userspace = pid1_times()
         # The split of the control's reads needs the new userspace's start.
@@ -315,20 +352,12 @@ distroVm.buildVmTest {
         )
         reads = reads_of(label, ref)
         report["phases"][label].update({"stop": shutdown, "userspace": userspace})
+        if cold:
+            after_cold_boot()
         # A mapping the plain soft-reboot left open would keep the next hidden
         # root from taking its name.
         vm.execute(quiet("if [ -e /dev/mapper/data ]; then cryptsetup close data; fi"))
         return at.control_of(reads, userspace)
-
-
-    def wait_reconcile():
-        vm.execute(
-            quiet(
-                "i=0; while [ -e /run/overlay-runtime-boot ] && [ $i -lt 120 ]; "
-                "do sleep 1; i=$((i + 1)); done"
-            ),
-            timeout=200,
-        )
 
 
     def flow(label, leave):
@@ -371,22 +400,23 @@ distroVm.buildVmTest {
             "echo session > /root/atime-session && echo session > /etc/atime-session "
             + f"&& {NAILS_CMD} status --json > /dev/null && sleep 15"
         )
-        way_back = now_ns()
-        marks.append((f"{label} {leave}", way_back))
+        end = now_ns()
+        marks.append((f"{label} {leave}", end))
         if leave == "deactivate":
             trigger = f"{OPERATOR_ENV} {NAILS_CMD} deactivate -y"
         else:
             trigger = f"{OPERATOR_ENV} {RAM_NAILS_CMD} emergency --json"
-        # Its output goes to /run, which every switch carries, and not to the
-        # hidden volume, whose mapping the way back closes.
-        switch(trigger, f"{label} {leave}", output=f"{STORE}/{label}-{leave}.log")
+        # Either powers the machine off; the decoy then boots cold from the
+        # same disk. The command's output reaches the console, where a failed
+        # end shows it.
+        power_cycle(f"{trigger} > {SERIAL} 2>&1", f"{label} {leave}")
         on_decoy()
-        wait_reconcile()
-        stop_back, decoy_start = pid1_times()
-        marks += [(f"{label} hidden stop", stop_back), (f"{label} decoy start", decoy_start)]
+        _, decoy_start = pid1_times()
+        marks.append((f"{label} decoy cold boot", decoy_start))
         reads = reads_of(label, ref)
-        report["phases"][label].update({"marks": marks, "way_back": way_back})
-        return reads, way_back, marks
+        report["phases"][label].update({"marks": marks, "end": end})
+        after_cold_boot()
+        return reads, end, marks
 
 
     # --- the scenario ---------------------------------------------------------
@@ -428,20 +458,26 @@ distroVm.buildVmTest {
     with subtest("control: a plain soft-reboot"):
         controls = [control("control-1")]
 
-    with subtest("a session left by deactivate"):
+    with subtest("control: a plain power cycle"):
+        controls.append(control("control-2", cold=True))
+
+    with subtest("a session ended by deactivate, which powers off"):
         flows = [flow("session-1", "deactivate")]
 
-    with subtest("a session left by the emergency"):
+    with subtest("a session ended by the emergency, which powers off"):
         flows.append(flow("session-2", "emergency"))
 
     with subtest("control: a plain soft-reboot after the sessions"):
-        controls.append(control("control-2"))
+        controls.append(control("control-3"))
 
-    with subtest("check, activation and the way back read nothing a plain switch does not"):
+    with subtest("control: a plain power cycle after the sessions"):
+        controls.append(control("control-4", cold=True))
+
+    with subtest("check, activation and the session's end read nothing a plain switch or power cycle does not"):
         merged = at.merge(controls)
         all_marks = []
-        for reads, way_back, marks in flows:
-            findings.extend(at.judge_flow(reads, way_back, merged))
+        for reads, end, marks in flows:
+            findings.extend(at.judge_flow(reads, end, merged))
             all_marks += marks
         others, links = at.split_links(findings)
         others, udevd = at.split_udevd(others)
@@ -466,7 +502,7 @@ distroVm.buildVmTest {
             flush=True,
         )
         assert not others, (
-            f"{len(others)} reads of the decoy disk no plain soft-reboot makes:\n"
+            f"{len(others)} reads of the decoy disk no plain soft-reboot or power cycle makes:\n"
             + at.describe(others, all_marks)
         )
   '';

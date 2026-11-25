@@ -14,10 +14,9 @@
 #
 # The backing file's tmpfs is mounted below /run, which a soft-reboot does not
 # carry (only /run itself moves): after the switch the file is reachable only
-# through its loop device. The loop device is attached without autoclear, so
-# it outlives the mapping the way back closes: the hidden root can be opened
-# again on the decoy (reopenHiddenRoot), as a rehearsal needs. /run/blk.dev
-# names it; the file is gone with the next boot.
+# through its loop device, which /run/blk.dev names. A hidden session ends
+# with the machine powered off, which takes the file with it: the next
+# session's setup makes a fresh one.
 #
 # Every name is neutral ("data", "blk"): the loop device, the device-mapper name
 # and the mount points must never hint at hidden storage, because they survive
@@ -27,7 +26,7 @@
 {
   # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
   # the root is still mounted it is reused as is, never re-formatted; after a
-  # session it is gone and a fresh one is made.
+  # session's power-off it is gone and a fresh one is made.
   setupHiddenRoot = ''
     set -eu
 
@@ -72,29 +71,6 @@
     mkdir -p "$mountpoint"/root/work "$mountpoint"/config
 
     echo 'Hidden root ready at '"$mountpoint"
-  '';
-
-  # Open and mount the hidden root of the last setupHiddenRoot again, on the
-  # decoy after a session: its loop device is still attached (see above).
-  reopenHiddenRoot = ''
-    set -eu
-    loop=$(cat /run/blk.dev)
-    mkdir -p /mnt/data
-    if command -v cryptsetup >/dev/null 2>&1; then
-      echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
-      mount /dev/mapper/data /mnt/data
-    else
-      mount "$loop" /mnt/data
-    fi
-  '';
-
-  # Unmount the hidden root and close its mapping, leaving the loop device.
-  closeHiddenRoot = ''
-    set -eu
-    umount /mnt/data
-    if [ -e /dev/mapper/data ]; then
-      cryptsetup close data
-    fi
   '';
 
   # Make the decoy amnesic so the decoy-persistence preflight passes: journald

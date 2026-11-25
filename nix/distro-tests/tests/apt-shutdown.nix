@@ -40,13 +40,12 @@
 #     and its line, and `status` says the decoy installs at shutdown. With
 #     `--allow-persistent-decoy` the activation goes through, and the decoy's
 #     helper logs its shutdown-mode run on the decoy disk at the switch, the
-#     positive control; without python3-gi, the helper the way back starts
-#     again writes its two lines;
+#     positive control; without python3-gi, the helper the decoy's next cold
+#     boot starts writes its two lines;
 #   - stops the decoy's helper and leaves it enabled, the setting still on:
-#     `check` only warns, the activation goes through, and the way back
-#     (`deactivate`, through logind) has the session's own copy of the helper
-#     log its shutdown-mode run into the upper on the hidden volume, while the
-#     decoy's log gains no such line;
+#     `check` only warns, the activation goes through, and after the
+#     session's end (`deactivate`) the decoy's log has gained no
+#     shutdown-mode line;
 #   - deletes the setting's line once the decoy's helper has started with it
 #     on: `apt-config` reads it off, but `check` refuses, as no file sets the
 #     setting and apt.conf.d changed after the helper started. With
@@ -62,6 +61,15 @@
 #     refused, the helper logs its start error, and without python3-gi its two
 #     polling lines, to the journal of its own invocation, and its file on the
 #     decoy disk gains none of them.
+#
+# Every session ends with the machine powered off (a hidden session never goes
+# back to the decoy), by the emergency or by deactivate. A power-off would end
+# QEMU, and nix-vm-test's -snapshot disk with it, so QEMU pauses at each one
+# instead and is reset into a cold boot of the same disk (py/power_off.py):
+# what the decoy's helper wrote at the switch stays on the disk the next
+# session's checks read. A cold boot loses the hidden root (it is in RAM), the
+# share's mount and the configuration in /run, which prepare_boot() makes
+# again.
 {
   self,
   pkgs,
@@ -104,6 +112,11 @@ distroVm.buildVmTest {
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
 
+    # The power-off of a session's end, with the disk kept, and the cold boot
+    # of the same disk.
+    sys.path.insert(0, "${../py}")
+    import power_off  # noqa: E402
+
     nails = "${binShare.target}/nails"
     # On the /run tmpfs: never on the decoy disk; carried across soft-reboots.
     config = "/run/nails-apt-shutdown.toml"
@@ -133,8 +146,6 @@ distroVm.buildVmTest {
     # The lock a run holds from its start to its end, as unattended-upgrade
     # names it (/var/run is a link to /run).
     uu_lock = "/var/run/unattended-upgrades.lock"
-    # Where the session's copy of the helper logs: in the upper.
-    upper_helper_log = "/mnt/data/root/upper" + helper_log
 
     # The stand-in for on_ac_power: on its own tmpfs, as /run is mounted
     # noexec, and first in the run's PATH through a runtime drop-in, so
@@ -252,6 +263,14 @@ distroVm.buildVmTest {
     def follow(trigger, label):
         timings = session.follow_soft_reboot(vm, trigger, label)
         print(f"{label}: {timings}")
+        prepare_boot()
+
+
+    def end(trigger, label):
+        # The session's end powers the machine off; the decoy then boots cold
+        # from the same disk.
+        power_off.follow_power_off(vm, trigger, label)
+        power_off.boot_again(vm, label)
         prepare_boot()
 
 
@@ -593,17 +612,17 @@ distroVm.buildVmTest {
         )
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         session.assert_hidden_root(vm)
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
+        end(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         assert_on_the_decoy()
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
-        # Without python3-gi, the helper the decoy started again at the way
-        # back wrote its two lines, dated at the switch.
+        # Without python3-gi, the helper the decoy's cold boot started wrote
+        # its two lines.
         if vm.execute(f"test -e {gi_module}")[0] != 0:
             assert count(helper_log, POLLING) > polling_before, tail(helper_log)
 
-    with subtest("a helper stopped but enabled only warns, and logs its shutdown-mode run at the way back"):
+    with subtest("a helper stopped but enabled only warns, and the session's end adds no shutdown-mode line"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed("systemctl stop unattended-upgrades.service")
         vm.succeed("systemctl is-enabled unattended-upgrades.service")
@@ -614,20 +633,14 @@ distroVm.buildVmTest {
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
         vm.succeed("systemctl is-active unattended-upgrades.service")
-        follow(f"{nails_cmd} deactivate -y", "deactivate")
+        end(f"{nails_cmd} deactivate -y", "deactivate")
         assert_on_the_decoy()
+        # Whatever the session's copy of the helper did at the power-off, it
+        # did in the hidden root: the decoy's log gained no line.
         assert count(helper_log, SHUTDOWN_MODE) == decoy_mode, tail(helper_log)
-        # As the operator would: unlock and mount the hidden volume again.
-        # The upper's copy of the log starts with what the decoy's held when
-        # the session first wrote to it, so the session's own line is one
-        # more than the decoy's.
-        vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
-        print(f"the session's helper log in the upper:\n{tail(upper_helper_log)}")
-        assert count(upper_helper_log, SHUTDOWN_MODE) > decoy_mode, tail(upper_helper_log)
-        vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
 
     with subtest("a deleted line counts for the helper that read it, so check cannot tell"):
-        # The decoy's helper started at the way back with the setting on.
+        # The decoy's helper started at the cold boot with the setting on.
         vm.succeed(f"rm -f {setting_file}")
         assert not apt_reads_setting(), "apt reads the deleted setting on"
         refusal = row("decoy-persistence")
@@ -645,11 +658,11 @@ distroVm.buildVmTest {
             "activate-3",
         )
         session.assert_hidden_root(vm)
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-3")
+        end(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-3")
         assert_on_the_decoy()
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
-        # The helper started afresh at the way back reads no setting.
+        # The helper started afresh at the cold boot reads no setting.
         assert row("decoy-persistence")["status"] != "fail"
 
     with subtest("a file apt refuses refuses check, which says what the helper writes"):
@@ -688,7 +701,7 @@ distroVm.buildVmTest {
             "activate-4",
         )
         session.assert_hidden_root(vm)
-        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-4")
+        end(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency-4")
         assert_on_the_decoy()
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         assert count(helper_log, APT_ERROR) > errors_before, tail(helper_log)
@@ -696,11 +709,11 @@ distroVm.buildVmTest {
         assert count(helper_log, SHUTDOWN_MODE) == mode_before, tail(helper_log)
 
     with subtest("a helper that starts with the file refused logs to the journal, not its file"):
-        # The helper started again at the way back with the file refused: it
+        # The helper started again at the cold boot with the file refused: it
         # logs to its standard error, which systemd gives the journal, for
         # its whole run, its ERROR lines at a switch among them. A restart
         # shows it, in the journal of the restarted helper's own invocation,
-        # not of the one the way back started: its start error, and without
+        # not of the one the cold boot started: its start error, and without
         # python3-gi the two polling lines it logs after it, are there, and
         # its file on the decoy disk gains none of them.
         lines_before = len(vm.succeed(f"cat {helper_log}").splitlines())

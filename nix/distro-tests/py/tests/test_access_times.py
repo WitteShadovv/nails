@@ -118,7 +118,7 @@ class JudgeTest(unittest.TestCase):
             stamp("/usr/lib/systemd/system-generators/g", REF + 4),
         ]
         self.assertEqual(
-            at.judge_flow(reads, way_back=REF + 100, control=self.control),
+            at.judge_flow(reads, end=REF + 100, control=self.control),
             [
                 at.Finding(at.WAY_IN, "/usr/bin/ip", REF + 3, "f"),
                 at.Finding(
@@ -127,7 +127,7 @@ class JudgeTest(unittest.TestCase):
             ],
         )
 
-    def test_the_way_back_may_read_what_the_decoy_s_stop_or_start_reads(
+    def test_the_end_may_read_what_the_decoy_s_stop_or_start_reads(
         self,
     ) -> None:
         reads = [
@@ -136,8 +136,8 @@ class JudgeTest(unittest.TestCase):
             stamp("/usr/sbin/nft", REF + 103),
         ]
         self.assertEqual(
-            at.judge_flow(reads, way_back=REF + 100, control=self.control),
-            [at.Finding(at.WAY_BACK, "/usr/sbin/nft", REF + 103, "f")],
+            at.judge_flow(reads, end=REF + 100, control=self.control),
+            [at.Finding(at.END, "/usr/sbin/nft", REF + 103, "f")],
         )
 
     def test_controls_merge_by_point(self) -> None:

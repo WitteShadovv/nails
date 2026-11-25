@@ -92,8 +92,8 @@ let
           dump(label, cmd)
 
       # Last, a plain soft-reboot with no NAILS involved: what fails or is
-      # denied after it is what the way back meets on this image, since every
-      # way back is a soft-reboot, and a cold boot cannot show it.
+      # denied after it is what a switch meets on this image, since the entry
+      # into a hidden session is a soft-reboot, and a cold boot cannot show it.
       vm.succeed(probe_facts.BEFORE_SOFT_REBOOT)
       session.follow_soft_reboot(vm, "systemctl soft-reboot", "probe-soft-reboot")
       vm.wait_for_unit("multi-user.target")

@@ -22,11 +22,10 @@
 #     32 build users in `/etc/passwd` and `/etc/shadow`, the group in
 #     `/etc/group`, and the copies shadow-utils keeps of the account files,
 #     each naming them. `check` skips the row there;
-#   - deactivates. On the decoy none of the paths the check looks for is left
-#     but the test driver's `/nix`, no account file or copy of one names a
-#     build user or the group, no system shell startup file holds a hook, no
-#     daemon unit is known, and the row names `/nix` alone again;
-#   - images the decoy and looks for the marks of the install: its `/nix`
+#   - deactivates, which powers the machine off (a hidden session never goes
+#     back to the decoy). QEMU pauses at the power-off instead of exiting,
+#     so the disk stays as the power-off left it (py/power_off.py);
+#   - images that disk and looks for the marks of the install: its `/nix`
 #     holds what the baseline's held, and the image lists none of the
 #     installer's files beyond the baseline's, deleted entries included. Its
 #     bytes hold neither the nonce nor the name of a store path the session
@@ -34,11 +33,15 @@
 #     path the installer copies nor three of the lines it writes (a build
 #     user's line in `/etc/passwd`, its `build-users-group` setting and its
 #     shell hook);
-#   - as the positive control, boots the decoy again, installs and uses Nix on
-#     the decoy itself, and asserts that the row names every path the check
-#     looks for that the install left, and the group and the build users in
-#     the account files and in their copies, and that the decoy's image lists
-#     the store paths and holds the nonce, the installed Nix's name and those
+#   - boots the decoy cold from that disk. None of the paths the check looks
+#     for is there but the test driver's `/nix`, no account file or copy of
+#     one names a build user or the group, no system shell startup file holds
+#     a hook, no daemon unit is known, and the row names `/nix` alone again;
+#   - as the positive control, installs and uses Nix on the decoy itself in
+#     that boot, and asserts that the row names every path the check looks
+#     for that the install left, and the group and the build users in the
+#     account files and in their copies, and that the decoy's image lists the
+#     store paths and holds the nonce, the installed Nix's name and those
 #     three lines: so the scans that find nothing above can see a trace.
 #
 # The test driver needs the host's Nix store in the guest: the shell it runs
@@ -156,12 +159,17 @@ distroVm.buildVmTest {
     import shlex
     import subprocess
     import sys
+    import tempfile
     import time
     from typing import Any
 
     # The NixOS suite's in-VM helper package, for following a soft-reboot.
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
+
+    # The session's power-off with the disk kept, and the cold boot of it.
+    sys.path.insert(0, "${../py}")
+    import power_off  # noqa: E402
 
     ${diskForensics.pythonSetup}
 
@@ -553,8 +561,35 @@ distroVm.buildVmTest {
         vm.succeed(f"grep -q '^nixbld:x:30000:' {upper}/etc/group")
         vm.succeed("sync")
 
-    with subtest("deactivate: no trace of the installer is left on the decoy"):
-        follow(f"{nails_cmd} deactivate -y", "deactivate")
+    with subtest("deactivate powers off, and the disk it leaves holds no trace of the Nix the session installed"):
+        power_off.follow_power_off(vm, f"{nails_cmd} deactivate -y", "deactivate")
+        session_tokens = [nonce_id, token] + [os.path.basename(path) for path in paths]
+        clean = power_off.image_paused_disk(
+            vm,
+            os.path.join(tempfile.mkdtemp(prefix="nails-forensic-"), "clean.raw"),
+            cp="${pkgs.coreutils}/bin/cp",
+        )
+        names, offset = listed(clean)
+        assert below_nix(names) == baseline_nix, sorted(below_nix(names) - baseline_nix)
+        left = sorted(installer_files(names) - baseline_files)
+        assert not left, f"fls lists the installer's files on the decoy image: {left}"
+        nonce_named = sorted(name for name in names if nonce_id in name)
+        assert not nonce_named, f"fls lists the session's store paths: {nonce_named}"
+        hits = disk_forensics.run_strings_scan(
+            clean, session_tokens + INSTALLER_LINES + installed_names
+        )
+        leaked = sorted(hits & set(session_tokens))
+        assert not leaked, f"the decoy image holds the session's store writes: {leaked}"
+        new = sorted(hits - baseline_hits - set(session_tokens))
+        assert not new, f"the decoy image holds what the installer wrote: {new}"
+        store_hits = disk_forensics.run_store_scan(clean, session_tokens, offset=offset)
+        assert not store_hits, f"the decoy store registers a session path: {sorted(store_hits)}"
+        os.remove(clean)
+        print("decoy image clean of the Nix installed in the session")
+
+    with subtest("the decoy's cold boot: no trace of the installer is left"):
+        power_off.boot_again(vm, "cold boot")
+        prepare_boot()
         session.assert_decoy_root(vm)
         vm.fail("mountpoint -q /mnt/data")
         assert candidates() == ["/nix"], candidates()
@@ -574,30 +609,7 @@ distroVm.buildVmTest {
         assert row["status"] == "warn", row
         assert row["message"].splitlines()[0] == HARNESS_ROW, row
 
-    with subtest("the decoy image holds no trace of the Nix the session installed"):
-        session_tokens = [nonce_id, token] + [os.path.basename(path) for path in paths]
-        clean = image_decoy("clean")
-        names, offset = listed(clean)
-        assert below_nix(names) == baseline_nix, sorted(below_nix(names) - baseline_nix)
-        left = sorted(installer_files(names) - baseline_files)
-        assert not left, f"fls lists the installer's files on the decoy image: {left}"
-        nonce_named = sorted(name for name in names if nonce_id in name)
-        assert not nonce_named, f"fls lists the session's store paths: {nonce_named}"
-        hits = disk_forensics.run_strings_scan(
-            clean, session_tokens + INSTALLER_LINES + installed_names
-        )
-        leaked = sorted(hits & set(session_tokens))
-        assert not leaked, f"the decoy image holds the session's store writes: {leaked}"
-        new = sorted(hits - baseline_hits - set(session_tokens))
-        assert not new, f"the decoy image holds what the installer wrote: {new}"
-        store_hits = disk_forensics.run_store_scan(clean, session_tokens, offset=offset)
-        assert not store_hits, f"the decoy store registers a session path: {sorted(store_hits)}"
-        os.remove(clean)
-        print("decoy image clean of the Nix installed in the session")
-
     with subtest("positive control: Nix installed on the decoy is named and found"):
-        vm.start()
-        prepare_boot()
         clear_harness_store()
         install_nix("decoy")
         decoy_nonce = secrets.token_hex(16)

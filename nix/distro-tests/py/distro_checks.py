@@ -581,13 +581,17 @@ def journal_traces(journal_json: str, tokens: Iterable[str]) -> list[str]:
 #
 # An image-table entry can list the units its image is known to fail
 # (``knownFailedUnits`` in nix/distro-tests/images.json): the ones failed in
-# both hidden sessions and on the decoy after both ways back, each with a line
-# its failed start logs, and the ones the release's warning names that the
-# image does not install. The smoke scenario lists the failed units on the
-# decoy before the first switch, right after each switch, and in each hidden
-# session again just before its way back, and compares each listing with that
-# list: a listing sees only what is failed at that moment, not a unit that
-# failed while a switch stopped the old system and that the new system started
+# both hidden sessions (``hiddenSession``), each with a line its failed start
+# logs, and the ones the release's warning names that the image does not
+# install. The ``afterReturn`` phase is kept for the table's shape, which
+# ci/distro_images.py checks, but no listing reads it: a hidden session never
+# goes back to the decoy, and the decoy's start after a session is a cold
+# boot, which, like the first boot, may hold no failed unit. The smoke
+# scenario lists the failed units on the decoy before the first switch and
+# after each cold boot, and in each hidden session right after its entry and
+# again just before its end, and compares each listing with that list: a
+# listing sees only what is failed at that moment, not a unit that failed
+# while a switch stopped the old system and that the new system started
 # again. It checks that each listed failure is the known one,
 # and that the ``platform`` row of ``check`` warns about every unit listed. A
 # known failure that is gone asks for the list, and then the warning, to be
@@ -689,7 +693,8 @@ def messages_since(journal_json: str, since_usec: int) -> list[str]:
     start of its latest run. Read from ``journalctl -u <unit>``, the result is
     everything the unit logged since that start, which needs only the unit's
     name on each entry. A soft-reboot keeps the boot and its clock, so what the
-    unit logged in an earlier phase stays before that start.
+    unit logged in an earlier phase stays before that start; a cold boot reads
+    a journal of its own boot only (``journalctl -b``).
     """
     found: list[str] = []
     for entry in _journal_entries(journal_json):
@@ -746,7 +751,7 @@ def now_in_image(unit: str, name: str) -> str:
     """What to do when a unit listed as not in the image is in it."""
     return (
         f"{unit} is now in the {name} image, so this test can observe it. Move it"
-        " from notInImage to hiddenSession and afterReturn with the line its"
+        " from notInImage to hiddenSession with the line its"
         " failed start logs, or, if it starts in every phase, narrow the"
         f" release's warning ({WARNING_FILES}) to what still fails."
     )

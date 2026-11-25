@@ -323,7 +323,9 @@ in
   # runs. The probes load probe_facts the same way, for their queries and for the
   # reading of their output into the fixture record, and the committed probe
   # fixtures are checked against that record. The access-time scenarios load
-  # access_times to judge the reads, and run atime_walk in the guest.
+  # access_times to judge the reads, and run atime_walk in the guest. The
+  # scenarios that end a hidden session load power_off to follow its power-off
+  # with QEMU paused and to boot the kept disk again.
   distro-checks = lint "distro-checks" {
     files = fs.unions [
       ./distro-tests/py
@@ -347,6 +349,7 @@ in
         nix/distro-tests/py/distro_checks.py \
         nix/distro-tests/py/fedora_gate.py \
         nix/distro-tests/py/fedora_rpms.py \
+        nix/distro-tests/py/power_off.py \
         nix/distro-tests/py/probe_facts.py \
         nix/distro-tests/py/selinux_gate.py \
         nix/distro-tests/py/tests/test_access_times.py \
@@ -355,6 +358,7 @@ in
         nix/distro-tests/py/tests/test_distro_checks.py \
         nix/distro-tests/py/tests/test_fedora_gate.py \
         nix/distro-tests/py/tests/test_fedora_rpms.py \
+        nix/distro-tests/py/tests/test_power_off.py \
         nix/distro-tests/py/tests/test_probe_facts.py \
         nix/distro-tests/py/tests/test_selinux_gate.py
     '';
