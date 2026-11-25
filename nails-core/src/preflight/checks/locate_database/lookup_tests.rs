@@ -281,3 +281,23 @@ fn a_cron_entry_nails_cannot_look_up_is_read_and_warns() {
         "{result:?}"
     );
 }
+
+/// An updatedb that is gone by the time NAILS resolves its link, as where
+/// the package was removed in between, starts no run: the decoy passes as
+/// one without updatedb.
+#[test]
+fn an_updatedb_gone_before_its_link_is_resolved_is_no_updatedb() {
+    use crate::filesystem::{MockFailure, MockLookup};
+    let decoy = Decoy::new();
+    decoy.file("/usr/local/bin/updatedb", "");
+    let result = decoy.check(false);
+    assert!(!message(&result).contains("no updatedb"), "{result:?}");
+    decoy.fs.mock_fail_only(
+        Path::new("/usr/local/bin/updatedb"),
+        MockLookup::Canonicalize,
+        MockFailure::Io(ErrorKind::NotFound),
+    );
+    let result = decoy.check(false);
+    assert!(result.is_pass(), "{result:?}");
+    assert!(message(&result).contains("no updatedb"), "{result:?}");
+}
