@@ -792,8 +792,10 @@ fn a_unit_of_another_kind_named_by_a_specifier_resolves_to_its_own() {
 #[test]
 fn a_skip_that_requires_a_masked_mount_is_warned_of() {
     // The parent has nofail and is not mounted now: masked. The child is
-    // skipped, but PID 1 cannot start it with its parent masked, so the
-    // boot target that requires it is not reached.
+    // skipped and requires its parent only as the mount for a path, its
+    // parent directory: systemd 260.5 started such a unit without a masked
+    // mount, so the boot target that requires it may not be reached. It
+    // said the target is not reached.
     let decoy = Decoy::new();
     let (parent, warnings) = kept(
         &decoy,
@@ -807,8 +809,27 @@ fn a_skip_that_requires_a_masked_mount_is_warned_of() {
         &warnings[0],
         &[
             "srv-data.mount is skipped, but it requires srv.mount (the mount of a parent \
-             directory), which the session masks",
-            "not reached",
+             directory), which the session masks, only as the mount for a path",
+            "the hidden systemd may not start srv-data.mount, so the boot target that requires \
+             it may not be reached",
+        ],
+    );
+    // One that names it too (`x-systemd.requires=`) cannot start without it,
+    // and the target that requires it is not reached.
+    let decoy = Decoy::new();
+    let (_, warnings) = kept(
+        &decoy,
+        "/dev/vdb1 /srv ext4 nofail 0 2\n\
+         /dev/vdc1 /srv/data ext4 defaults,x-systemd.requires=/srv 0 2\n",
+        ROOT_ONLY,
+    );
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert_has(
+        &warnings[0],
+        &[
+            "srv-data.mount is skipped, but it requires srv.mount",
+            "which the session masks: the hidden systemd cannot start srv-data.mount, so the \
+             boot target that requires it is not reached",
         ],
     );
     // One it only wants starts without it.

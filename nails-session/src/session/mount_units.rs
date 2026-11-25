@@ -430,7 +430,8 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// unit masked because what describes it disagrees
 /// ([`MaskCause::ConflictingLines`]), and for each skipped unit that
 /// requires a unit the session masks, which keeps it, and the boot target
-/// that requires it, from starting. A skip masked instead is recorded
+/// that requires it, from starting, or may where it requires it only as the
+/// mount for a path ([`pulls::walk`]). A skip masked instead is recorded
 /// ([`KeptOff::record_masked`]), and its warning says that the target will
 /// not be reached, unless NAILS reads only that a target may require it or
 /// that the units a target requires need it only as the mount for a path
@@ -541,11 +542,20 @@ pub fn kept_off(
         let Ok(masked) = walk_skip(graph, skip, &kept.masks) else {
             continue;
         };
-        for (unit, chain) in masked {
-            warnings.push(format!(
-                "{unit} is skipped, but it requires {chain}, which the session masks: the hidden \
-                 systemd cannot start {unit}, so the boot target that requires it is not reached"
-            ));
+        for (unit, chain, by_path) in masked {
+            warnings.push(if by_path {
+                format!(
+                    "{unit} is skipped, but it requires {chain}, which the session masks, only \
+                     as the mount for a path: the hidden systemd may not start {unit}, so the \
+                     boot target that requires it may not be reached"
+                )
+            } else {
+                format!(
+                    "{unit} is skipped, but it requires {chain}, which the session masks: the \
+                     hidden systemd cannot start {unit}, so the boot target that requires it is \
+                     not reached"
+                )
+            });
         }
     }
     (kept, warnings)
@@ -554,18 +564,19 @@ pub fn kept_off(
 /// Walk the pulls of `skip` ([`pulls::walk`]): of each of its units and of
 /// each unit it pulls in, which start as well, given `masks`, the units the
 /// session masks. `Ok` with the masked units each unit of the skip requires
-/// through a chain of requirements, each with the chain; `Err` with why the
-/// skip must be masked.
+/// through a chain of requirements, each with the chain and whether its last
+/// step requires it only as the mount for a path; `Err` with why the skip
+/// must be masked.
 fn walk_skip(
     graph: &deps::Graph<'_>,
     skip: &Skip,
     masks: &[String],
-) -> Result<Vec<(String, String)>, pulls::Blocked> {
+) -> Result<Vec<(String, String, bool)>, pulls::Blocked> {
     let mut masked = Vec::new();
     for unit in skip.units.iter().chain(&skip.pulled) {
-        for chain in pulls::walk(graph, unit, masks)? {
+        for (chain, by_path) in pulls::walk(graph, unit, masks)? {
             if skip.units.contains(unit) {
-                masked.push((unit.clone(), chain));
+                masked.push((unit.clone(), chain, by_path));
             }
         }
     }

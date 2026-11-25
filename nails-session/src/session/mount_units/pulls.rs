@@ -24,8 +24,9 @@
 //! ([`MAX_DEPTH`], [`MAX_UNITS`]). The walk stops at the targets the hidden
 //! boot starts anyway ([`boot_targets`](super::deps::boot_targets)), which
 //! bring nothing in that the boot does not, and at scopes. A mount the session
-//! masks keeps a unit that requires it from starting, and the boot target with
-//! it: that is warned of.
+//! masks keeps a unit that requires it by name from starting, and the boot
+//! target with it, and one that requires it only as the mount for a path may
+//! not: that is warned of.
 
 use super::deps::{Graph, edges, is_storage_unit, kind, lines_of};
 use super::unit_dirs::Load;
@@ -110,11 +111,13 @@ pub fn fate(graph: &Graph<'_>, pull: &str, masks: &[String]) -> Fate {
 pub type Blocked = (String, MaskCause);
 
 /// A unit the walk reached: its name, the unit it reached it from (`None`
-/// for the one it starts at), and how that one pulls it in.
+/// for the one it starts at), how that one pulls it in, and whether only as
+/// the mount for a path ([`Edge::by_path`](super::deps::Edge::by_path)).
 struct Reached {
     unit: String,
     from: Option<usize>,
     how: &'static str,
+    by_path: bool,
 }
 
 /// How the walk reached `reached[at]` from where it started: `a (how), which
@@ -153,6 +156,7 @@ pub fn requires_among(
         unit: start.to_string(),
         from: None,
         how: "",
+        by_path: false,
     }];
     let mut queue: VecDeque<(usize, usize)> = VecDeque::from([(0, 0)]);
     let mut found: Vec<(String, String, bool)> = Vec::new();
@@ -197,6 +201,7 @@ pub fn requires_among(
                             unit: edge.unit,
                             from: Some(at),
                             how: edge.how,
+                            by_path: edge.by_path,
                         });
                     }
                 }
@@ -209,6 +214,7 @@ pub fn requires_among(
                 unit: edge.unit,
                 from: Some(at),
                 how: edge.how,
+                by_path: edge.by_path,
             });
             queue.push_back((reached.len() - 1, depth + 1));
         }
@@ -218,16 +224,35 @@ pub fn requires_among(
 
 /// Walk the pulls of the skipped unit `start` (see the module docs), given
 /// `masks`, the units the session masks. `Ok` with the masked units `start`
-/// requires through a chain of requirements, each with that chain: they
-/// keep it from starting. `Err` when the skip must be masked instead.
-pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<String>, Blocked> {
+/// requires through a chain of requirements, each once with that chain and
+/// whether the chain's last step requires it only as the mount for a path
+/// ([`Edge::by_path`](super::deps::Edge::by_path)), a chain whose last step
+/// names it found before one that does not: one that names it keeps `start`
+/// from starting, and one for a path may not (systemd 260.5 started a unit
+/// without a masked mount it needed only for a path). `Err` when the skip
+/// must be masked instead.
+pub fn walk(
+    graph: &Graph<'_>,
+    start: &str,
+    masks: &[String],
+) -> Result<Vec<(String, bool)>, Blocked> {
     let mut reached = vec![Reached {
         unit: start.to_string(),
         from: None,
         how: "",
+        by_path: false,
     }];
     let mut queue: VecDeque<(usize, usize, bool)> = VecDeque::from([(0, 0, true)]);
-    let mut masked_required: Vec<String> = Vec::new();
+    // Each masked unit required, with the chain and whether for a path.
+    let mut masked_required: Vec<(String, String, bool)> = Vec::new();
+    let mut note = |unit: &str, chain: String, by_path: bool| match masked_required
+        .iter_mut()
+        .find(|(seen, ..)| seen == unit)
+    {
+        Some(known) if known.2 && !by_path => *known = (unit.to_string(), chain, false),
+        Some(_) => {}
+        None => masked_required.push((unit.to_string(), chain, by_path)),
+    };
     let unknown = |why: String| (why, MaskCause::Undetermined);
     while let Some((at, depth, required)) = queue.pop_front() {
         let unit = reached[at].unit.clone();
@@ -236,7 +261,7 @@ pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<Stri
                 match fate(graph, &unit, masks) {
                     Fate::Masked => {
                         if required {
-                            masked_required.push(chain(&reached, at));
+                            note(&unit, chain(&reached, at), reached[at].by_path);
                         }
                         continue;
                     }
@@ -282,6 +307,20 @@ pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<Stri
         })?;
         for edge in pulled {
             if reached.iter().any(|seen| seen.unit == edge.unit) {
+                // A masked mount reached again by another requirement: one
+                // that names it wins over one for a path.
+                if required
+                    && edge.required
+                    && is_storage_unit(&edge.unit)
+                    && fate(graph, &edge.unit, masks) == Fate::Masked
+                {
+                    let step = format!("{} ({})", edge.unit, edge.how);
+                    let chain = match chain(&reached, at) {
+                        before if before.is_empty() => step,
+                        before => format!("{before}, which pulls in {step}"),
+                    };
+                    note(&edge.unit, chain, edge.by_path);
+                }
                 continue;
             }
             if reached.len() >= MAX_UNITS {
@@ -293,9 +332,13 @@ pub fn walk(graph: &Graph<'_>, start: &str, masks: &[String]) -> Result<Vec<Stri
                 unit: edge.unit,
                 from: Some(at),
                 how: edge.how,
+                by_path: edge.by_path,
             });
             queue.push_back((reached.len() - 1, depth + 1, required && edge.required));
         }
     }
-    Ok(masked_required)
+    Ok(masked_required
+        .into_iter()
+        .map(|(_, chain, by_path)| (chain, by_path))
+        .collect())
 }
