@@ -167,10 +167,15 @@ class BootAgainTest(unittest.TestCase):
         vm.qmp_client.send = announce
         with mock.patch.object(po, "time", NoSleep):
             po.boot_again(vm, "cold boot")
-        commands = [command for command, _ in vm.qmp_client.sent]
-        self.assertEqual(commands[0], "system_reset")
-        self.assertLess(commands.index("set-action"), commands.index("cont"))
-        self.assertIn(("set-action", {"shutdown": "poweroff"}), vm.qmp_client.sent)
+        sent = vm.qmp_client.sent
+        commands = [command for command, _ in sent]
+        # -no-reboot would turn the reset into a shutdown: the reset is let
+        # through for this once, and both actions are put back before cont.
+        self.assertEqual(sent[0], ("set-action", {"reboot": "reset"}))
+        self.assertEqual(commands[1], "system_reset")
+        restored = ("set-action", {"reboot": "shutdown", "shutdown": "poweroff"})
+        self.assertIn(restored, sent)
+        self.assertLess(sent.index(restored), commands.index("cont"))
         self.assertEqual(vm.connects, 1)
         self.assertEqual(vm.units, ["multi-user.target"])
 

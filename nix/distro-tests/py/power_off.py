@@ -225,14 +225,20 @@ def boot_again(vm: Machine, label: str, deadline_s: float = 600.0) -> None:
     its owner switching it on again does, and reconnect to the new backdoor.
     QEMU exits again on a later power-off."""
     console_index = len(vm.full_console_log)
-    qmp(vm, "system_reset")
-    reset_deadline = time.monotonic() + 60
-    while qmp(vm, "query-status")["status"] == "shutdown":
-        assert time.monotonic() < reset_deadline, (
-            f"{label}: the reset never left the shutdown state"
-        )
-        time.sleep(0.5)
-    qmp(vm, "set-action", {"shutdown": "poweroff"})
+    # The driver starts QEMU with -no-reboot, which turns a reset into
+    # another shutdown: let this one reset, then put both actions back, so a
+    # later reboot or power-off of the guest ends QEMU as before.
+    qmp(vm, "set-action", {"reboot": "reset"})
+    try:
+        qmp(vm, "system_reset")
+        reset_deadline = time.monotonic() + 60
+        while qmp(vm, "query-status")["status"] == "shutdown":
+            assert time.monotonic() < reset_deadline, (
+                f"{label}: the reset never left the shutdown state"
+            )
+            time.sleep(0.5)
+    finally:
+        qmp(vm, "set-action", {"reboot": "shutdown", "shutdown": "poweroff"})
     qmp(vm, "cont")
     deadline = time.monotonic() + deadline_s
     while True:
