@@ -1033,7 +1033,13 @@ The scenario fails when:
 
 Once a distribution's backend and detection have landed, add one entry to
 `nix/distro-tests/images.json` with `enabled` set to `true`; an upstream Fedora
-or Arch image is pinned with `python3 -m ci.distro_images repin <name>`. The
+or Arch image is pinned with `python3 -m ci.distro_images repin <name>`. An
+image that no upstream publishes, such as the archinstall image, is a `mirror`
+entry instead: `.github/workflows/test-images.yml` builds it every night and
+publishes each build to the assets repository that
+`nix/distro-tests/mirrors.nix` names, and the same `repin <name>` pins the
+newest build. An image whose only boot loader is a UEFI one sets `firmware` to
+`uefi`, and its VMs boot with OVMF. The
 scenario, the flake's `e2e-distro` attribute and the CI matrix are all derived
 by mapping over this table, so nothing else changes. Once its runs have printed
 the failed units of every listing, give it a `knownFailedUnits`, with an empty

@@ -143,6 +143,38 @@ let
     else
       throw "distro image ${entry.osId} ${entry.release}: no prepare function for '${entry.prepare}'";
 
+  # The QEMU options an entry's firmware needs, or null for QEMU's default
+  # SeaBIOS. nix-vm-test starts QEMU with no firmware option and appends
+  # $QEMU_OPTS to its command line, so an image whose only boot loader is a
+  # UEFI one (the archinstall image's systemd-boot) gets OVMF through it. The
+  # combined OVMF image keeps no boot entries from one boot to the next, so the
+  # firmware starts the ESP's fallback loader, EFI/BOOT/BOOTX64.EFI, every time.
+  firmwareOpts =
+    entry: if (entry.firmware or "bios") == "uefi" then "-bios ${vmPkgs.OVMF.fd}/FV/OVMF.fd" else null;
+
+  # Hand a built test its firmware: the sandboxed derivation gets QEMU_OPTS in
+  # its build environment, and a host driver a wrapper that sets it (before
+  # whatever QEMU_OPTS the caller set) and runs the driver.
+  withFirmware =
+    entry: target: test:
+    let
+      opts = firmwareOpts entry;
+    in
+    if opts == null then
+      test
+    else if target == "sandboxed" then
+      test.overrideAttrs (_: {
+        QEMU_OPTS = opts;
+      })
+    else
+      (vmPkgs.writeShellScriptBin "test-driver" ''
+        export QEMU_OPTS="${opts}''${QEMU_OPTS:+ $QEMU_OPTS}"
+        exec ${test}/bin/test-driver "$@"
+      '').overrideAttrs
+        (_: {
+          passthru = test.passthru or { };
+        });
+
   # Evaluates, but refuses to build, so `nix eval` of every entry still succeeds
   # while an unpinned or unhosted image cannot be booted by accident.
   unavailable =
@@ -218,14 +250,15 @@ in
       if originalImage == null then
         unavailable entry "source kind '${kind}' is not pinned or hosted yet"
       else
-        (generic.makeVmTest {
-          name = "vm-test-${entry.osId}-${entry.release}";
-          inherit
-            system
-            testScript
-            sharedDirs
-            memorySize
-            ;
-          image = prepareImage entry originalImage;
-        }).${target};
+        withFirmware entry target
+          (generic.makeVmTest {
+            name = "vm-test-${entry.osId}-${entry.release}";
+            inherit
+              system
+              testScript
+              sharedDirs
+              memorySize
+              ;
+            image = prepareImage entry originalImage;
+          }).${target};
 }

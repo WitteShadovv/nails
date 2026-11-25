@@ -30,6 +30,9 @@
 #                  weekly link check probes the URL nix-vm-test pins at the
 #                  locked revision, and a newer lock repins it. A self-hosted
 #                  mirror asset carries no date;
+#   firmware       optional: "uefi" boots the image with OVMF, for an image
+#                  that has no BIOS boot loader (the archinstall image's
+#                  systemd-boot); absent or "bios", QEMU's default SeaBIOS;
 #   prepare        which image-preparation path builds the bootable qcow2
 #                  ("nix-vm-test" for a pinned nix-vm-test release, "fedora" or
 #                  "archlinux" for nix-vm-test's per-family prepare function);
@@ -65,8 +68,12 @@
 #                                             fixed by the flake.lock pin of it;
 #   { kind = "upstream"; url; name; sha256; } a hash-pinned upstream cloud image
 #                                             fetched with `fetchurl`;
-#   { kind = "mirror"; asset; sha256; }       an image with no upstream URL, from
-#                                             the assets-repo mirror (mirrors.nix);
+#   { kind = "mirror"; family; asset; sha256; }
+#                                             an image with no upstream URL, from
+#                                             the assets-repo mirror (mirrors.nix):
+#                                             the release of `family` holds the
+#                                             asset. `asset` and `sha256` are both
+#                                             null until it is first pinned;
 #   { kind = "pending"; }                     declared but not pinned yet (a
 #                                             pre-release distro, or an image the
 #                                             hosting does not produce yet).
@@ -86,6 +93,10 @@ let
     "nix-vm-test"
     "fedora"
     "archlinux"
+  ];
+  knownFirmware = [
+    "bios"
+    "uefi"
   ];
   knownKinds = [
     "nix-vm-test"
@@ -178,6 +189,9 @@ let
     assert lib.assertMsg (
       entry.upstreamUntil == null || builtins.isString entry.upstreamUntil
     ) "distro image ${name}: upstreamUntil must be null or a YYYY-MM-DD string";
+    assert lib.assertMsg (builtins.elem (entry.firmware or "bios")
+      knownFirmware
+    ) "distro image ${name}: firmware must be one of ${lib.concatStringsSep ", " knownFirmware}";
     # A pin that is still the placeholder hash may not be in the matrix: it
     # would fail its own fetch. This is what keeps an unpinned image `enabled`
     # from slipping through.
@@ -188,6 +202,21 @@ let
       "distro image ${name}: still has the placeholder hash; run `python3 -m ci.distro_images repin ${name}` before enabling it";
     assert (kind == "upstream") -> (requires "url" && requires "name" && requires "sha256");
     assert (kind == "nix-vm-test") -> (requires "distro" && requires "image");
+    # A mirror pin names its asset and that asset's hash together, or neither
+    # while the image is not hosted yet; only a pinned one may be enabled.
+    assert (kind == "mirror") -> requires "family";
+    assert lib.assertMsg (
+      kind != "mirror"
+      || ((entry.source.asset or null) == null) == ((entry.source.sha256 or null) == null)
+    ) "distro image ${name}: a mirror source names its asset and its sha256 together, or neither";
+    assert lib.assertMsg (
+      kind != "mirror"
+      || (entry.source.sha256 or null) == null
+      || lib.hasPrefix "sha256-" entry.source.sha256
+    ) "distro image ${name}: a mirror sha256 must be an SRI hash (sha256-...)";
+    assert lib.assertMsg (
+      !(entry.enabled && kind == "mirror" && (entry.source.asset or null) == null)
+    ) "distro image ${name}: a mirror source cannot be enabled before its asset is pinned";
     assert checkKnownFailed name (entry.knownFailedUnits or null);
     entry;
 in

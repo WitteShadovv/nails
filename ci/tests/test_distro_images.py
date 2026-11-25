@@ -46,6 +46,33 @@ def upstream_entry(**overrides: object) -> dict:
     return entry
 
 
+# The mirror mirrors.nix names, and an archinstall entry pinned to it.
+MIRROR = di.Mirror(
+    base="https://github.com/WitteShadovv/nails-test-images/releases/download",
+    tag_prefix="images-",
+)
+MIRROR_ASSET = "arch-install-2026.11.01-20261125-1.qcow2"
+
+
+def mirror_entry(**source: object) -> dict:
+    pin: dict = {
+        "kind": "mirror",
+        "family": "arch-install",
+        "release": "rolling",
+        "asset": MIRROR_ASSET,
+        "sha256": EMPTY_SRI,
+    }
+    pin.update(source)
+    return upstream_entry(
+        osId="arch",
+        prepare="archlinux",
+        enabled=False,
+        upstreamUntil=None,
+        firmware="uefi",
+        source=pin,
+    )
+
+
 class SriTest(unittest.TestCase):
     def test_hex_to_sri(self) -> None:
         self.assertEqual(di.sri_from_hex(EMPTY_HEX), EMPTY_SRI)
@@ -78,6 +105,45 @@ class ValidateTest(unittest.TestCase):
         entry["source"]["sha256"] = di.FAKE_HASH
         problems = di.validate({"fedora-44": entry})
         self.assertTrue(any("placeholder" in p for p in problems), problems)
+
+    def test_firmware_is_bios_or_uefi(self) -> None:
+        self.assertEqual(di.validate({"x": upstream_entry(firmware="uefi")}), [])
+        self.assertEqual(di.validate({"x": upstream_entry(firmware="bios")}), [])
+        problems = di.validate({"x": upstream_entry(firmware="coreboot")})
+        self.assertEqual(problems, ["x: unknown firmware 'coreboot'"])
+
+    def test_a_pinned_and_an_unpinned_mirror_entry_are_well_formed(self) -> None:
+        self.assertEqual(di.validate({"a": mirror_entry()}), [])
+        self.assertEqual(di.validate({"a": mirror_entry(asset=None, sha256=None)}), [])
+
+    def test_a_mirror_pin_names_its_asset_and_hash_together(self) -> None:
+        for source in ({"asset": None}, {"sha256": None}):
+            problems = di.validate({"a": mirror_entry(**source)})
+            self.assertEqual(
+                problems,
+                ["a: a mirror source names its asset and its sha256 together"],
+            )
+
+    def test_a_mirror_pin_is_a_plain_asset_and_an_sri_hash(self) -> None:
+        problems = di.validate({"a": mirror_entry(asset="../x.qcow2")})
+        self.assertEqual(problems, ["a: a mirror asset must be a plain file name"])
+        problems = di.validate({"a": mirror_entry(sha256=EMPTY_HEX)})
+        self.assertEqual(
+            problems, ["a: a mirror sha256 must be an SRI hash (sha256-...)"]
+        )
+        problems = di.validate({"a": mirror_entry(family="")})
+        self.assertEqual(problems, ["a: a mirror source needs 'family'"])
+
+    def test_an_unpinned_mirror_entry_cannot_be_enabled(self) -> None:
+        entry = mirror_entry(asset=None, sha256=None)
+        entry["enabled"] = True
+        problems = di.validate({"a": entry})
+        self.assertEqual(
+            problems, ["a: a mirror source cannot be enabled before it is pinned"]
+        )
+        pinned = mirror_entry()
+        pinned["enabled"] = True
+        self.assertEqual(di.validate({"a": pinned}), [])
 
     def test_bad_upstream_until_is_flagged(self) -> None:
         problems = di.validate({"x": upstream_entry(upstreamUntil="soon")})
@@ -211,6 +277,43 @@ NVT_IMAGES = {
 }
 
 
+class MirrorTest(unittest.TestCase):
+    def test_reads_the_shipped_seam(self) -> None:
+        mirror = di.load_mirror()
+        self.assertEqual(mirror, MIRROR)
+        self.assertTrue(mirror.configured())
+        self.assertEqual(
+            mirror.url_for("arch-install", "a.qcow2"),
+            f"{MIRROR.base}/images-arch-install/a.qcow2",
+        )
+        self.assertEqual(
+            mirror.latest_url("arch-install"),
+            f"{MIRROR.base}/images-arch-install/arch-install-latest.json",
+        )
+
+    def write(self, text: str) -> pathlib.Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = pathlib.Path(tmp.name) / "mirrors.nix"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_an_empty_base_is_not_configured(self) -> None:
+        path = self.write(
+            'rec {\n  base = "";\n  tagFor = family: "images-${family}";\n}\n'
+        )
+        mirror = di.load_mirror(path)
+        self.assertFalse(mirror.configured())
+        self.assertEqual(mirror.tag_prefix, "images-")
+
+    def test_a_seam_that_is_no_plain_string_fails(self) -> None:
+        path = self.write('rec {\n  base = lib.mkDefault "x";\n}\n')
+        with self.assertRaisesRegex(di.LinkError, "no plain-string base"):
+            di.load_mirror(path)
+        with self.assertRaisesRegex(di.LinkError, "cannot read"):
+            di.load_mirror(path.parent / "missing.nix")
+
+
 class LinkCheckTest(unittest.TestCase):
     def test_offline_shipped_table_checks_the_dates_alone(self) -> None:
         # Debian and Ubuntu are nix-vm-test pins with no lapse date: offline,
@@ -231,8 +334,9 @@ class LinkCheckTest(unittest.TestCase):
         self.assertEqual(report.failures, [])
 
     def test_shipped_table_probes_every_pin_that_names_a_url(self) -> None:
-        # Every upstream and nix-vm-test pin is probed, the staged ones too;
-        # pending and mirror entries name no URL.
+        # Every upstream and nix-vm-test pin is probed, the staged ones too,
+        # and so is every mirror entry that pins an asset; a pending entry
+        # names no URL.
         probed: list[str] = []
 
         def url_ok(url: str) -> bool:
@@ -255,6 +359,7 @@ class LinkCheckTest(unittest.TestCase):
             name
             for name, entry in table.items()
             if entry["source"]["kind"] in ("upstream", "nix-vm-test")
+            or entry["source"].get("asset") is not None
         ]
         self.assertEqual(len(probed), len(pinned))
         staged = [name for name in pinned if not table[name]["enabled"]]
@@ -480,19 +585,79 @@ class LinkCheckTest(unittest.TestCase):
         with self.assertRaisesRegex(di.LinkError, "locks no nix-vm-test"):
             di.nix_vm_test_list_url({"nodes": {}}, "debian")
 
-    def test_a_mirror_entry_is_listed_as_not_checked(self) -> None:
-        mirror = upstream_entry(
-            upstreamUntil=None,
-            source={"kind": "mirror", "family": "arch-install", "asset": "a"},
-        )
-        table = {
+    def mirror_table(self, **source: object) -> dict:
+        return {
             "fedora-44": upstream_entry(upstreamUntil="2099-01-01"),
-            "arch-install": mirror,
+            "arch-install": mirror_entry(**source),
         }
-        report = di.link_check(table, today=THE_DAY, url_ok=lambda _url: True)
+
+    def test_a_mirror_pin_is_probed_at_its_asset(self) -> None:
+        probed: list[str] = []
+
+        def url_ok(url: str) -> bool:
+            probed.append(url)
+            return True
+
+        report = di.link_check(
+            self.mirror_table(), today=THE_DAY, url_ok=url_ok, mirror=MIRROR
+        )
+        url = f"{MIRROR.base}/images-arch-install/{MIRROR_ASSET}"
+        self.assertEqual(report.failures, [])
+        self.assertIn(url, probed)
+        self.assertIn(f"arch-install (staged): probed {url}", report.checked)
+
+    def test_a_missing_mirror_asset_fails(self) -> None:
+        url = f"{MIRROR.base}/images-arch-install/{MIRROR_ASSET}"
+        report = di.link_check(
+            self.mirror_table(),
+            today=THE_DAY,
+            url_ok=lambda probed: probed != url,
+            mirror=MIRROR,
+        )
+        self.assertEqual(
+            report.failures,
+            [f"arch-install (staged): image URL is unreachable: {url}"],
+        )
+
+    def test_a_mirror_entry_without_an_asset_is_listed_as_not_checked(self) -> None:
+        report = di.link_check(
+            self.mirror_table(asset=None, sha256=None),
+            today=THE_DAY,
+            url_ok=lambda _url: True,
+            mirror=MIRROR,
+        )
         self.assertEqual(report.failures, [])
         self.assertEqual(
-            report.unchecked, ["arch-install: a mirror source has no URL to probe"]
+            report.unchecked,
+            ["arch-install (staged): a mirror source that pins no asset yet"],
+        )
+
+    def test_a_mirror_that_is_not_configured_is_listed_as_not_checked(self) -> None:
+        report = di.link_check(
+            self.mirror_table(),
+            today=THE_DAY,
+            url_ok=lambda _url: True,
+            mirror=di.Mirror(base="", tag_prefix="images-"),
+        )
+        self.assertEqual(report.failures, [])
+        self.assertEqual(
+            report.unchecked,
+            ["arch-install (staged): the mirror is not configured yet"],
+        )
+
+    def test_offline_a_mirror_entry_is_not_checked(self) -> None:
+        def url_ok(url: str) -> bool:
+            raise AssertionError(f"probed {url} offline")
+
+        report = di.link_check(
+            self.mirror_table(),
+            today=THE_DAY,
+            offline=True,
+            url_ok=url_ok,
+            mirror=MIRROR,
+        )
+        self.assertIn(
+            "arch-install (staged): offline, and no upstreamUntil", report.unchecked
         )
 
 
@@ -675,6 +840,52 @@ class RepinTest(unittest.TestCase):
         result = di.repin(table, [], fetch=fetcher(FEDORA_FIX))
         self.assertEqual(result.changed, ["fedora-44"])
         self.assertEqual(list(result.failed), ["arch-boxes"])
+
+    def latest(self, **manifest: object) -> di.Fetcher:
+        body = {"asset": MIRROR_ASSET, "sha256": EMPTY_SRI, "size": 1}
+        body.update(manifest)
+        return fetcher({MIRROR.latest_url("arch-install"): json.dumps(body)})
+
+    def test_resolve_mirror_reads_the_latest_manifest(self) -> None:
+        pin = di.resolve_mirror("arch-install", MIRROR, self.latest())
+        self.assertEqual(pin, {"asset": MIRROR_ASSET, "sha256": EMPTY_SRI})
+
+    def test_resolve_mirror_refuses_a_bad_manifest(self) -> None:
+        bad = (
+            ({"asset": "fedora-44.qcow2"}, "names no asset of arch-install"),
+            ({"asset": "arch-install/../x"}, "names no asset of arch-install"),
+            ({"sha256": EMPTY_HEX}, "names no SRI sha256"),
+        )
+        for manifest, message in bad:
+            with self.assertRaisesRegex(di.RepinError, message):
+                di.resolve_mirror("arch-install", MIRROR, self.latest(**manifest))
+        url = MIRROR.latest_url("arch-install")
+        with self.assertRaisesRegex(di.RepinError, "no manifest"):
+            di.resolve_mirror("arch-install", MIRROR, fetcher({url: "[]"}))
+        with self.assertRaisesRegex(di.RepinError, "not configured"):
+            di.resolve_mirror("arch-install", di.Mirror("", "images-"), not_found)
+
+    def test_repin_moves_a_mirror_entry_to_the_newest_build(self) -> None:
+        table = {
+            "arch-install": mirror_entry(asset="arch-install-old.qcow2"),
+            "fedora-44": upstream_entry(source=dict(PINNED_44)),
+        }
+        fetch = self.latest()
+        with mock.patch.object(di, "load_mirror", return_value=MIRROR):
+            result = di.repin(table, [], fetch=fetch)
+        self.assertEqual(result.changed, ["arch-install"])
+        self.assertIn("fedora-44", result.failed)
+        source = table["arch-install"]["source"]
+        self.assertEqual(source["kind"], "mirror")
+        self.assertEqual(source["asset"], MIRROR_ASSET)
+        self.assertEqual(source["sha256"], EMPTY_SRI)
+
+    def test_a_mirror_entry_without_a_manifest_fails_alone(self) -> None:
+        table = {"arch-install": mirror_entry()}
+        with mock.patch.object(di, "load_mirror", return_value=MIRROR):
+            result = di.repin(table, ["arch-install"], fetch=not_found)
+        self.assertEqual(result.changed, [])
+        self.assertIn("404", result.failed["arch-install"])
 
     def test_repin_unknown_family_is_reported(self) -> None:
         source = {"kind": "upstream", "family": "gentoo", "release": "1"}

@@ -22,6 +22,12 @@ A ``nix-vm-test`` entry is a dated upstream URL as well: nix-vm-test pins it in
 its own ``<distro>/images.json``, at the revision ``flake.lock`` locks, and the
 upstream mirror can prune it like any other build. The link check reads that
 list and probes the URL; a newer nix-vm-test lock is what repins such an entry.
+
+A ``mirror`` entry is an image the project builds itself and publishes to the
+assets repository that ``nix/distro-tests/mirrors.nix`` names (the archinstall
+image). The link check probes the asset it pins there, and ``repin`` moves it
+to the newest build, which the release's ``<family>-latest.json`` manifest
+names.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 TABLE_PATH = REPO / "nix" / "distro-tests" / "images.json"
 LOCK_PATH = REPO / "flake.lock"
+MIRRORS_PATH = REPO / "nix" / "distro-tests" / "mirrors.nix"
 
 # The placeholder hash an entry carries until it is pinned for real. It is the
 # well-known Nix "fake" SHA256, so an enabled entry that still has it is caught
@@ -51,6 +58,7 @@ FAKE_HASH = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 KNOWN_OS_IDS = frozenset({"debian", "ubuntu", "fedora", "arch"})
 KNOWN_PREPARE = frozenset({"nix-vm-test", "fedora", "archlinux"})
 KNOWN_KINDS = frozenset({"nix-vm-test", "upstream", "mirror", "pending"})
+KNOWN_FIRMWARE = frozenset({"bios", "uefi"})
 
 # How far before an entry's upstreamUntil the link check starts failing, so
 # there is time to repin before the image drops off its download mirror.
@@ -75,6 +83,50 @@ class RepinError(Exception):
 
 class LinkError(Exception):
     """The URL an entry pins could not be worked out."""
+
+
+# --- mirror -------------------------------------------------------------------
+
+# mirrors.nix keeps `base` and the shape of `tagFor` as plain strings, so that
+# this module reads the same values the Nix side fetches from.
+_MIRROR_BASE = re.compile(r'^\s*base = "(?P<base>[^"$]*)";', re.MULTILINE)
+_MIRROR_TAG = re.compile(
+    r'^\s*tagFor = family: "(?P<prefix>[^"$]*)\$\{family\}";', re.MULTILINE
+)
+
+
+@dataclass(frozen=True)
+class Mirror:
+    """The assets repository's download root and its per-family tag prefix."""
+
+    base: str
+    tag_prefix: str
+
+    def configured(self) -> bool:
+        return self.base != ""
+
+    def url_for(self, family: str, asset: str) -> str:
+        """The download URL of one asset, as mirrors.nix's urlFor builds it."""
+        return f"{self.base}/{self.tag_prefix}{family}/{asset}"
+
+    def latest_url(self, family: str) -> str:
+        """The manifest of a family's newest build, beside its assets."""
+        return self.url_for(family, f"{family}-latest.json")
+
+
+def load_mirror(path: Path = MIRRORS_PATH) -> Mirror:
+    """Read the mirror seam out of mirrors.nix."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise LinkError(f"cannot read {path.name}: {error}") from None
+    base = _MIRROR_BASE.search(text)
+    tag = _MIRROR_TAG.search(text)
+    if base is None or tag is None:
+        raise LinkError(
+            f"{path.name} names no plain-string base and tagFor; see its header"
+        )
+    return Mirror(base=base.group("base").rstrip("/"), tag_prefix=tag.group("prefix"))
 
 
 def load_table(path: Path = TABLE_PATH) -> dict[str, dict]:
@@ -132,6 +184,9 @@ def _problems_for_entry(name: str, entry: object) -> list[str]:
             datetime.date.fromisoformat(str(until))
         except ValueError:
             out.append(f"{name}: upstreamUntil must be null or YYYY-MM-DD")
+    firmware = entry.get("firmware", "bios")
+    if firmware not in KNOWN_FIRMWARE:
+        out.append(f"{name}: unknown firmware {firmware!r}")
     out.extend(_source_problems(name, entry, entry["source"]))
     out.extend(_known_failed_problems(name, entry.get("knownFailedUnits")))
     return out
@@ -214,11 +269,42 @@ def _source_problems(name: str, entry: Mapping, source: object) -> list[str]:
         for field in ("url", "name", "sha256"):
             if not source.get(field):
                 out.append(f"{name}: an upstream source needs {field!r}")
+    elif kind == "mirror":
+        out.extend(_mirror_problems(name, entry, source))
     enabled = bool(entry.get("enabled"))
     if enabled and kind == "pending":
         out.append(f"{name}: a pending source cannot be enabled")
     if enabled and kind == "upstream" and source.get("sha256") == FAKE_HASH:
         out.append(f"{name}: still has the placeholder hash; repin before enabling")
+    return out
+
+
+def _is_asset_name(asset: object) -> bool:
+    return (
+        isinstance(asset, str)
+        and asset not in ("", ".", "..")
+        and "/" not in asset
+        and not any(char.isspace() for char in asset)
+    )
+
+
+def _mirror_problems(name: str, entry: Mapping, source: Mapping) -> list[str]:
+    """A mirror pin names its family's asset and that asset's hash, or neither."""
+    out: list[str] = []
+    family = source.get("family")
+    if not isinstance(family, str) or not family:
+        out.append(f"{name}: a mirror source needs 'family'")
+    asset, sha256 = source.get("asset"), source.get("sha256")
+    if (asset is None) != (sha256 is None):
+        out.append(f"{name}: a mirror source names its asset and its sha256 together")
+    if asset is not None and not _is_asset_name(asset):
+        out.append(f"{name}: a mirror asset must be a plain file name")
+    if sha256 is not None and not (
+        isinstance(sha256, str) and sha256.startswith("sha256-")
+    ):
+        out.append(f"{name}: a mirror sha256 must be an SRI hash (sha256-...)")
+    if entry.get("enabled") and asset is None:
+        out.append(f"{name}: a mirror source cannot be enabled before it is pinned")
     return out
 
 
@@ -348,6 +434,7 @@ def link_check(
     offline: bool = False,
     url_ok: Callable[[str], bool] = _url_ok,
     pin_url: Callable[[Mapping], str] | None = None,
+    mirror: Mirror | None = None,
 ) -> LinkReport:
     """Check the pin of every entry, the staged ones as well as the enabled.
 
@@ -359,13 +446,17 @@ def link_check(
     revision ``flake.lock`` locks). A staged (disabled) entry stays out of the
     smoke matrix until a change enables it, and the probes boot the Fedora and
     Arch ones before then; its pin lapses all the same, so it is checked like
-    an enabled one. A run that could check no enabled entry fails as well: a
-    pass would claim a check of the images CI boots that never happened,
-    whatever it found for the staged ones.
+    an enabled one. A mirror entry is probed at the asset it pins in the
+    assets repository (``mirror``, by default read from mirrors.nix); one that
+    pins no asset yet, or a mirror with no base, is listed as not checked. A
+    run that could check no enabled entry fails as well: a pass would claim a
+    check of the images CI boots that never happened, whatever it found for
+    the staged ones.
     """
     today = today or datetime.date.today()
     resolve = pin_url or _locked_nix_vm_test_url()
     report = LinkReport()
+    no_probe: dict[str, str] = {}
     checked_enabled = False
     for name, entry in table.items():
         enabled = bool(entry.get("enabled"))
@@ -389,21 +480,34 @@ def link_check(
                         f"{label}: upstream pin lapses {until}"
                         f" (within {LEAD_DAYS} days or past); repin it"
                     )
+        url: str | None = None
         if not offline and kind in ("upstream", "nix-vm-test"):
             try:
                 url = _pinned_url(source, resolve)
             except LinkError as error:
                 done.append("its pin unreadable")
                 report.failures.append(f"{label}: {error}")
+        elif not offline and kind == "mirror":
+            try:
+                mirror = mirror or load_mirror()
+            except LinkError as error:
+                done.append("its mirror unreadable")
+                report.failures.append(f"{label}: {error}")
             else:
-                done.append(f"probed {url}")
-                if not url_ok(url):
-                    report.failures.append(f"{label}: image URL is unreachable: {url}")
+                url, why = _mirror_url(source, mirror)
+                if url is None:
+                    no_probe[name] = why
+        if url is not None:
+            done.append(f"probed {url}")
+            if not url_ok(url):
+                report.failures.append(f"{label}: image URL is unreachable: {url}")
         if done:
             report.checked.append(f"{label}: {', '.join(done)}")
             checked_enabled = checked_enabled or enabled
-        elif kind in ("upstream", "nix-vm-test"):
+        elif offline and kind in ("upstream", "nix-vm-test", "mirror"):
             report.unchecked.append(f"{label}: offline, and no upstreamUntil")
+        elif name in no_probe:
+            report.unchecked.append(f"{label}: {no_probe[name]}")
         else:
             report.unchecked.append(f"{label}: a {kind} source has no URL to probe")
     if not checked_enabled:
@@ -412,6 +516,16 @@ def link_check(
             " to be current"
         )
     return report
+
+
+def _mirror_url(source: Mapping, mirror: Mirror) -> tuple[str | None, str]:
+    """The URL a mirror source pins, or None and why there is none to probe."""
+    if not mirror.configured():
+        return None, "the mirror is not configured yet"
+    asset = source.get("asset")
+    if asset is None:
+        return None, "a mirror source that pins no asset yet"
+    return mirror.url_for(str(source.get("family")), str(asset)), ""
 
 
 # --- repin --------------------------------------------------------------------
@@ -485,18 +599,56 @@ RESOLVERS: dict[str, Callable[[str, Fetcher], dict[str, str]]] = {
 }
 
 
-def repin_entry(entry: dict, fetch: Fetcher) -> bool:
-    """Resolve and write an entry's upstream pin. True when it changed."""
+def resolve_mirror(family: str, mirror: Mirror, fetch: Fetcher) -> dict[str, str]:
+    """The newest build of a mirrored family, from its latest-build manifest.
+
+    The test-images workflow uploads each build under a name of its own and
+    then replaces ``<family>-latest.json`` with that build's manifest, which
+    names the asset and its SHA-256 in the SRI form.
+    """
+    if not mirror.configured():
+        raise RepinError("the mirror is not configured yet (mirrors.nix base)")
+    url = mirror.latest_url(family)
+    try:
+        manifest = json.loads(fetch(url))
+        asset, sha256 = manifest["asset"], manifest["sha256"]
+    except (KeyError, TypeError, ValueError):
+        raise RepinError(f"{url} is no manifest with an asset and a sha256") from None
+    if not _is_asset_name(asset) or not str(asset).startswith(f"{family}-"):
+        raise RepinError(f"{url} names no asset of {family}: {asset!r}")
+    if not isinstance(sha256, str) or not sha256.startswith("sha256-"):
+        raise RepinError(f"{url} names no SRI sha256 for {asset}")
+    return {"asset": asset, "sha256": sha256}
+
+
+def repin_entry(entry: dict, fetch: Fetcher, mirror: Mirror | None = None) -> bool:
+    """Resolve and write an entry's pin. True when it changed.
+
+    An upstream entry gets the newest upstream build; a mirror entry stays a
+    mirror entry and gets the newest build in the assets repository.
+    """
     source = entry.get("source", {})
     family = str(source.get("family"))
-    resolver = RESOLVERS.get(family)
-    if resolver is None:
-        raise RepinError(f"no upstream resolver for family {family!r}")
-    resolved = resolver(str(source.get("release", "")), fetch)
+    if source.get("kind") == "mirror":
+        resolved = resolve_mirror(family, mirror or load_mirror_for_repin(), fetch)
+    else:
+        resolver = RESOLVERS.get(family)
+        if resolver is None:
+            raise RepinError(f"no upstream resolver for family {family!r}")
+        resolved = resolver(str(source.get("release", "")), fetch)
     changed = any(source.get(key) != value for key, value in resolved.items())
     source.update(resolved)
-    source["kind"] = "upstream"
+    if source.get("kind") != "mirror":
+        source["kind"] = "upstream"
     return changed
+
+
+def load_mirror_for_repin() -> Mirror:
+    """mirrors.nix's seam, with a failure to read it as a repin failure."""
+    try:
+        return load_mirror()
+    except LinkError as error:
+        raise RepinError(str(error)) from None
 
 
 @dataclass
@@ -515,7 +667,8 @@ def repin(
 ) -> RepinResult:
     """Repin the named entries, or with no names every pinned resolvable one.
 
-    Without names, a pending entry is left out: it is declared before its
+    A mirror entry is resolvable: it moves to the newest build its family's
+    release holds. Without names, a pending entry is left out: it is declared before its
     release exists (Fedora 45 before it ships), so its upstream has nothing to
     pin yet, and it is pinned for the first time by naming it. An entry that
     does not resolve is recorded in ``failed`` and the others are still
@@ -529,7 +682,10 @@ def repin(
         names = [
             name
             for name, entry in table.items()
-            if str(entry.get("source", {}).get("family")) in RESOLVERS
+            if (
+                str(entry.get("source", {}).get("family")) in RESOLVERS
+                or entry.get("source", {}).get("kind") == "mirror"
+            )
             and entry.get("source", {}).get("kind") != "pending"
         ]
     result = RepinResult()
