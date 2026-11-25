@@ -513,8 +513,8 @@ fn a_needed_noauto_line_warns_will_not_only_where_a_line_names_its_mount() {
 /// with a backslash or a tmpfs below it: only the mount is kept off as a
 /// needed line is, and the rest of the line's own mask, a decoy disk's
 /// automount, stays masked, as the mask of every noauto line of a decoy
-/// disk has it, so that no autofs goes over the mount point. The needed decision dropped the automount,
-/// which the fuzz target found
+/// disk has it, so that no autofs goes over the mount point. The needed
+/// decision dropped the automount, which the fuzz target found
 /// (fuzz/seeds/fstab_crypttab/crash-needed-noauto-automount-*):
 /// `var-cache.automount` was neither masked nor skipped. A network share's
 /// mask holds its mount alone, and the needed skip of that mount stands in

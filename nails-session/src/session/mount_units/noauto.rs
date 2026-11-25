@@ -1,8 +1,10 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The mask of a `noauto` line of a decoy disk ([`Decision::is_noauto_mask`])
-//! against the units outside the fstab (see [`super`]).
+//! The mask of a `noauto` line of a decoy disk, and the automount the
+//! decision for such a line carries where a line needs its mount
+//! ([`Decision::noauto_held`]), against the units outside the fstab (see
+//! [`super`]).
 
 use super::unit_dirs::Load;
 use super::{NativeUnit, UnitDirs, deps, pulls};

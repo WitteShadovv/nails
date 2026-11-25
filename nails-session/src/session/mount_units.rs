@@ -441,8 +441,10 @@ fn skip_undone(dirs: UnitDirs<'_>, unit: &str) -> Option<String> {
 /// now.
 ///
 /// The mask of a `noauto` line that nothing NAILS reads in the fstab pulls
-/// in ([`Decision::is_noauto_mask`]) is weighed against the units outside
-/// the fstab ([`noauto::yield_masks`], [`noauto::weigh_masks`]), and so is
+/// in, and the automount the decision for such a line carries where a line
+/// needs its mount ([`Decision::noauto_held`]), are weighed against the
+/// units outside the fstab ([`noauto::yield_masks`],
+/// [`noauto::weigh_masks`]), and so is
 /// a mask a decision makes for a target that needs it only for a path or
 /// only may require it ([`noauto::weigh_unsure`]).
 pub fn kept_off(
