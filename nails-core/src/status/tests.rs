@@ -55,6 +55,7 @@ fn plan(root: &Path) -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        fence: None,
     }
 }
 

@@ -575,6 +575,122 @@ operator knows the decoy does not use (for example a disk its fstab lists but
 never mounts), and for an `nbd` or `ublk` device the operator knows is served
 from storage elsewhere; everything written there lands on that storage.
 
+## The write fence
+
+The overlay keeps the hidden session's file writes off the decoy, but it only
+sees writes through its own mounts. For the whole hidden session the kernel
+also refuses writes to the decoy's disks that go around it, so a program NAILS
+does not know of gets an error instead of leaving a trace. The entry
+transition puts the fence up, after the decoy's own shutdown and before PID 1
+switches root, around every disk the decoy mounts at entry (its root, its
+other filesystems, its ESP, the other devices a multi-device btrfs or an
+external journal or log keeps data on, its swap), each partition of those
+disks and every device stacked on them (the decoy's LUKS, LVM and md). Only
+the hidden volume's own top device, and what is stacked on it, is left out.
+A hidden session never goes back to the decoy's kernel, so the fence stays up
+until the power-off ends it:
+
+- every decoy filesystem still mounted is made read-only at the superblock,
+  after a `sync`. This is what refuses file writes (`EROFS`) and keeps the
+  filesystem from writing a journal, metadata or access times of its own
+  (btrfs writes no read repair on a read-only superblock either). An ext4 or
+  btrfs read-only remount commits its journal and marks itself clean, once,
+  at entry: that superblock then records the entry time as its last write,
+  where a decoy that ran on would record its power-off;
+- the devices are set read-only at the block layer (`BLKROSET`): writes
+  through a device node, read-write mounts and remounts, and the journal or
+  log replay of a new mount are refused. The flag alone would not stop a
+  mounted filesystem, a device-mapper mapping, md or swap: the kernel only
+  warns about such a write and lets it through, which is also why the hidden
+  volume keeps writing where it sits on a partition, a LUKS mapping or a
+  volume group of the decoy's;
+- discard is turned off on them (`queue/discard_max_bytes` 0), as a read-only
+  ext4 or btrfs still sends `fstrim`'s discards;
+- a device-cgroup program on the root cgroup denies every open of those
+  devices, reading included, and of the character devices that reach the same
+  hardware (sg, bsg, the NVMe controllers and their generic nodes, an NVMe
+  multipath head's controllers through its paths; every sg node where a
+  fenced disk is a SCSI device, since sg nodes can appear later): no process
+  can send SCSI (SG_IO) or NVMe commands past the block layer, `mknod` a new
+  node for them, swap onto them or mount them read-write. It needs only
+  `CONFIG_CGROUP_BPF` and a cgroup2 hierarchy, which every supported
+  distribution has; a kernel lockdown would not close these paths. A
+  read-only mount of a decoy filesystem with its type given still works: the
+  kernel finds the filesystem's live superblock by its device number without
+  opening the device, and that superblock is read-only;
+- efivarfs and pstore are made read-only, and the program denies the
+  firmware's own nodes past them (`/dev/efi_test`, `/dev/efi_capsule_loader`);
+- the kernel's crash log is kept from the firmware. pstore's EFI backend
+  writes the kernel log of every oops and panic into an EFI variable itself,
+  past efivarfs, and the decoy's next boot finds it and `systemd-pstore`
+  copies it onto the decoy disk. The fence turns the backend off
+  (`efi_pstore.pstore_disable`, which unregisters it from Linux 6.12 on; on
+  an older kernel it unloads the module, and a later load stays disabled).
+
+Activation refuses what the fence cannot cover, before the soft-reboot: no
+decoy disk is found; the hidden root shares a filesystem with the decoy (a
+folder or subvolume of a decoy filesystem, which `--allow-decoy-storage`
+accepts for `check`, or a container file on one), which the session would
+have to keep writable; a crash-log backend that keeps records past a
+power-off and cannot be turned off for the session (ACPI ERST, mtd, a block
+device, a built-in EFI backend on a kernel older than 6.12); or the kernel
+does not load the device program for the devices it would deny. Before
+anything is written, where PID 1 still maps or holds a deleted file (an
+`ld.so.cache` or library a package update replaced, which it keeps until it
+executes itself again) the activation has it do so (`systemctl
+daemon-reexec`), a step the decoy's journal records in the window around the
+switch. At the switch the transition first ends the decoy's leftover
+processes, udevd's included, which PID 1 would kill a moment later, and a
+step of the fence that fails then ends the session in a power-off, with what
+is up of the fence: a swap area active on a decoy disk, or a filesystem that
+cannot go read-only, because a process still holds a file of it open for
+writing or a deleted file of it open (the reason, which `status` shows once
+the hidden volume is open again, names those processes). All of it is kernel
+state in RAM: nothing of the fence is written to a disk, and the power-off
+ends it.
+
+What it does not cover:
+
+- **A root user who sets out to undo it.** Detaching the program, clearing the
+  flag and remounting read-write take deliberate steps; no stock kernel stops
+  root from taking them. So does a root user who loads a new table into the
+  hidden volume's own mapping that names a decoy device the mapping already
+  holds (device-mapper reuses that open device), and one who sends SCSI
+  commands through the hidden volume's mapping where it is a linear part of a
+  decoy disk (device-mapper passes the command to the whole disk below for a
+  caller with `CAP_SYS_RAWIO`). The fence is against programs that write where
+  they should not, not against the operator.
+- **A read-write remount of btrfs.** btrfs keeps no block device of its own
+  on its superblock, so the kernel's refusal of a read-write remount on a
+  read-only device skips it, and btrfs itself only counts the devices it
+  opened writable at mount. A `mount -o remount,rw` on a mount of a decoy
+  btrfs the session can see (the decoy filesystems the session carries below
+  `<hidden_volume_root>/root/decoy`) makes it read-write again, and its next
+  transaction reaches the disk. A new mount of it, another subvolume
+  included, is refused, since that opens the device.
+- **Writers that hold their access from before the fence**: a process that
+  survives the switch (a unit with `SurviveFinalKillSignal=`) and holds a
+  decoy device open or mapped shared, and a loop device the decoy set up over
+  a decoy device before the entry, write through what they hold. md writes
+  its own metadata and resync to the members of a decoy array whatever the
+  flag says.
+- **USB passthrough**: a decoy disk on USB is also reachable through its USB
+  device node (`/dev/bus/usb`), which the program does not deny, by a program
+  that speaks the mass-storage protocol itself.
+- **Linux 6.8**: a revalidation of a decoy disk (a rescan, a media change)
+  gives it its discard limit back.
+- **Disks the decoy does not mount at entry**: a second disk outside its
+  fstab, a USB drive, a disk attached during the session. These keep the
+  behaviour of [disks mounted during the session](configuration.md#disks-mounted-during-the-session),
+  whose `session_mounts.read_only` sets them read-only at the block layer but
+  leaves their device nodes open.
+- **Stores that are no block device**: the TPM, the drive's own logs and
+  counters (SMART, the flash translation layer) and firmware logs are out of
+  reach. A `ramoops` crash log stays on: it lives in RAM, which a power-off
+  clears.
+- The hidden session cannot open a decoy disk raw either, so tools that probe
+  devices (`blkid` on a change event, udisks, smartd) fail on them.
+
 ## Residual channels
 
 The whole-root overlay cannot cover these. Each is either bounded by an
@@ -586,11 +702,11 @@ has the whole catalog.
 <!-- residue-catalog:begin residual -->
 | Channel | Why it survives the overlay | Bounded by | Detected by |
 |---|---|---|---|
-| [Journal window around each soft-reboot](decoy-requirements.md#what-the-decoy-journal-keeps) | The decoy journal logs the sudo command line, the hidden build's progress and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID. | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `journal-scan` |
+| [Journal window around each soft-reboot](decoy-requirements.md#what-the-decoy-journal-keeps) | The decoy journal logs the sudo command line, the hidden build's progress, PID 1 executing itself again where it held a deleted file (the write fence needs that), and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID. | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `journal-scan` |
 | [Decoy journal reset by the old way back](decoy-requirements.md#what-the-decoy-journal-keeps) | No session opens this channel now: every session ends in a power-off, so the decoy never starts again on the kernel that ran the hidden session. The runtime journal ends with RAM at the power-off, and the decoy's next boot starts a fresh one from the kernel's boot records. | Power off after the session. | none: RAM only, gone at power-off |
 | [sudo log file](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `Defaults logfile=` writes every sudo command line, including the activation command and binary path, to a file on the decoy disk. | Remove `Defaults logfile=` from sudoers and sudoers.d. | path probe (warn) |
 | [sudo I/O logging](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk. | Remove every I/O logging option and tag from sudoers and sudoers.d. | path probe (warn) |
-| [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) | A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock. | The session watcher alerts on every read-write disk mount that is not the session's own storage, which it tells by device (and by path below `<root>/root`, where NAILS keeps its layers), so a disk mounted elsewhere below the hidden root alerts too. `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session. The power-off that ends the session unmounts them. | none: verify cannot tell what a session wrote to another disk |
+| [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) | A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock. | Every disk the decoy mounts at entry is read-only in the kernel and closed to every process for the whole session (the write fence): no process can open it, and none of its filesystems can be mounted read-write. For other disks, the session watcher alerts on every read-write disk mount that is not the session's own storage, which it tells by device (and by path below `<root>/root`, where NAILS keeps its layers), so a disk mounted elsewhere below the hidden root alerts too. `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session. The power-off that ends the session unmounts them. | none: verify cannot tell what a session wrote to another disk |
 | [Hidden kernel records imported by the decoy journal on the old way back](#residual-channels) | No session opens this channel now: every session ends in a power-off, so the decoy never starts again on the kernel that ran the hidden session. The decoy's journald starts on a fresh kernel log at its next boot. The hidden journald still imports the decoy's kernel records at the entry, into the hidden journal on the hidden volume. | Every session ends in a power-off. Keep the decoy journal volatile, so the decoy's own records before the switch never reach its disk. | `journal-scan` |
 | [Hidden records journald's sockets would carry into the decoy journal](decoy-requirements.md#what-the-decoy-journal-keeps) | No session opens this channel now: every session ends in a power-off, so the decoy never starts again on the kernel that ran the hidden session. What the hidden root sends journald after its own journald stopped ends with RAM at the power-off, and the decoy's next boot opens journald's sockets anew. | Every session ends in a power-off. | none: they name the hidden root's units and processes, which no check tells from the decoy's own |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) | The links, addresses, routes, policy-routing rules, firewall tables and network settings the hidden session sets up, and any MAC address or hostname it changes, live in the running kernel. Every session ends in a power-off, which ends them: none of it reaches the decoy's next boot. Remote records are another matter: what the network saw of the session stays there. | Every session ends in a power-off. Activation warns before entry about the network identity the session shares with the decoy. | none: a link the decoy adopted looks like one the decoy made itself |
@@ -598,7 +714,7 @@ has the whole catalog.
 | [Soft-reboot counter and boot ID](#residual-channels) | In the hidden session anyone with a shell sees one soft-reboot where systemd reports the count (256 and newer), and the decoy's boot ID and uptime. A persistent decoy journal shows the decoy's shutdown before the switch. Every session ends in a power-off, so the decoy's next boot starts with a count of zero, a new boot ID and fresh process numbers. | Every session ends in a power-off. Keep the decoy journal volatile. | none: RAM only, gone at power-off |
 | [Login and boot records around a session](#residual-channels) | The decoy reaches the hidden session through a soft-reboot, and its own writers may record that shutdown. Every session ends in a power-off, so the decoy's next start is a cold boot, which its writers record as any boot. No session makes the decoy start again on the kernel that ran it, so no soft-reboot row, backdated boot record or process numbers that continue from the decoy's boot arise from ending a session. | Every session ends in a power-off. Leave the machine off for a few minutes before you hand it over. | none: the records are the decoy's own |
 | [The decoy's mounts made again by the old way back](operator-guide.md#how-it-works) | No session opens this channel now: every session ends in a power-off, so the decoy never starts again on the kernel that ran the hidden session. The decoy's next boot makes its mount table afresh, as any boot does. | Every session ends in a power-off. | none: RAM only, gone at power-off |
-| [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
+| [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | The write fence makes efivarfs and pstore read-only for the session and closes /dev/efi_test and /dev/efi_capsule_loader, so a program that writes an EFI variable or archives a crash record gets an error; a root user can undo that. It also turns pstore's EFI backend off, which writes a kernel crash log into an EFI variable itself, and activation refuses a crash-log backend that keeps records past a power-off and cannot be turned off. NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) | RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it. | Every session ends in a power-off. Leave the machine off for a few minutes before you hand it over, and boot the decoy with init_on_free=1. A warm reboot (`nails emergency --reboot`) does not clear RAM. | `memory-swap` |
 | [timesyncd clock stamp](decoy-requirements.md#session-time-records) | systemd-timesyncd touches this file at every sync and at shutdown, so its mtime records when the machine last ran, which can fall after the decoy's last logged activity. | Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | path probe (info) |
 | [Persistent timer stamps](decoy-requirements.md#session-time-records) | Persistent=true timers stamp their last run; a stamp from the session, or a catch-up run at the next decoy boot, dates the session. | Session stamps land in the upper; expect catch-up runs at the next decoy boot. | path probe (info) |

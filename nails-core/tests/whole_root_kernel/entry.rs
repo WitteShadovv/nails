@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 #[derive(Default)]
 pub(crate) struct FakeHost {
     reloads: Cell<u32>,
+    /// How often the entry asked PID 1 to let go of deleted files.
+    released: Cell<u32>,
     /// The next root to look at on each reload.
     nextroot: Option<PathBuf>,
     /// Whether it was a mount point at the first reload.
@@ -96,6 +98,9 @@ impl GuardHost for FakeHost {
 }
 
 impl EntryHost for FakeHost {
+    fn release_deleted_files(&self) {
+        self.released.set(self.released.get() + 1);
+    }
     fn daemon_reload(&self) -> nails_core::Result<()> {
         if self.cancel_at_reload && self.reloads.get() == 0 {
             nails_core::cancel::testing::request();
@@ -865,6 +870,7 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             detach: nails_teardown::whole_root::nextroot::detach_tree,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
+            fence: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         assert!(
@@ -1332,6 +1338,7 @@ fn the_hidden_root_masks_are_written_at_the_switch_only() {
             detach: nails_teardown::whole_root::nextroot::detach_tree,
             selinux: &nails_teardown::whole_root::selinux::KERNEL,
             start: nails_teardown::whole_root::program_label::Started::by_hand(),
+            fence: None,
         };
         assert_eq!(transition::run(&env), Outcome::Entered);
         for unit in &plan.boot_masks {
@@ -1491,6 +1498,9 @@ fn a_failed_entry_leaves_no_next_root_and_no_runtime_pieces() {
         let host = FakeHost::default();
         let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
         assert!(error.to_string().contains("does not resolve"), "{error}");
+        // Before anything else, the entry has PID 1 let go of deleted files,
+        // which would keep the decoy root from going read-only at the switch.
+        assert_eq!(host.released.get(), 1);
         let entries = read_mountinfo().unwrap();
         assert!(
             !entries

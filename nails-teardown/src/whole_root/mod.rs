@@ -52,6 +52,9 @@
 //!   switch but udevd's, journald's sockets and the hidden filesystem's
 //!   unmount line, ended, emptied and quieted before the kmsg cursor, and
 //!   the empty `/run/nextroot` the switch leaves;
+//! - [`fence`]: the decoy disk read-only in the kernel for the whole session,
+//!   with [`fence_bpf`] (the device program) and [`fence_kernel`] (the
+//!   running kernel's side);
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in), with
 //!   [`guard_policy`] (what the loaded SELinux policy lets the guard do);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
@@ -71,6 +74,9 @@ pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
+pub mod fence;
+pub mod fence_bpf;
+pub mod fence_kernel;
 pub mod fresh_pids;
 pub mod guard_policy;
 pub mod kernel_helpers;

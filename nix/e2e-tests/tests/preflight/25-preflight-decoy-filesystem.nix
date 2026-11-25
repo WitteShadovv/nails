@@ -64,11 +64,10 @@
 #      --allow-decoy-storage passes a bind of a folder of it with the flag's
 #      warning and lets both lines be, while with the fstab line at /backup
 #      both still fail backend-entries and the fix keeps them;
-#  14. the accepted case: a whole session runs on a LUKS container file on
-#      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
-#      hidden write lands in the container, and deactivate powers the machine
-#      off; the cold-booted decoy does not see the write, which the container
-#      still holds.
+#  14. a LUKS container file on /srv, which check accepts with a warning,
+#      is refused by activation before the soft-reboot: the write fence would
+#      have to keep /srv writable for the session (decision 52). Nothing is
+#      staged, and the container is as it was.
 #
 # Every refused target keeps its mtime and ctime: no probe file was created
 # and deleted in it.
@@ -76,7 +75,6 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  testHelpers = import ./../../lib/test-helpers.nix;
 in
 {
   name = "preflight-decoy-filesystem";
@@ -125,8 +123,6 @@ in
 
     from nails_e2e import session
 
-    ${testHelpers.canonicalActivateFn}
-    ${testHelpers.canonicalDeactivateFn}
     ${preflightHelpers.writeTextFileFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
@@ -914,7 +910,7 @@ in
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
-    with subtest("a session runs on an encrypted container file on a decoy filesystem"):
+    with subtest("activation refuses a container file on a decoy filesystem"):
         # The container carries the neutral names of every other hidden volume
         # in the suite: the mapping "data" at /mnt/data.
         machine.succeed(
@@ -925,19 +921,16 @@ in
             "mount /dev/mapper/data /mnt/data && "
             "mkdir -p /mnt/data/root/work /mnt/data/config/nixos"
         )
-        canonical_activate(data_config, "--overlay-only", "container-activate")
-        session.assert_hidden_root(machine, "/mnt/data/root/upper")
-        output = machine.succeed("cat /mnt/data/container-activate.log")
-        assert "an encrypted container file (/srv/vault.bin) on /srv" in output, output
-        assert "copy-on-write snapshots" in output, output
-        machine.succeed("echo container-ok > /root/container-note && sync")
-        machine.succeed("grep -qx container-ok /mnt/data/root/upper/root/container-note")
-        canonical_deactivate(data_config, "container-deactivate")
-        machine.fail("test -e /root/container-note")
+        status, output = machine.execute(
+            f"nails --config {data_config} activate -y --overlay-only 2>&1"
+        )
+        machine.log(output)
+        assert status != 0, "activation went on with the hidden root in a decoy filesystem"
+        assert "shares a filesystem with the decoy" in output, output
+        assert "container file" in output, output
+        session.assert_decoy_root(machine)
+        machine.fail("mountpoint -q /run/nextroot")
         machine.succeed(
-            "echo -n pw | cryptsetup open --key-file - /srv/vault.bin data && "
-            "mount /dev/mapper/data /mnt/data && "
-            "grep -qx container-ok /mnt/data/root/upper/root/container-note && "
             "umount /mnt/data && cryptsetup close data && rm -f /srv/vault.bin"
         )
   '';

@@ -765,6 +765,12 @@ Windows partition, a mount unit of the decoy's that only another unit pulls
 in. It is a real disk, and a read-write mount of it takes the hidden session's
 writes.
 
+A disk the decoy mounts at entry is not among them: the
+[write fence](threat-model.md#the-write-fence) keeps it and each of its
+partitions read-only and closed for the whole session: no process can open it,
+and none of its filesystems can be mounted read-write. What follows covers the
+other disks.
+
 - **Alert** (`session_mounts.alert`, on by default). The session watcher checks
   the mount table every `backend_watch.poll_interval_secs` seconds and raises a
   desktop alert ("Disk mounted with write access") once for every read-write

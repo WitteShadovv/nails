@@ -184,6 +184,7 @@ mod tests {
             kernel_settings: Vec::new(),
             quiet_mounts: Vec::new(),
             pids: Default::default(),
+            fence: None,
         };
         fs.mock_set_path_exists(plan_path().to_str().unwrap(), true);
         fs.mock_set_file_content(plan_path().to_str().unwrap(), &plan.to_json());

@@ -485,8 +485,13 @@ in
         source = machine.succeed("findmnt -no SOURCE /mnt/data").strip()
         assert source == "/dev/mapper/data", source
         machine.succeed("test -s /mnt/data/activate.log && test -d /mnt/data/root/upper")
-        # The session carries the decoy's own /srv/files.
-        held = machine.succeed(f"lsblk -no MOUNTPOINTS {LV}").strip()
+        # The session carries the decoy's own /srv/files. Read from the mount
+        # table by device number: the write fence keeps the decoy's devices
+        # closed in the session, so nothing may open the LV.
+        held = machine.succeed(
+            f"dev=$(printf '%d:%d' 0x$(stat -Lc %t {LV}) 0x$(stat -Lc %T {LV})); "
+            "awk -v dev=$dev '$3 == dev { print $5 }' /proc/self/mountinfo"
+        ).strip()
         assert held, f"{LV} is not mounted: blk-availability's stop took it"
         # The unit runs in the hidden session too; its stop stays cleared.
         machine.succeed(f"systemctl is-active {BLK_UNIT}")
@@ -504,12 +509,10 @@ in
         assert machine.succeed("cat /srv/data/decoy-file").strip() == "decoy"
         machine.succeed("echo hidden > /srv/data/hidden-file && sync")
         machine.succeed("test -s /mnt/data/root/mounts/srv-data/upper/hidden-file")
-        machine.succeed(
-            "mkdir -p /run/peek && mount /dev/disk/by-id/virtio-extra /run/peek "
-            "&& mount -o remount,bind,ro /run/peek"
-        )
-        machine.fail("test -e /run/peek/hidden-file")
-        machine.succeed("umount /run/peek && rmdir /run/peek")
+        # The write fence keeps the decoy's filesystem read-only for the
+        # session: a read-write mount of it is refused; the next boot shows
+        # it without the file.
+        machine.fail("mkdir -p /run/peek && mount -t ext4 -o rw /dev/disk/by-id/virtio-extra /run/peek")
 
     with subtest("a noauto disk a unit it names pulls in is kept off"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
@@ -570,12 +573,10 @@ in
         assert machine.succeed("cat /srv/native/decoy-file").strip() == "decoy"
         machine.succeed("echo hidden > /srv/native/hidden-file && sync")
         machine.succeed("test -s /mnt/data/root/mounts/srv-native/upper/hidden-file")
-        machine.succeed(
-            "mkdir -p /run/peek && mount /dev/disk/by-id/virtio-native /run/peek "
-            "&& mount -o remount,bind,ro /run/peek"
-        )
-        machine.fail("test -e /run/peek/hidden-file")
-        machine.succeed("umount /run/peek && rmdir /run/peek")
+        # The write fence keeps the decoy's filesystem read-only for the
+        # session: a read-write mount of it is refused; the next boot shows
+        # it without the file.
+        machine.fail("mkdir -p /run/peek && mount -t ext4 -o rw /dev/disk/by-id/virtio-native /run/peek")
 
     with subtest("the Nix store of the VM is overlaid too"):
         assert machine.succeed("findmnt -no FSTYPE /nix/store").strip() == "overlay"

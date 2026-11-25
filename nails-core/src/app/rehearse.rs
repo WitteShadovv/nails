@@ -430,7 +430,7 @@ impl Rehearsal {
                 "same_boot",
                 "the canary was planted in this session, so its writes may not have reached the \
                  disk; deactivate first (it powers off), then scan from the \
-                 decoy or a later session, or pass --allow-same-boot",
+                 decoy, or pass --allow-same-boot",
             ));
         }
         let targets = match self.scan_targets(options) {

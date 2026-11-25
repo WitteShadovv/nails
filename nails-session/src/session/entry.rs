@@ -93,6 +93,8 @@ use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
 use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
+use nails_teardown::whole_root::disk_guard::Sysfs;
+use nails_teardown::whole_root::fence::{self, FenceKernel, FenceSpec};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
     Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
@@ -169,6 +171,18 @@ pub trait EntryHost: GuardHost {
     fn device_present(&self, device: &Path) -> bool {
         policy::device_present(device)
     }
+    /// What the write fence on the decoy disk covers ([`fence::spec`]), once
+    /// the entry has checked it can go up at the switch ([`fence::check`]).
+    /// `None` where no fence applies (a test without real disks); the entry
+    /// transition then puts none up.
+    fn fence_spec(&self, _: &[MountEntry], _: &Path, _: &Path) -> Result<Option<FenceSpec>> {
+        Ok(None)
+    }
+    /// Have PID 1 execute itself again when it still maps or holds a deleted
+    /// file (an `ld.so.cache` or library a package update replaced): a
+    /// filesystem with a deleted file in use cannot go read-only for the
+    /// write fence at the switch, and PID 1 outlives every other process.
+    fn release_deleted_files(&self) {}
 }
 
 /// The real host.
@@ -210,6 +224,32 @@ impl GuardHost for RealEntryHost {
     }
 }
 
+/// Whether the process at `proc_pid` maps or holds open a deleted file that
+/// lies on a filesystem (no memfd, device or RAM file).
+pub fn pid1_holds_deleted(proc_pid: &Path) -> bool {
+    let on_disk = |path: &str| {
+        path.starts_with('/')
+            && !path.starts_with("/memfd:")
+            && !path.starts_with("/dev/")
+            && !path.starts_with("/run/")
+            && !path.starts_with("/tmp/")
+    };
+    let maps = std::fs::read_to_string(proc_pid.join("maps")).unwrap_or_default();
+    let mapped = maps.lines().any(|line| {
+        line.strip_suffix(" (deleted)")
+            .and_then(|l| l.split_whitespace().nth(5))
+            .is_some_and(on_disk)
+    });
+    mapped
+        || std::fs::read_dir(proc_pid.join("fd"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|fd| std::fs::read_link(fd.path()).ok())
+            .filter_map(|t| t.to_str().map(str::to_string))
+            .any(|t| t.strip_suffix(" (deleted)").is_some_and(on_disk))
+}
+
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
 /// ([`super::guards::show_property`]).
 fn show(unit: Option<&str>, property: &str) -> Result<String> {
@@ -218,6 +258,32 @@ fn show(unit: Option<&str>, property: &str) -> Result<String> {
 }
 
 impl EntryHost for RealEntryHost {
+    fn release_deleted_files(&self) {
+        if pid1_holds_deleted(Path::new("/proc/1"))
+            && let Some(systemctl) = nails_teardown::whole_root::tools::find(None, "systemctl")
+        {
+            let _ = nails_teardown::whole_root::tools::run_bounded(
+                &systemctl,
+                &["daemon-reexec"],
+                std::time::Duration::from_secs(90),
+            );
+        }
+    }
+
+    fn fence_spec(
+        &self,
+        mounts: &[MountEntry],
+        root: &Path,
+        at: &Path,
+    ) -> Result<Option<FenceSpec>> {
+        let kernel = &nails_teardown::whole_root::fence_kernel::KERNEL;
+        let spec = fence::spec(mounts, &kernel.swaps(), root, at, &Sysfs::system());
+        Ok(Some(
+            fence::check(spec, mounts, &Sysfs::system(), kernel)
+                .map_err(NailsError::InvalidState)?,
+        ))
+    }
+
     fn failed_units(&self) -> Vec<String> {
         nails_teardown::whole_root::tools::find(None, "systemctl")
             .and_then(|systemctl| nails_teardown::whole_root::tools::failed_units(&systemctl))
@@ -325,80 +391,6 @@ pub struct Entry {
     pub decisions: Vec<Decision>,
     /// Things the operator should know (a hidden kernel mismatch).
     pub warnings: Vec<String>,
-}
-
-/// The decoy root device from the mount table, which the plan records. It
-/// served the way back, which is gone; the refusals stay until a removal of
-/// their own proves the entry on such roots. Refuses a root that cannot be
-/// mounted again by device: a
-/// RAM root (an impermanent decoy), an overlay, a ZFS dataset, or a bind of a
-/// subdirectory other than a btrfs subvolume.
-pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
-    let mount = top_mount_at(entries, root)
-        .ok_or_else(|| NailsError::InvalidState("the root is not a mount point".to_string()))?;
-    let refuse = |why: String| Err(NailsError::InvalidState(why));
-    if !mount.source.starts_with("/dev/") {
-        return refuse(format!(
-            "the decoy root ({} on {}) is not on a block device, and NAILS supports a decoy root \
-             only on one",
-            mount.fstype,
-            mount.source.display()
-        ));
-    }
-    if matches!(
-        mount.fstype.as_str(),
-        "zfs" | "overlay" | "tmpfs" | "squashfs" | "erofs"
-    ) {
-        return refuse(format!(
-            "a {} decoy root is not supported by the whole-root session",
-            mount.fstype
-        ));
-    }
-    let data = if mount.root == Path::new("/") {
-        None
-    } else if mount.fstype == "btrfs"
-        && mount_subvol(mount).is_some_and(|subvol| Path::new(&subvol) == mount.root)
-    {
-        // A btrfs mount whose root is exactly its `subvol=` is a subvolume,
-        // which the plan records with that `subvol=`. A mount root that is a
-        // deeper path (a bind of a plain folder inside the subvolume) has no
-        // `subvol=` of its own, so it is refused like any other bind below.
-        if mount.root.to_string_lossy().contains(',') {
-            // mount(2) splits its options at every comma, so a `subvol=`
-            // option could not name this subvolume.
-            return refuse(format!(
-                "the decoy root's btrfs subvolume {} has a comma in its path, which a subvol= \
-                 mount option cannot name",
-                mount.root.display()
-            ));
-        }
-        Some(format!("subvol={}", mount.root.display()))
-    } else {
-        return refuse(format!(
-            "the decoy root is a bind of {} on {}",
-            mount.root.display(),
-            mount.source.display()
-        ));
-    };
-    Ok(DecoyRoot {
-        source: mount.source.clone(),
-        fstype: mount.fstype.clone(),
-        data,
-    })
-}
-
-/// The `subvol=` a btrfs mount's options name, if any, decoded. btrfs records
-/// it in both the per-superblock and the per-mount option fields of the mount
-/// table, where the kernel writes a space, tab, newline, comma or backslash in
-/// it as an octal escape (`\040`); the mount root it is compared with is
-/// decoded already.
-fn mount_subvol(mount: &MountEntry) -> Option<String> {
-    mount
-        .super_opts
-        .split(',')
-        .chain(mount.mount_opts.split(','))
-        .find_map(|opt| opt.strip_prefix("subvol="))
-        .map(nails_teardown::mountinfo::unescape_octal)
 }
 
 fn io(path: &Path, e: std::io::Error) -> NailsError {
@@ -587,6 +579,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        fence: None,
     }
 }
 
@@ -615,12 +608,18 @@ fn build(
     }
     let building = inputs.builder.is_some();
     activation_step(ActivationPhase::Runtime, building);
+    // Before anything is written: a reexec reloads PID 1's state, and the
+    // entry's own reloads follow it.
+    host.release_deleted_files();
     super::program_label::require(inputs.program_label, host.selinux())?;
     let snapshot = Snapshot::take(&paths.run);
     write_runtime(paths, inputs, &snapshot, host.selinux())?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
     plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
+    // Taken from the decoy's whole mount table, before its shutdown unmounts
+    // what the fstab policy masks.
+    plan.fence = host.fence_spec(&mounts, &paths.root, inputs.hidden_root)?;
     plan.failed_at_entry = host.failed_units();
     // Recorded at every entry, before anything runs: a NixOS activation points
     // the kernel's module loader and firmware path at its own store, the
@@ -1190,9 +1189,12 @@ fn apply_mounts(
     Ok(wanted)
 }
 
+mod decoy_root;
 mod hidden_build;
 mod hidden_fstab;
 mod quiet;
+
+pub use decoy_root::decoy_root_of;
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

@@ -667,6 +667,7 @@ fn the_process_ends_with_the_transition_step_s_exit_code() {
         detach: |_| Vec::new(),
         selinux: &nails_teardown::whole_root::selinux::KERNEL,
         start: nails_teardown::whole_root::program_label::Started::by_hand(),
+        fence: None,
     };
     assert_eq!(
         super::transition_exit(&env),

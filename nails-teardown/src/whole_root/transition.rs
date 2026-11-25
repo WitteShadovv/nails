@@ -19,8 +19,10 @@
 //! it must never run and, best effort, the units the hidden root does not
 //! need, installs the hidden session's runtime units (and, opted in, the udev
 //! rule that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
-//! drops the `utab` lines of the mounts the switch leaves behind
-//! ([`crate::whole_root::utab`]) and records the entry. A hidden session never
+//! puts up the write fence on the decoy disk, after it ended the decoy's
+//! leftover processes ([`crate::whole_root::fence`]: a fence that does not go
+//! up whole ends the session), drops the `utab` lines of the mounts the switch
+//! leaves behind ([`crate::whole_root::utab`]) and records the entry. A hidden session never
 //! goes back to the decoy's kernel: it ends in a power-off
 //! ([`crate::whole_root::session_end`]), and a plan armed for the way back,
 //! which nothing of this build arms, powers off as well.
@@ -85,6 +87,7 @@
 
 use crate::mountinfo::{MountEntry, read_mountinfo};
 use crate::whole_root::disk_guard;
+use crate::whole_root::fence::{self, FenceKernel};
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
     self, BINARY_NAME, Direction, PLAN_NAME, Plan, PlanError, RUNTIME_DIR, SNAPSHOT_NAME, unix_now,
@@ -93,7 +96,7 @@ use crate::whole_root::program_label::{DOMAIN, Outside, Started};
 use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::selinux::{self, Selinux};
 use crate::whole_root::session_end::session_end;
-use crate::whole_root::{kernel_helpers, runtime_units, skips, switch_refusal, utab};
+use crate::whole_root::{kernel_helpers, runtime_units, skips, switch_refusal, tail, utab};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -383,6 +386,39 @@ pub struct Env {
     /// How this step was started: by PID 1 from the drop-in, as itself again,
     /// or by hand ([`Started::by_hand`]), which checks no domain.
     pub start: Started,
+    /// Where the entry puts up the write fence on the decoy disk
+    /// ([`fence`]); `None` leaves the disks alone, as a test without real
+    /// disks does.
+    pub fence: Option<FencePlaces>,
+}
+
+/// What the write fence reads and acts through ([`FencePlaces::system`]).
+#[derive(Debug, Clone)]
+pub struct FencePlaces {
+    /// Where sysfs describes block devices.
+    pub sys: disk_guard::Sysfs,
+    /// The kernel the fence acts on.
+    pub kernel: &'static dyn FenceKernel,
+    /// What ends the decoy's leftover processes before the fence, given the
+    /// step's `systemctl` ([`end_entry_leftovers`]; a test's stand-in).
+    pub leftovers: fn(Option<&Path>) -> Vec<u32>,
+}
+
+/// End every process of the decoy that PID 1 would kill at the switch,
+/// udevd's included ([`tail::end_leftovers_at_entry`]).
+pub fn end_entry_leftovers(systemctl: Option<&Path>) -> Vec<u32> {
+    tail::end_leftovers_at_entry(&tail::Places::system(), systemctl, &OWN_JOBS)
+}
+
+impl FencePlaces {
+    /// The running system.
+    pub fn system() -> Self {
+        Self {
+            sys: disk_guard::Sysfs::system(),
+            kernel: &crate::whole_root::fence_kernel::KERNEL,
+            leftovers: end_entry_leftovers,
+        }
+    }
 }
 
 /// How the step powers off ([`PowerOff::system`]).
@@ -423,6 +459,7 @@ impl Env {
             detach: nextroot::detach_tree,
             selinux: &selinux::KERNEL,
             start,
+            fence: Some(FencePlaces::system()),
         }
     }
 
@@ -716,6 +753,11 @@ fn enter(env: &Env, plan: &mut Plan, mounts: &[MountEntry]) -> Outcome {
     if let Err(why) = prepared {
         return end(env, Some(plan), &why);
     }
+    // The decoy disk read-only in the kernel for the whole session: a fence
+    // that does not go up whole ends the session here, with what is up of it.
+    if let Err(why) = put_up_fence(env, plan, mounts) {
+        return end(env, Some(plan), &why);
+    }
     runtime_units::mask_units_best_effort(&env.run, &plan.boot_masks);
     prune_utab(env, mounts);
     plan.armed = None;
@@ -732,6 +774,27 @@ fn enter(env: &Env, plan: &mut Plan, mounts: &[MountEntry]) -> Outcome {
     }
     Outcome::Entered
 }
+
+/// Put up the write fence the entry recorded ([`fence::put_up`]). A plan
+/// without the record is refused where the fence applies: the entry always
+/// writes it. First the decoy's leftover processes end, udevd's included: a
+/// process PID 1 kills only at the switch can still hold a file of the decoy
+/// open for writing, or a deleted one open, and a filesystem with either
+/// cannot go read-only.
+fn put_up_fence(env: &Env, plan: &Plan, mounts: &[MountEntry]) -> Result<(), String> {
+    let Some(places) = &env.fence else {
+        return Ok(());
+    };
+    let Some(spec) = &plan.fence else {
+        return Err("the entry recorded no decoy disk to make read-only".to_string());
+    };
+    let _ = (places.leftovers)(env.systemctl.as_deref());
+    fence::put_up(spec, mounts, &places.sys, places.kernel, &env.runtime_dir)
+        .map_err(|e| e.to_string())
+}
+
+/// The jobs of the soft-reboot itself, which wait for this step.
+const OWN_JOBS: [&str; 2] = ["soft-reboot.target", "systemd-soft-reboot.service"];
 
 /// Keep in `utab` only the lines that still name the same mount once PID 1
 /// has switched to the next root ([`utab::surviving_lines`]): the hidden

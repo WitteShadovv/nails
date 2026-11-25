@@ -177,20 +177,6 @@ in
         return [frame["result"] for frame in found if "result" in frame]
 
 
-    def peek_decoy(decoy_dev, command):
-        """Run `command` against a read-only mount of the decoy root at PEEK.
-
-        The decoy superblock is still mounted read-write (it is the overlay's
-        lower), so mount it, then make this mount read-only."""
-        machine.succeed(
-            f"mkdir -p {PEEK} && mount {decoy_dev} {PEEK} && mount -o remount,bind,ro {PEEK}"
-        )
-        try:
-            return machine.succeed(command)
-        finally:
-            machine.succeed(f"umount {PEEK} && rmdir {PEEK}")
-
-
     machine.start()
     machine.wait_for_unit("multi-user.target")
     decoy_dev = machine.succeed("findmnt -no SOURCE /").strip()
@@ -405,7 +391,11 @@ in
 
     with subtest("both files lie on the hidden volume, and the decoy has neither"):
         machine.succeed(f"test -f {UPPER}{ENTRY} && test -f {UPPER}{ACTION}")
-        peek_decoy(decoy_dev, f"test ! -e {PEEK}{ENTRY} && test ! -e {PEEK}{ACTION}")
+        # The write fence keeps the decoy's filesystem read-only for the whole
+        # session: a read-write mount of it is refused (a read-only one reuses
+        # the live superblock), and the next boot shows the decoy without the
+        # session's files.
+        machine.fail(f"mkdir -p {PEEK} && mount -t ext4 -o rw {decoy_dev} {PEEK}")
 
     with subtest("the helper plans a power-off for each ending, with its token"):
         found = frames(

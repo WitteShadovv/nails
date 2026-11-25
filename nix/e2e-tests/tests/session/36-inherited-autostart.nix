@@ -132,20 +132,6 @@ in
         ).strip()
 
 
-    def peek_decoy(decoy_dev, command):
-        """Run `command` against a read-only mount of the decoy root at PEEK.
-
-        The decoy superblock is still mounted read-write (it is the overlay's
-        lower), so mount it, then make this mount read-only."""
-        machine.succeed(
-            f"mkdir -p {PEEK} && mount {decoy_dev} {PEEK} && mount -o remount,bind,ro {PEEK}"
-        )
-        try:
-            return machine.succeed(command)
-        finally:
-            machine.succeed(f"umount {PEEK} && rmdir {PEEK}")
-
-
     machine.start()
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
@@ -224,17 +210,11 @@ in
         for unit in (user_timer_unit, unknown_unit):
             upper_link = machine.succeed("readlink " + UPPER + unit).strip()
             assert upper_link == "/dev/null", (unit, upper_link)
-        decoy_hashes = peek_decoy(
-            decoy_dev,
-            f"sha256sum {PEEK}{autostart_entry} {PEEK}{user_timer_unit} | cut -d' ' -f1",
-        ).split()
-        assert decoy_hashes == [autostart_hash_before, timer_unit_hash_before], (
-            f"the decoy filesystem changed under the hidden session: {decoy_hashes}"
-        )
-        peek_decoy(
-            decoy_dev,
-            f"test ! -e {PEEK}{package_entry} && test ! -L {PEEK}{unknown_unit}",
-        )
+        # The write fence keeps the decoy's filesystem read-only for the whole
+        # session: a read-write mount of it is refused (a read-only one reuses
+        # the live superblock), and the next boot shows the decoy without the
+        # session's files.
+        machine.fail(f"mkdir -p {PEEK} && mount -t ext4 -o rw {decoy_dev} {PEEK}")
 
     with subtest("after deactivate's power-off the decoy home is byte-for-byte unchanged"):
         canonical_deactivate(CONFIG, "deactivate")

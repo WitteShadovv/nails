@@ -438,6 +438,11 @@ pub struct Plan {
         skip_serializing_if = "crate::whole_root::fresh_pids::Record::is_empty"
     )]
     pub pids: crate::whole_root::fresh_pids::Record,
+    /// What the write fence covers ([`crate::whole_root::fence`]): the
+    /// decoy's disks and the hidden storage's own devices, recorded at entry.
+    /// The entry transition refuses a switch without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fence: Option<crate::whole_root::fence::FenceSpec>,
 }
 
 /// Why a plan could not be used.
@@ -664,6 +669,7 @@ pub(crate) fn sample() -> Plan {
         kernel_settings: Vec::new(),
         quiet_mounts: Vec::new(),
         pids: Default::default(),
+        fence: None,
     }
 }
 

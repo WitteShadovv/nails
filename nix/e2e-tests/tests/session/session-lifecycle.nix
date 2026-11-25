@@ -100,19 +100,6 @@ in
         return gaps
 
 
-    def peek_decoy(decoy_dev, command):
-        """Run `command` against a read-only mount of the decoy root at PEEK.
-
-        The decoy superblock is still mounted read-write (it is the overlay's
-        lower), so a plain read-only mount would fail with EBUSY: mount it,
-        then make this mount read-only."""
-        machine.succeed(
-            f"mkdir -p {PEEK} && mount {decoy_dev} {PEEK} && mount -o remount,bind,ro {PEEK}"
-        )
-        try:
-            return machine.execute(command)
-        finally:
-            machine.succeed(f"umount {PEEK} && rmdir {PEEK}")
 
 
     machine.start()
@@ -211,8 +198,11 @@ in
     with subtest("a hidden write lands in the upper, never on the decoy"):
         machine.succeed(f"echo {canary} > /root/hidden-canary && sync")
         assert machine.succeed(f"cat {UPPER}/root/hidden-canary").strip() == canary
-        rc, _ = peek_decoy(decoy_dev, f"test ! -e {PEEK}/root/hidden-canary")
-        assert rc == 0, "the hidden file is on the decoy filesystem"
+        # The write fence keeps the decoy's filesystem read-only for the whole
+        # session: a read-write mount of it is refused (a read-only one reuses
+        # the live superblock), and the next boot shows the decoy without the
+        # session's files.
+        machine.fail(f"mkdir -p {PEEK} && mount -t ext4 -o rw {decoy_dev} {PEEK}")
         machine.succeed("mountpoint -q /mnt/data")
 
     with subtest("the hidden session logs into the runtime journal the decoy wrote"):

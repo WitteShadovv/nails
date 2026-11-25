@@ -74,6 +74,7 @@ fn armed_step(
     Env {
         selinux,
         start,
+        fence: None,
         ..world.env(true, 1_000)
     }
 }

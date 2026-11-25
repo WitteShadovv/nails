@@ -1336,24 +1336,38 @@ not enough: on a filesystem that was not cleanly unmounted, ext4 replays its
 journal and cleans up orphaned files, btrfs replays its tree log, and XFS and
 f2fs recover their logs, all onto the disk, read-only mount or not.
 
-- **A device that `findmnt` shows mounted already.** In a hidden session that
-  is the decoy root, mounted read-write beneath the session, and each
-  filesystem the session carries. A second mount of such a device shares its
-  filesystem, so nothing is replayed onto the disk. A read-only mount would
-  make that filesystem read-only, which ext4, XFS and f2fs refuse as busy
-  (btrfs serves a subvolume read-only beside it), and a mount you make by hand
-  is outside the fstab policy: what is written to it lands on the decoy disk.
-  Mount the device again and make that mount read-only right away, or, where
-  `findmnt` shows its filesystem mounted read-only already, mount it with
-  `-o ro`:
+- **In a hidden session, a filesystem the decoy mounted at entry**: the
+  decoy root and each filesystem the session carries. The
+  [write fence](threat-model.md#the-write-fence) keeps it read-only at its
+  superblock and keeps its device closed, so a read-write mount is refused.
+  Mount it read-only and name its type: the kernel then finds the live
+  read-only filesystem by its device number without opening the device, and
+  nothing is replayed onto the disk. A mount without `-t` fails, since
+  `mount` cannot read the device to find out the type.
+
+  ```bash
+  sudo mount -t ext4 -o ro /dev/sda2 /mnt/decoy
+  ```
+
+  A filesystem the session masked, or a `noauto` entry, on a disk the decoy
+  mounts at entry cannot be mounted in the session at all: its device is
+  closed. Scan it from the decoy after the session, or from another machine.
+
+- **On the decoy, a device that `findmnt` shows mounted already**, the decoy
+  root among them. A second mount of such a device shares its filesystem, so
+  nothing is replayed onto the disk. A read-only mount would make that
+  filesystem read-only, which ext4, XFS and f2fs refuse as busy (btrfs serves
+  a subvolume read-only beside it). Mount the device again and make that mount
+  read-only right away, or, where `findmnt` shows its filesystem mounted
+  read-only already, mount it with `-o ro`:
 
   ```bash
   sudo mount /dev/sda2 /mnt/decoy && sudo mount -o remount,bind,ro /mnt/decoy
   ```
 
-- **Any other device**, in a hidden session or not: the disk attached to
-  another machine, an image, and in a session each filesystem of the decoy it
-  did not mount, such as a `noauto` entry or a partition it masked. Its first
+- **Any other device**: the disk attached to another machine, an image, and
+  on the decoy each filesystem it does not mount, such as a `noauto` entry.
+  Its first
   mount would be read-write, so make its device read-only first, so that every
   write to it fails, then mount it with the option that skips the replay:
   `ro,noload` for ext4, `ro,rescue=nologreplay` for btrfs and `ro,norecovery`
@@ -1431,7 +1445,9 @@ it is a copy of the decoy's files or the wrong folder: mount the image before
 you scan it.
 
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
-the raw disk or image behind the mounted root:
+the raw disk or image behind the mounted root. In a hidden session the write
+fence keeps the decoy's disk closed, so `--disk` reads nothing there: run it on
+the decoy, or on an image of its disk.
 
 ```bash
 sudo /mnt/data/nails verify --offline --root /mnt/decoy --examiner --disk /dev/sda
@@ -1466,7 +1482,7 @@ desktop, before you rely on them:
 sudo /mnt/data/nails rehearse plant   # 1. inside an active hidden session
 sudo /mnt/data/nails deactivate       # 2. end the session as usual (it powers off)
 # power on, and on the decoy unlock and mount the hidden volume again, then:
-sudo /mnt/data/nails rehearse scan    # 3. from the decoy, or a later session
+sudo /mnt/data/nails rehearse scan    # 3. from the decoy, after the power-off
 sudo /mnt/data/nails rehearse reset   # remove the rehearsal when done
 ```
 
@@ -1489,8 +1505,10 @@ tells by the device mounted at the hidden root, so without `--device` or
 `--offline` it refuses while a second filesystem is mounted over that root, as
 `plant` does: it cannot tell which of the two is the volume. It refuses to run
 inside the session the canary was planted in, which `plant` records by the
-session's entry time: on the decoy after the session's power-off, or in a
-later session, the scan runs, on every systemd version
+session's entry time. Run it on the decoy after the session's power-off: in a
+later session the write fence keeps the decoy's disks closed, so the scan
+cannot read them and reports them as not checked (exit `9`). It runs on every
+systemd version
 (`--allow-same-boot` overrides the check, but a scan in the planting session
 proves little). Exit
 `0` means the token was not found,

@@ -1055,3 +1055,26 @@ mod kernel_tests {
 fn the_real_host_finds_no_device_without_its_node() {
     assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
 }
+
+#[test]
+fn pid_1_holding_a_deleted_library_or_cache_is_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let pid = dir.path();
+    std::fs::create_dir_all(pid.join("fd")).unwrap();
+    std::fs::write(
+        pid.join("maps"),
+        "7f00-7f01 r--p 00000000 00:21 12 /usr/lib/libc.so.6\n\
+         7f04-7f05 rw-s 00000000 00:01 14 /memfd:x (deleted)\n",
+    )
+    .unwrap();
+    assert!(!pid1_holds_deleted(pid));
+    std::fs::write(
+        pid.join("maps"),
+        "7f00-7f01 r--p 00000000 00:21 12 /etc/ld.so.cache (deleted)\n",
+    )
+    .unwrap();
+    assert!(pid1_holds_deleted(pid));
+    std::fs::write(pid.join("maps"), "").unwrap();
+    std::os::unix::fs::symlink("/var/lib/x (deleted)", pid.join("fd/3")).unwrap();
+    assert!(pid1_holds_deleted(pid));
+}

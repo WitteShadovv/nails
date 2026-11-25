@@ -116,6 +116,7 @@ impl World {
             detach: detached,
             selinux: &crate::whole_root::selinux::KERNEL,
             start: crate::whole_root::program_label::Started::by_hand(),
+            fence: None,
         }
     }
     fn write_plan(&self, plan: &Plan) {
@@ -1270,4 +1271,142 @@ fn the_quieting_dropin_goes_with_the_other_dropins() {
         fs::read_to_string(theirs.join(STOP_GUARD_NAME)).unwrap(),
         "[Mount]\nLogLevelMax=debug\n"
     );
+}
+
+/// A fence kernel that does nothing but count its attaches, or fails them.
+#[derive(Debug)]
+struct StubFence {
+    fail: bool,
+    attached: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::whole_root::fence::FenceKernel for StubFence {
+    fn sync(&self) {}
+    fn swaps(&self) -> Vec<crate::whole_root::fence::Swap> {
+        Vec::new()
+    }
+    fn reconfigure(
+        &self,
+        _: &crate::whole_root::fence::Superblock,
+        _: &Path,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn superblock_read_only(&self, _: &crate::whole_root::fence::Superblock) -> Option<bool> {
+        Some(true)
+    }
+    fn device_read_only(&self, _: &crate::whole_root::fence::Device) -> bool {
+        false
+    }
+    fn set_read_only(&self, _: &crate::whole_root::fence::Device) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn discard_max(&self, _: &Path) -> std::io::Result<u64> {
+        Ok(0)
+    }
+    fn discard_off(&self, _: &Path) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn attach(
+        &self,
+        _: &crate::whole_root::fence::Rules,
+    ) -> std::io::Result<crate::whole_root::fence::Program> {
+        if self.fail {
+            return Err(std::io::Error::other("no program"));
+        }
+        self.attached
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(crate::whole_root::fence::Program {
+            id: 1,
+            tag: "00".into(),
+        })
+    }
+    fn crash_log_backend(&self) -> Option<String> {
+        None
+    }
+    fn efi_crash_log_stoppable(&self) -> bool {
+        true
+    }
+    fn stop_efi_crash_log(&self) -> std::io::Result<()> {
+        Ok(())
+    }
+    fn probe(&self, _: &crate::whole_root::fence::Rules) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+static FENCE_UP: StubFence = StubFence {
+    fail: false,
+    attached: std::sync::atomic::AtomicUsize::new(0),
+};
+static FENCE_REFUSED: StubFence = StubFence {
+    fail: true,
+    attached: std::sync::atomic::AtomicUsize::new(0),
+};
+static LEFTOVERS_ENDED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn count_leftovers(_: Option<&Path>) -> Vec<u32> {
+    LEFTOVERS_ENDED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    Vec::new()
+}
+
+/// `env` with a fence through `kernel` over an empty sysfs in `world`.
+fn with_fence(world: &World, env: &mut Env, kernel: &'static StubFence) {
+    let sys = world.dir.path().join("sys");
+    fs::create_dir_all(&sys).unwrap();
+    env.fence = Some(FencePlaces {
+        sys: disk_guard::Sysfs { root: sys },
+        kernel,
+        leftovers: count_leftovers,
+    });
+}
+
+/// An entry ready to go with the fence's record of one decoy disk.
+fn fenced_entry(world: &World) -> Plan {
+    let mut plan = armed(Direction::Enter);
+    plan.fence = Some(crate::whole_root::fence::FenceSpec {
+        disks: vec![disk_guard::DevNum { major: 8, minor: 0 }],
+        ..Default::default()
+    });
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    plan
+}
+
+#[test]
+fn the_entry_ends_the_leftovers_and_puts_the_fence_up() {
+    let world = World::new();
+    fenced_entry(&world);
+    let mut env = world.env(true, 1_010);
+    with_fence(&world, &mut env, &FENCE_UP);
+    let ended = LEFTOVERS_ENDED.load(std::sync::atomic::Ordering::SeqCst);
+    let attached = FENCE_UP.attached.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(goes_on(&world, &env), Outcome::Entered);
+    assert!(LEFTOVERS_ENDED.load(std::sync::atomic::Ordering::SeqCst) > ended);
+    assert_eq!(
+        FENCE_UP.attached.load(std::sync::atomic::Ordering::SeqCst),
+        attached + 1
+    );
+    assert_eq!(world.plan().entered_at, Some(1_010));
+}
+
+#[test]
+fn a_fence_that_does_not_go_up_ends_the_session_instead_of_entering() {
+    let world = World::new();
+    fenced_entry(&world);
+    let mut env = world.env(true, 1_010);
+    with_fence(&world, &mut env, &FENCE_REFUSED);
+    let why = ends(&world, &env);
+    assert!(why.contains("could not be made read-only"), "{why}");
+    assert_eq!(world.plan().entered_at, None);
+}
+
+#[test]
+fn an_entry_without_the_fence_s_record_ends_the_session() {
+    let world = World::new();
+    ready_entry(&world);
+    let mut env = world.env(true, 1_010);
+    with_fence(&world, &mut env, &FENCE_UP);
+    let why = ends(&world, &env);
+    assert!(why.contains("recorded no decoy disk"), "{why}");
 }

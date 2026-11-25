@@ -501,7 +501,7 @@ pub struct VerifyArgs {
 STEPS:
   1. In an active hidden session:     nails rehearse plant
   2. Deactivate as usual, then on the decoy unlock and mount the hidden volume
-  3. From the decoy, or a later session: nails rehearse scan
+  3. From the decoy, after the power-off: nails rehearse scan
   Then `nails rehearse reset` removes the rehearsal from the hidden volume.
 
 EXAMPLES:

@@ -104,6 +104,25 @@ fn udevd_s_processes_are_left_to_pid_1_and_every_other_leftover_ended() {
     assert_eq!(to_end(&proc, 77), [42, 43, 44, 45, 46]);
 }
 
+#[test]
+fn the_entry_ends_udevd_too_before_the_write_fence() {
+    // A udevd started before a package update maps files the update deleted,
+    // which keeps the decoy's root from going read-only; nothing needs it
+    // before the entry's switch.
+    let world = tempfile::tempdir().unwrap();
+    let proc = world.path().join("proc");
+    for (pid, cgroup) in [
+        (40, "0::/system.slice/systemd-udevd.service\n"),
+        (41, "0::/system.slice/systemd-udevd.service/udev\n"),
+        (42, "0::/system.slice/lngr.service\n"),
+    ] {
+        process(&proc, pid, 'S', 0, 0, b"p\0");
+        fs::write(proc.join(pid.to_string()).join("cgroup"), cgroup).unwrap();
+    }
+    assert_eq!(to_end_at_entry(&proc, 77), [40, 41, 42]);
+    assert_eq!(to_end(&proc, 77), [42]);
+}
+
 /// A fake `systemctl` that appends its arguments to `calls`, lists `active`
 /// for `list-units` and fails for `failing` as its second argument.
 fn listing_systemctl(dir: &Path, calls: &Path, active: &str, failing: &str) -> PathBuf {

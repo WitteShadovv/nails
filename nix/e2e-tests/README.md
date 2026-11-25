@@ -582,6 +582,21 @@ hidden session (a hidden session never goes back to the decoy) with
   has the timeout guard (see `session-switch-timeout`) from the activation's
   reload on, the killed activation leaves it, and every one of the others
   removes it and leaves PID 1 without it;
+- `session-crash-log-fence`: under OVMF, a panic on the plain decoy leaves a
+  crash record (the control), and in the hidden session pstore's EFI backend
+  is unregistered, so the same panic leaves no EFI variable, nothing in
+  `/sys/fs/pstore` and nothing below `/var/lib/systemd/pstore` after the next
+  cold boot;
+- `session-decoy-write-fence`: the write fence on SCSI disks, with the hidden
+  volume on a partition of a disk that also holds a decoy ext4 and btrfs: in
+  the session every decoy device and superblock is read-only, opening a decoy
+  device (reading included), `dd`, `blockdev --setrw`, `mknod`, a read-write
+  mount, a btrfs subvolume mount and SG_IO writes through the disk, its sg and
+  bsg nodes fail, a read-only mount with its type given reuses the read-only
+  superblock, the decoy disks' write counters do not move while the hidden
+  partition's grows, and after the session's power-off the decoy has none of
+  the session's files and the control block SG_IO wrote on the decoy is
+  intact;
 - `session-refused-switch`: an entry the transition refuses (a unit's stop
   hides the next root's os-release during the decoy's shutdown) powering the
   machine off for real (the step fails closed), the cold boot coming up on the

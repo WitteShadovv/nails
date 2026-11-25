@@ -61,7 +61,9 @@ pub const GUARD_ARG: &str = "guard-device";
 pub const RECORD_NAME: &str = "read-only-devices";
 
 /// A block device number.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct DevNum {
     /// Major number.
     pub major: u32,
@@ -87,7 +89,8 @@ impl DevNum {
         }
     }
 
-    fn text(self) -> String {
+    /// `major:minor`.
+    pub fn text(self) -> String {
         format!("{}:{}", self.major, self.minor)
     }
 }
@@ -123,7 +126,7 @@ pub fn remove_rule(run: &Path) {
 }
 
 /// The block device a path names, if it is one.
-fn block_device(path: &Path) -> Option<DevNum> {
+pub(crate) fn block_device(path: &Path) -> Option<DevNum> {
     let meta = std::fs::metadata(path).ok()?;
     meta.file_type()
         .is_block_device()
@@ -157,16 +160,16 @@ impl Sysfs {
         }
     }
 
-    fn dir(&self, dev: DevNum) -> Option<PathBuf> {
+    pub(crate) fn dir(&self, dev: DevNum) -> Option<PathBuf> {
         std::fs::canonicalize(self.root.join("dev/block").join(dev.text())).ok()
     }
 
-    fn dev_in(dir: &Path) -> Option<DevNum> {
+    pub(crate) fn dev_in(dir: &Path) -> Option<DevNum> {
         DevNum::parse(&std::fs::read_to_string(dir.join("dev")).ok()?)
     }
 
     /// The disk a partition is on, or `None` for a whole disk.
-    fn parent(&self, dev: DevNum) -> Option<DevNum> {
+    pub(crate) fn parent(&self, dev: DevNum) -> Option<DevNum> {
         let dir = self.dir(dev)?;
         if !dir.join("partition").exists() {
             return None;
@@ -175,7 +178,7 @@ impl Sysfs {
     }
 
     /// The devices this one is stacked on (device-mapper, md).
-    fn slaves(&self, dev: DevNum) -> Vec<DevNum> {
+    pub(crate) fn slaves(&self, dev: DevNum) -> Vec<DevNum> {
         let Some(dir) = self.dir(dev) else {
             return Vec::new();
         };
@@ -262,7 +265,7 @@ pub enum Guarded {
 }
 
 #[allow(unsafe_code)]
-fn set_read_only(node: &Path, read_only: bool) -> io::Result<()> {
+pub(crate) fn set_read_only(node: &Path, read_only: bool) -> io::Result<()> {
     use rustix::ioctl::{Setter, ioctl, opcode};
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -316,7 +319,7 @@ pub fn guard(
 }
 
 /// The device node of `name` from its `uevent` (`DEVNAME=`), else `/dev/<name>`.
-fn node_of(sys: &Sysfs, name: &str) -> PathBuf {
+pub(crate) fn node_of(sys: &Sysfs, name: &str) -> PathBuf {
     std::fs::read_to_string(sys.root.join("class/block").join(name).join("uevent"))
         .ok()
         .and_then(|text| {

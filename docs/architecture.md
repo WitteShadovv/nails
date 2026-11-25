@@ -30,9 +30,13 @@ hidden volume, and nothing is installed on the decoy. systemd then stops all of
 userspace, switches root into the overlay and starts a fresh userspace there:
 every process of the hidden session starts inside the overlay, so there is
 nothing to find, restart or kill, and whatever it writes through the decoy's
-mounted filesystems lands in an upper on the hidden volume. The few writes that
-go around the mount layer (a disk the session mounts itself, EFI variables) are
-listed under the [residual channels](threat-model.md#residual-channels). The
+mounted filesystems lands in an upper on the hidden volume. Writes that go
+around the mount layer (a device node, SCSI or NVMe commands, a new mount of a
+decoy partition, EFI variables) meet the
+[write fence](threat-model.md#the-write-fence): for the whole session the
+decoy's disks are read-only in the kernel and closed to every process. What it
+does not cover is listed there and under the
+[residual channels](threat-model.md#residual-channels). The
 kernel, its modules, the device-mapper mappings and `/run` survive the switch.
 There is no way back into the decoy's kernel: every session ends in a
 power-off, and the decoy boots afresh at the next power-on.

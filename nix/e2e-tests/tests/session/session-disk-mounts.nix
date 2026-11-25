@@ -25,8 +25,9 @@
 #      block layer once the session's watcher has started (its first sweep),
 #      a disk hot-plugged during the session is made read-only by the udev
 #      rule alone (the watcher, the fallback, is stopped first), a mount comes
-#      up read-only and every write fails, and the decoy root and the hidden
-#      backend stay writable. The
+#      up read-only and every write fails, and the hidden backend stays
+#      writable, while the decoy root's disk is the write fence's and reads
+#      read-only for the whole session. The
 #      third disk, mounted read-only below the hidden root and set writable
 #      again by hand, is set read-only again by the watcher's sweep. After the
 #      power-off and the cold boot every disk is writable again, the second
@@ -195,9 +196,15 @@ in
         machine.succeed(f"test -s {RULE}")
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {EXTRA})\" = 1", timeout=30)
         machine.succeed(f"test -s {RECORD}")
-        # The session's own devices stay writable.
-        for device in (root_device, "/dev/disk/by-id/virtio-data", "/dev/mapper/data"):
+        # The session's own devices stay writable. The decoy root's is the
+        # write fence's: read-only, and closed to every process, so its flag
+        # is read from sysfs.
+        for device in ("/dev/disk/by-id/virtio-data", "/dev/mapper/data"):
             assert not is_read_only(device), f"{device} must stay writable"
+        root_name = machine.succeed(f"basename $(readlink -f {root_device})").strip()
+        assert machine.succeed(f"cat /sys/class/block/{root_name}/ro").strip() == "1", (
+            f"{root_device} is not under the write fence"
+        )
         machine.succeed("touch /mnt/data/probe-2 && rm /mnt/data/probe-2")
 
     with subtest("the entry keeps the session's line below the hidden root off and warns"):

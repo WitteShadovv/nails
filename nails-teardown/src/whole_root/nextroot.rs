@@ -255,7 +255,7 @@ pub fn make_below_private(target: &Path) -> io::Result<()> {
 /// in `statx` (Linux before 5.8) every path is taken to reach its mount. The
 /// lookup never triggers an automount, as the propagation change itself
 /// does not: nothing would answer one below the next root.
-fn reaches(path: &Path, id: i32) -> bool {
+pub(crate) fn reaches(path: &Path, id: i32) -> bool {
     use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
     match statx(CWD, path, AtFlags::NO_AUTOMOUNT, StatxFlags::MNT_ID) {
         Ok(stat) if stat.stx_mask & StatxFlags::MNT_ID.bits() != 0 => {

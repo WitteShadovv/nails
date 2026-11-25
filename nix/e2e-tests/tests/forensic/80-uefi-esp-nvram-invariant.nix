@@ -211,6 +211,18 @@ in
     machine.fail("touch /boot/hidden-write")
     print("✓ The ESP is read-only in the hidden session")
 
+    # The write fence: efivarfs is read-only for the whole session, so a
+    # program that writes an EFI variable gets an error.
+    efivars_opts = machine.succeed(
+        "findmnt -no FS-OPTIONS /sys/firmware/efi/efivars"
+    ).strip().split(",")
+    assert efivars_opts[0] == "ro", efivars_opts
+    machine.fail(
+        "printf '\\007\\000\\000\\000\\001' > "
+        "/sys/firmware/efi/efivars/HiddenWrite-8be4df61-93ca-11d2-aa0d-00e098032b8c"
+    )
+    print("✓ efivarfs is read-only in the hidden session")
+
     canonical_deactivate(headless_config, "deactivate")
     print("✓ Deactivated: powered off, and the decoy booted cold")
 
