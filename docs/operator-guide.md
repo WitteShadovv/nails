@@ -1804,7 +1804,8 @@ holds it can read as clean:
 - an eCryptfs mount that was moved (`mount --move`) after it was made, or
   whose folder's filesystem was moved or detached (`umount -l`), since the
   scan places the folder by the paths the mount table shows;
-- every eCryptfs folder in an `--offline` scan, which reads no mount table;
+- every eCryptfs folder in an `--offline` scan, whose targets never use the mount
+  table;
 - a device that a program serves from the storage of an eCryptfs folder (an
   NBD or ublk device), which sysfs does not link to that storage, and one that
   reaches the image file holding such a folder by another path than its loop
@@ -3140,7 +3141,7 @@ then: `deactivate` refuses before it asks anything, with exit 6, and a plain
 and names `/proc/self/mountinfo`). Without the table NAILS cannot tell the
 hidden session from the decoy, so nothing that needs it goes on: `activate`,
 `deactivate`, `discard`, `recover` and the `rehearse` steps refuse (an
-`--offline` scan, which reads only the images it is given, still runs), the last
+`--offline` scan, which scans only the images it is given, still runs), the last
 step before a switch refuses the switch and on the way back powers off first,
 and `emergency` with a session plan powers off at once (`--reboot` reboots). The
 window refuses a menu entry's start, and opened from a terminal it takes itself

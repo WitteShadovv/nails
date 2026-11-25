@@ -595,8 +595,9 @@ pub struct RehearseScanArgs {
     /// f2fs, vfat, exFAT or swap image that ends before its filesystem or swap
     /// area does, or a whole-disk image that ends before a partition its table
     /// lists or before the disk its GPT was written for. An empty image is not
-    /// scanned. An offline scan reads no mount table, so it does not see an
-    /// eCryptfs folder: scan a live device with --device instead.
+    /// scanned. The targets of an offline scan never use the mount table, so
+    /// it does not see an eCryptfs folder: scan a live device with --device
+    /// instead.
     #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub images: Vec<std::path::PathBuf>,
 
