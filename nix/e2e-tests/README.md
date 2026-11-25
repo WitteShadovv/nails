@@ -1469,9 +1469,10 @@ Arch:
   of it with pacman's fix and the second entry show the advisory;
 - the zram checks run only where the cold boot set up zram or the image
   ships zram-generator. arch-boxes does neither, so they do not run there;
-- the image has no Python, so the guest runs the driver's from the Nix store
-  the harness mounts, to read the kernel log and to drive the failed console
-  logins.
+- the guest runs the driver's Python from the Nix store the harness mounts,
+  to read the kernel log and to drive the failed console logins, so the gate
+  does not depend on a Python in the image (the run records whether the
+  image has one).
 
 It writes `<image>-gate.json` and `<image>-gate.kmsg.txt`, and fails at its
 end when an assertion does not hold.

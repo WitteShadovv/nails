@@ -37,10 +37,12 @@ with a plain soft-reboot. What differs is what Arch is:
 - zram: arch-boxes sets up no zram device and has no zram-generator. The
   cold boot decides (:func:`zram_applies`): where it set zram up, every zram
   check of the Fedora gate runs; where not, none does and the run records
-  why. The archinstall image, which sets up zram swap, is where they apply;
-- the image has no Python, so the guest runs the driver's own (``python``
-  of the settings) from the Nix store the harness mounts, for the reading
-  of the kernel log, the failed console logins and the rehearsal's state.
+  why. An archinstall image with its default zram swap would run them;
+- the guest runs the driver's own Python (``python`` of the settings) from
+  the Nix store the harness mounts, for the reading of the kernel log, the
+  failed console logins and the rehearsal's state, so the gate does not
+  depend on a Python in the image. The run records whether the image has
+  one (``image-python``).
 
 The run writes ``<image>-gate.json``, ``<image>-gate.raw.json`` and
 ``<image>-gate.kmsg.txt`` into the directory ``NAILS_GATE_OUT`` names, and
@@ -435,6 +437,7 @@ class ArchGate(fg.Gate):
         self.mark("prep-decoy")
         self.sh("hidden-root", self.hidden_root)
         self.enforcing("on the decoy before the first entry")
+        self.fact("image-python", "command -v python3 python || echo none")
         self.fact(
             "versions",
             "pacman -Q linux systemd util-linux pam cryptsetup audit sudo 2>&1; "

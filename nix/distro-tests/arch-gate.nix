@@ -91,8 +91,9 @@ let
     name: entry: entry.osId == "arch" && expectations ? ${name} && distroVm.imageAvailable entry
   ) images;
 
-  # The image has no Python: the guest runs the driver's, from the Nix store
-  # the harness mounts, to read the kernel log and drive a failed login.
+  # The guest runs the driver's Python, from the Nix store the harness mounts,
+  # to read the kernel log and drive a failed login, so the gate does not
+  # depend on a Python in the image.
   python = "${pkgs.python3}/bin/python3";
 
   # A run: two power cycles, the decoy's checks, a plain soft-reboot, two
