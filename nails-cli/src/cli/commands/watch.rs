@@ -625,7 +625,7 @@ fn tripwire_missing_notice() -> Notification {
     Notification {
         title: "Disk write monitor not running".to_string(),
         body: "The disk write monitor that was turned on could not start, so writes to the \
-               system disk are not watched in this session."
+               system disk are not watched."
             .to_string(),
         urgency: "critical".to_string(),
         icon: Some("drive-harddisk".to_string()),
