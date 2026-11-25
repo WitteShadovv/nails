@@ -239,6 +239,21 @@ def installed_version(listing: str) -> str | None:
     return None
 
 
+def fstab_items(message: str) -> list[str]:
+    """What fstab-policy's warning names, each as ``<path>: <verdict>``
+    without its reason, sorted: the items between ``hidden root:`` and the
+    sentence after them."""
+    _, _, rest = message.partition("hidden root: ")
+    rest = rest.split(". Masked and skipped", 1)[0]
+    items = []
+    for item in rest.split("; "):
+        path, _, verdict = item.partition(": ")
+        if not path or not verdict:
+            continue
+        items.append(f"{path.strip()}: {verdict.split(' (', 1)[0].strip()}")
+    return sorted(items)
+
+
 def zram_applies(cold: str, generator: bool) -> bool:
     """Whether the zram checks apply: the cold boot (:data:`fedora_gate.ZRAM_STATE`)
     set up a zram device or a swap on one, or the image ships zram-generator."""
@@ -280,6 +295,18 @@ class ArchGate(fg.Gate):
         # The kernel's security modules at the first read, which every root
         # must run.
         self.first_lsms: list[str] | None = None
+        # What fstab-policy must say of the image's own layout on the prepared
+        # decoy: its warning is the image's, as long as it names exactly
+        # these (:func:`fstab_items`).
+        self.fstab_policy = sorted(
+            str(item) for item in settings.get("fstabPolicy", [])
+        )
+        if self.fstab_policy:
+            self.harness_warnings = {
+                **HARNESS_WARNINGS,
+                "fstab-policy": "the image's own filesystems, which the hidden "
+                "session masks or binds read-only: " + "; ".join(self.fstab_policy),
+            }
 
     # --- the kernel's security state -------------------------------------
 
@@ -469,6 +496,21 @@ class ArchGate(fg.Gate):
             and fg.judged_row(rows, "decoy-persistence")
             and "coredump" not in text,
             row if found else "not judged: check never named them",
+        )
+
+    def clean_check(self) -> None:
+        """check on the prepared decoy, as Fedora's gate judges it, with
+        fstab-policy's warning held to what the image's own layout brings."""
+        super().clean_check()
+        row = self.facts.get("clean-check-warnings", {}).get("fstab-policy")
+        if not self.fstab_policy:
+            return
+        named = fstab_items(str((row or {}).get("message", "")))
+        self.check(
+            "fstab-policy names on the prepared decoy what the image's layout "
+            "brings, and nothing else",
+            named == self.fstab_policy,
+            {"expected": self.fstab_policy, "named": named, "row": row},
         )
 
     def auditd_off(self) -> None:

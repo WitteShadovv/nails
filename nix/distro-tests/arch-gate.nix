@@ -65,13 +65,24 @@ let
   recordsModule = pkgs.writeTextDir "records.py" (builtins.readFile ../e2e-tests/lib/records.py);
 
   # What an image's gate expects of it beyond the image: whether the family
-  # table validates it (the test-only build admits the rolling release), and
+  # table validates it (the test-only build admits the rolling release),
   # whether its PAM stack records a login in lastlog2 (Arch's system-login
-  # runs pam_lastlog2, as the staged records scenario shows on arch-boxes).
+  # runs pam_lastlog2, as the staged records scenario shows on arch-boxes),
+  # and what fstab-policy's warning on the prepared decoy names of the image's
+  # own layout, each as "<path>: <verdict>": arch-boxes's swap line, made
+  # noauto, the ESP systemd's GPT auto-generator mounts on demand at /efi,
+  # and /var/lib/machines, for which systemd ships a mount unit that is not
+  # mounted at check time.
   expectations = {
     arch-boxes = {
       validated = true;
       lastlog2 = true;
+      fstabPolicy = [
+        "/swap/swapfile: masked"
+        "/efi: read-only"
+        "/efi: masked"
+        "/var/lib/machines: masked"
+      ];
     };
   };
 

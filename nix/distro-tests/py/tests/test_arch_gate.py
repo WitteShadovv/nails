@@ -148,6 +148,37 @@ class GateSettingsTest(unittest.TestCase):
             self.assertIn(f"'{key} = {value}'", ag.PREPARE_DECOY)
 
 
+class FstabPolicyTest(unittest.TestCase):
+    MESSAGE = (
+        "decoy filesystems in the hidden root: /swap/swapfile: masked (swap would "
+        "take hidden RAM onto a decoy disk); /efi: read-only; /efi: masked (the "
+        "session puts the filesystem behind it in place); /var/lib/machines: "
+        "masked (not mounted now; the hidden session would mount it read-write). "
+        "Masked and skipped filesystems are not available in the hidden session."
+    )
+
+    def test_reads_what_the_warning_names(self) -> None:
+        self.assertEqual(
+            ag.fstab_items(self.MESSAGE),
+            [
+                "/efi: masked",
+                "/efi: read-only",
+                "/swap/swapfile: masked",
+                "/var/lib/machines: masked",
+            ],
+        )
+        self.assertEqual(ag.fstab_items(""), [])
+
+    def test_the_image_s_layout_is_allowed_only_where_the_settings_name_it(
+        self,
+    ) -> None:
+        self.assertNotIn("fstab-policy", gate().harness_warnings)
+        named = gate(fstabPolicy=["/efi: read-only", "/efi: masked"])
+        self.assertIn("fstab-policy", named.harness_warnings)
+        self.assertEqual(named.fstab_policy, ["/efi: masked", "/efi: read-only"])
+        self.assertNotIn("fstab-policy", ag.HARNESS_WARNINGS)
+
+
 class DriftTest(unittest.TestCase):
     def test_the_package_info(self) -> None:
         info = ag.pkginfo("2", 1700000000)
