@@ -172,7 +172,14 @@ fn write_runtime_populates_the_runtime_directory() {
         ..nails_teardown::test_support::FakeSelinux::targeted()
     };
 
-    write_runtime(&paths, &inputs, &snapshot, &untouched).unwrap();
+    write_runtime(
+        &paths,
+        &inputs,
+        &snapshot,
+        &untouched,
+        Path::new(SELF_MOUNTINFO),
+    )
+    .unwrap();
     assert!(untouched.labels_written().is_empty() && untouched.questions().is_empty());
 
     let runtime = paths.runtime();
@@ -196,6 +203,38 @@ fn write_runtime_populates_the_runtime_directory() {
     assert_eq!(mode, 0o700);
 }
 
+/// The entry reads the mount table a second time, after the `/run` copy, for
+/// the lines of libmount's utab the way back gives back: a table it cannot
+/// read stops the entry, never one taken for empty, which would give the
+/// decoy none of its lines back. Nothing of the way back's record is written
+/// then.
+#[test]
+fn write_runtime_stops_where_the_mount_table_cannot_be_read() {
+    let run = tempfile::tempdir().unwrap();
+    let hidden = tempfile::tempdir().unwrap();
+    let binary = run.path().join("nails-running-binary");
+    std::fs::write(&binary, b"the running binary bytes").unwrap();
+    let paths = Paths {
+        root: PathBuf::from("/"),
+        run: run.path().to_path_buf(),
+    };
+    let inputs = minimal_inputs(hidden.path(), &binary, None);
+    let snapshot = Snapshot::take(&paths.run);
+    let selinux = nails_teardown::test_support::FakeSelinux {
+        write_error: Some(rustix::io::Errno::PERM.raw_os_error()),
+        ..nails_teardown::test_support::FakeSelinux::targeted()
+    };
+    let missing = run.path().join("no-mountinfo");
+
+    let error = write_runtime(&paths, &inputs, &snapshot, &selinux, &missing).unwrap_err();
+    assert!(error.to_string().contains("no-mountinfo"), "{error}");
+    let runtime = paths.runtime();
+    for name in [SNAPSHOT_NAME, UTAB_NAME, UTAB_MOUNTS_NAME] {
+        assert!(!runtime.join(name).exists(), "{name}");
+    }
+    assert!(!paths.binary_copy().exists());
+}
+
 /// Where the host may run SELinux, the RAM copy takes the label of the
 /// system's programs as it is written; a copy that does not read it back
 /// refuses the entry.
@@ -215,7 +254,14 @@ fn write_runtime_labels_the_copy_where_the_host_may_run_selinux() {
     let snapshot = Snapshot::take(&paths.run);
 
     let selinux = FakeSelinux::targeted();
-    write_runtime(&paths, &inputs, &snapshot, &selinux).unwrap();
+    write_runtime(
+        &paths,
+        &inputs,
+        &snapshot,
+        &selinux,
+        Path::new(SELF_MOUNTINFO),
+    )
+    .unwrap();
     assert_eq!(
         selinux.labels_written(),
         [b"system_u:object_r:bin_t:s0\0".to_vec()]
@@ -225,7 +271,14 @@ fn write_runtime_labels_the_copy_where_the_host_may_run_selinux() {
         write_error: Some(rustix::io::Errno::ACCESS.raw_os_error()),
         ..FakeSelinux::targeted()
     };
-    let error = write_runtime(&paths, &inputs, &snapshot, &refused).unwrap_err();
+    let error = write_runtime(
+        &paths,
+        &inputs,
+        &snapshot,
+        &refused,
+        Path::new(SELF_MOUNTINFO),
+    )
+    .unwrap_err();
     let NailsError::PreFlightCheckFailed(failures) = &error else {
         panic!("expected the program label's refusal, got {error:?}");
     };

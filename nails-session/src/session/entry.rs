@@ -484,6 +484,7 @@ fn write_runtime(
     inputs: &EntryInputs<'_>,
     snapshot: &Snapshot,
     selinux: &dyn nails_teardown::whole_root::selinux::Selinux,
+    mountinfo: &Path,
 ) -> Result<()> {
     let runtime = paths.runtime();
     std::fs::create_dir_all(&runtime).map_err(|e| io(&runtime, e))?;
@@ -494,8 +495,8 @@ fn write_runtime(
     // back finds each one again where it was (`utab::restored_lines`).
     // Byte for byte, and never taken for empty: without these lines the way
     // back could not give the decoy's utab lines back, so the entry stops.
-    let mountinfo = std::fs::read(SELF_MOUNTINFO).map_err(|e| io(Path::new(SELF_MOUNTINFO), e))?;
-    let named = utab::named_mounts(&saved_utab, &mountinfo);
+    let table = std::fs::read(mountinfo).map_err(|e| io(mountinfo, e))?;
+    let named = utab::named_mounts(&saved_utab, &table);
     for (name, bytes) in [
         (SNAPSHOT_NAME, snapshot.to_text()),
         (UTAB_NAME, saved_utab),
@@ -611,7 +612,8 @@ fn build(
     activation_step(ActivationPhase::Runtime, building);
     super::program_label::require(inputs.program_label, host.selinux())?;
     let snapshot = Snapshot::take(&paths.run);
-    write_runtime(paths, inputs, &snapshot, host.selinux())?;
+    let mountinfo = Path::new(SELF_MOUNTINFO);
+    write_runtime(paths, inputs, &snapshot, host.selinux(), mountinfo)?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
     plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
