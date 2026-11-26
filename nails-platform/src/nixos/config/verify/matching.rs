@@ -69,13 +69,12 @@ fn first(markers: &[Marker], views: &[View]) -> Option<(ReferenceKind, Range<usi
 /// matches. Each line is matched as the file spells it and, when its strings
 /// hold an escape, again as Nix reads them, with what the scanner finds in
 /// it read by quotes and brackets alone ([`Reading::Quotes`]); a line that
-/// matches no marker that way is matched again with what it finds reading
-/// tokens by words ([`Reading::Words`]), and then as Nix's lexer reads the
-/// file ([`Reading::Nix`]). Only a line that matches no marker in these
-/// views is matched again with fstab's octal escapes decoded in each. So a
-/// line reports what it reported before the later views counted, and a name
-/// that one reading of comments and tokens finds counts whatever the others
-/// find.
+/// matches no marker that way is matched again with what it finds as Nix's
+/// lexer reads the file ([`Reading::Nix`]). Only a line that matches no
+/// marker in these views is matched again with fstab's octal escapes decoded
+/// in each. So a line reports what it reported before the later views
+/// counted, and a name that one reading of comments and tokens finds counts
+/// whatever the other finds.
 pub(super) fn references_in(
     file: &Path,
     content: &str,
@@ -83,7 +82,7 @@ pub(super) fn references_in(
 ) -> Vec<BaseConfigReference> {
     let original = content.as_bytes();
     let text = original.to_ascii_lowercase();
-    let mut scanners = [Reading::Quotes, Reading::Words, Reading::Nix].map(Scanner::reading);
+    let mut scanners = [Reading::Quotes, Reading::Nix].map(Scanner::reading);
     let mut shell = Shell::default();
 
     let mut found = Vec::new();

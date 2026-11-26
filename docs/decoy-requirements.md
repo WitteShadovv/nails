@@ -949,11 +949,9 @@ logind.
   while right after a path with no interpolation in it (`./a''`) it does.
   So a
   `luks.devices` block after such a place names its mapping as it does
-  anywhere else. What two other readings find there counts as well: one
-  by quotes alone, as before, that takes such a quote for the start of a
-  string and reads the escapes of that string, and one that ends comments
-  as Nix does but lets `''` continue any word that holds a letter
-  (`1.5e3''`, which Nix reads as a number and a string).
+  anywhere else. What a reading by quotes alone finds there counts as
+  well, as before: one that takes such a quote for the start of a string
+  and reads the escapes of that string.
 
   A kernel name counts as the kernel gives it while the check runs. The
   numbers of `dm-<n>` and `loop<n>` are handed out as the devices appear, so

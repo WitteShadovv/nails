@@ -37,8 +37,7 @@
 //! not a path (`./a''` is a path and a string), and a URI holds every byte
 //! Nix allows in one, `'` and `*` among them (`http://example.org/a''`). A
 //! scanner made with [`Reading::Quotes`] reads them by quotes and brackets
-//! alone instead, one made with [`Reading::Words`] ends comments as Nix does
-//! but reads tokens by words, and the check counts what any reading finds.
+//! alone instead, and the check counts what either reading finds.
 //!
 //! The scanner also records the escapes of the strings and quoted attribute
 //! names it reads, in code and in comments ([`Scanner::escapes`]), and the
@@ -144,17 +143,8 @@ pub(super) enum Reading {
     /// runs to the end of the line; a token is a run of the bytes of words,
     /// paths and URLs, with no `'` and no URI of Nix's own. Where it parts
     /// from Nix it reads text as code, a string or a comment that Nix does
-    /// not, and the check counts the names every reading finds.
+    /// not, and the check counts the names either reading finds.
     Quotes,
-    /// Comments as Nix's lexer ends them, and tokens by words: a token
-    /// starts at a word, or right after a `.` that follows no token, and is
-    /// a URI, or a run of the bytes of words, paths and URLs that a `'`
-    /// continues where no `/` came before it and its last part holds a
-    /// letter (`a''`, but also `1.5e3''`, which Nix reads as a number and a
-    /// string). A carriage return in code is no blank. It parts from Nix
-    /// where a file holds such a token, and the check counts what it finds
-    /// there too.
-    Words,
 }
 
 /// Reads a file line by line; see the module docs.
@@ -220,8 +210,6 @@ impl Scanner {
             }
         }
         let nix = self.reading == Reading::Nix;
-        // Whether comments end where Nix's lexer ends them.
-        let lexed = self.reading != Reading::Quotes;
         let mut in_comment = self.in_block_comment;
         let mut attribute = self.stack(in_comment).expects_attribute();
         // Where the comment the line is in ends on it.
@@ -235,7 +223,7 @@ impl Scanner {
             // at a carriage return as well as at the end of the line. What
             // it holds is read up to there, a string in it ends with it, and
             // what follows is code.
-            if lexed && in_comment && i >= close {
+            if nix && in_comment && i >= close {
                 i = close + if self.in_block_comment { 2 } else { 1 };
                 self.in_block_comment = false;
                 in_comment = false;
@@ -245,7 +233,7 @@ impl Scanner {
                 }
                 continue;
             }
-            let line = if lexed && in_comment {
+            let line = if nix && in_comment {
                 &full[..close]
             } else {
                 full
@@ -278,7 +266,7 @@ impl Scanner {
                 close = comment_end(full, i, block);
                 continue;
             }
-            if !lexed && in_comment && self.in_block_comment && line[i..].starts_with(b"*/") {
+            if !nix && in_comment && self.in_block_comment && line[i..].starts_with(b"*/") {
                 self.in_block_comment = false;
                 in_comment = false;
                 attribute = self.code.expects_attribute();
@@ -320,13 +308,11 @@ impl Scanner {
                     continue;
                 }
             }
-            if is_token_start(line, i, self.reading) {
-                let end = match self.reading {
-                    Reading::Nix => token_end(line, i),
-                    Reading::Words => word_token_end(line, i),
-                    Reading::Quotes => {
-                        i + line[i..].iter().take_while(|&&b| is_token_byte(b)).count()
-                    }
+            if is_token_start(line, i, nix) {
+                let end = if nix {
+                    token_end(line, i)
+                } else {
+                    i + line[i..].iter().take_while(|&&b| is_token_byte(b)).count()
                 };
                 attribute = self.stack(in_comment).keyword(&line[i..end], indent);
                 i = end;
@@ -813,62 +799,16 @@ fn is_blank(byte: u8) -> bool {
 }
 
 /// The start of a token (a word, a path, a URL or a number), not the inside
-/// of one, as `reading` reads it. As Nix reads it, a token starts at any
-/// byte of one after a byte of none, so an operator (`+`, `++`, `//`, `@`,
-/// `:`, `.`) that starts a run of such bytes is read with the word after it.
-/// By words, a word starts one, also right after a `.` that follows no
-/// token (`{ a'' = 1; }.a''`).
-fn is_token_start(line: &[u8], i: usize, reading: Reading) -> bool {
-    let not_in_token = |at: usize| !is_token_byte(line[at]);
-    match reading {
-        Reading::Nix => is_token_byte(line[i]) && (i == 0 || not_in_token(i - 1)),
-        Reading::Quotes => is_identifier_byte(line[i]) && (i == 0 || not_in_token(i - 1)),
-        Reading::Words => {
-            is_identifier_byte(line[i])
-                && (i == 0
-                    || not_in_token(i - 1)
-                    || (line[i - 1] == b'.' && (i == 1 || not_in_token(i - 2))))
-        }
-    }
-}
-
-/// Where the token that starts at `i` ends, read by words
-/// ([`Reading::Words`]): a URI, or a run of the bytes of words, paths and
-/// URLs that ends at a `/*` and that a `'` continues where no `/` came
-/// before it and its last part holds a letter.
-fn word_token_end(line: &[u8], i: usize) -> usize {
-    if let Some(end) = uri_end(line, i) {
-        return end;
-    }
-    let mut at = i;
-    let mut path = false;
-    while let Some(&byte) = line.get(at) {
-        let continues = match byte {
-            b'/' => {
-                path = true;
-                line.get(at + 1) != Some(&b'*')
-            }
-            b'\'' => !path && ends_in_word(&line[i..at]),
-            _ => is_token_byte(byte),
-        };
-        if !continues {
-            break;
-        }
-        at += 1;
-    }
-    at
-}
-
-/// Whether `text`, a token read so far, ends in a part that holds a letter
-/// or `_`, after the last byte no identifier holds.
-fn ends_in_word(text: &[u8]) -> bool {
-    let start = text
-        .iter()
-        .rposition(|&b| !(is_identifier_byte(b) || b == b'\''))
-        .map_or(0, |at| at + 1);
-    text[start..]
-        .iter()
-        .any(|&b| b.is_ascii_alphabetic() || b == b'_')
+/// of one. As Nix reads it (`nix`), a token starts at any byte of one after
+/// a byte of none, so an operator (`+`, `++`, `//`, `@`, `:`, `.`) that
+/// starts a run of such bytes is read with the word after it.
+fn is_token_start(line: &[u8], i: usize, nix: bool) -> bool {
+    let starts = if nix {
+        is_token_byte(line[i])
+    } else {
+        is_identifier_byte(line[i])
+    };
+    starts && (i == 0 || !is_token_byte(line[i - 1]))
 }
 
 /// Where the run of tokens that starts at `i` ends, as Nix's lexer reads

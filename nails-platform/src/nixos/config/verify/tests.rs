@@ -911,20 +911,6 @@ fn a_name_that_only_the_reading_by_quotes_finds_still_counts() {
     );
 }
 
-/// Where a reading of tokens by words parts from Nix's lexer, what it finds
-/// counts too: it lets `''` continue `1.5e3`, which Nix reads as a number
-/// and a string, and finds the mapping in the `luks.devices` block after it.
-#[test]
-fn a_name_that_only_the_reading_by_words_finds_still_counts() {
-    let scan = scan_configuration(
-        "{ y = 1.5e3''; boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; }; }",
-    );
-    assert_eq!(
-        only_reference(&scan),
-        (1, "data", ReferenceKind::MapperName)
-    );
-}
-
 /// A unit's setting that names a file on the hidden volume behind one of
 /// systemd's prefixes (`-` for a file that may be missing) names the mount
 /// point, and is refused as the bare path is.
