@@ -329,6 +329,9 @@ in
     canonical_deactivate(CONFIG, "deactivate")
 
     with subtest("after the power-off the decoy disk is as it was"):
+        # The cold boot may name the SCSI disks in another order.
+        shared = disk("shared")
+        xfs_disk = disk("xfsdecoy")
         machine.succeed("mountpoint -q /srv && mountpoint -q /opt")
         machine.fail("test -e /srv/session-file")
         machine.fail("test -e /opt/session-file")
