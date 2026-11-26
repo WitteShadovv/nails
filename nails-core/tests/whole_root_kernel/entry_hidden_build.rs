@@ -66,6 +66,13 @@ impl GuardHost for BuildHost {
     fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
         self.host.unit_property(unit, property)
     }
+    fn unit_commands(
+        &self,
+        unit: &str,
+        property: &str,
+    ) -> Result<Vec<nails_core::session::guards::ExecCommand>> {
+        self.host.unit_commands(unit, property)
+    }
 }
 
 impl EntryHost for BuildHost {

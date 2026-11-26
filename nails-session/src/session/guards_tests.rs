@@ -559,6 +559,15 @@ fn a_refused_way_back_names_the_power_off_and_the_emergency() {
 /// properties, but for those `changed` sets.
 struct Step {
     changed: Vec<(&'static str, String)>,
+    /// What PID 1 answers over D-Bus for the start command, where a test
+    /// sets it; the text of `changed` otherwise.
+    bus: Option<Vec<ExecCommand>>,
+}
+
+impl Step {
+    fn changed(changed: Vec<(&'static str, String)>) -> Self {
+        Self { changed, bus: None }
+    }
 }
 
 impl GuardHost for Step {
@@ -568,11 +577,18 @@ impl GuardHost for Step {
     fn job_timeout_action(&self, _: &str) -> Result<String> {
         unreachable!()
     }
-    fn job_timeout(&self, _: &str) -> Result<String> {
-        unreachable!()
+    fn job_timeout(&self, unit: &str) -> Result<String> {
+        assert_eq!(unit, transition::SWITCH_TIMEOUT_UNIT);
+        Ok("30min\n".to_string())
     }
     fn service_watchdogs(&self) -> Result<String> {
         unreachable!()
+    }
+    fn unit_commands(&self, unit: &str, property: &str) -> Result<Vec<ExecCommand>> {
+        match &self.bus {
+            Some(bus) => Ok(bus.clone()),
+            None => commands(&self.unit_property(unit, property)?),
+        }
     }
     fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
         assert_eq!(unit, SWITCH_STEP_UNIT);
@@ -596,15 +612,7 @@ const BINARY: &str = "/run/overlay-runtime/control";
 #[test]
 fn the_switch_step_must_start_and_fail_as_nails_installed_it() {
     let binary = Path::new(BINARY);
-    assert!(
-        check_switch_step(
-            &Step {
-                changed: Vec::new()
-            },
-            binary
-        )
-        .is_ok()
-    );
+    assert!(check_switch_step(&Step::changed(Vec::new()), binary).is_ok());
     let ours = loaded_switch_step(binary, "ExecStart");
     let other = "{ path=/usr/bin/true ; argv[]=/usr/bin/true ; ignore_errors=no }";
     let changes: Vec<(&'static str, String, &str)> = vec![
@@ -642,11 +650,101 @@ fn the_switch_step_must_start_and_fail_as_nails_installed_it() {
             "soft-reboot-force".to_string(),
             "a switch on failure",
         ),
+        (
+            "ExecStart",
+            format!(
+                "{{ path=/opt/x ; argv[]=/opt/x}} {{ path={BINARY} ; argv[]={BINARY} transition ; \
+                 ignore_errors=no }}"
+            ),
+            "an argument that prints a second path= (a quoted @ program)",
+        ),
+        (
+            "ExecStart",
+            ours.replace(
+                " ; ignore_errors=no",
+                &format!(" ; path={BINARY} ; ignore_errors=no"),
+            ),
+            "a field printed twice",
+        ),
+        (
+            "ExecStart",
+            ours.replace(" ; ignore_errors=no", " ; flags=x ; ignore_errors=no"),
+            "a field systemd does not print",
+        ),
+        (
+            "ExecStart",
+            ours.replace("{ path=", "{ argv[]=x ; path="),
+            "path= not first",
+        ),
+        ("ExecStop", other.to_string(), "a stop command"),
+        (
+            "ExecStopPost",
+            other.to_string(),
+            "a command after the stop",
+        ),
+        ("BindPaths", "/opt/x:/run".to_string(), "a bind mount"),
+        (
+            "BindReadOnlyPaths",
+            "/opt/x:/run".to_string(),
+            "a read-only bind mount",
+        ),
+        ("RootDirectory", "/opt/root".to_string(), "another root"),
+        (
+            "RootImage",
+            "/opt/root.img".to_string(),
+            "another root image",
+        ),
+        ("SuccessAction", "none".to_string(), "no switch on success"),
+        (
+            "SuccessAction",
+            "reboot-force".to_string(),
+            "another action on success",
+        ),
+        (
+            "Type",
+            "simple".to_string(),
+            "a service PID 1 does not wait for",
+        ),
+        ("Type", "exec".to_string(), "another type"),
+        (
+            "RemainAfterExit",
+            "yes".to_string(),
+            "a service that stays active",
+        ),
+        (
+            "JobTimeoutAction",
+            "soft-reboot-force".to_string(),
+            "an action at the step's job timeout",
+        ),
+        (
+            "JobTimeoutAction",
+            "poweroff-force".to_string(),
+            "even the power-off at the step's own job timeout",
+        ),
+        (
+            "JobTimeoutUSec",
+            "5min".to_string(),
+            "a job timeout shorter than the switch's",
+        ),
+        (
+            "JobTimeoutUSec",
+            "29min 59.999999s".to_string(),
+            "a job timeout a little shorter",
+        ),
+        ("JobTimeoutUSec", "0".to_string(), "a zero job timeout"),
+        (
+            "JobTimeoutUSec",
+            "soon".to_string(),
+            "a timeout that reads as none",
+        ),
+        (
+            "JobRunningTimeoutUSec",
+            "1min".to_string(),
+            "a running timeout shorter than the switch's",
+        ),
     ];
     for (property, value, what) in changes {
-        let step = Step {
-            changed: vec![(property, value)],
-        };
+        let step = Step::changed(vec![(property, value)]);
         let (check, reason, fix) = refusal(&check_switch_step(&step, binary).unwrap_err());
         assert_eq!(check, "switch-step", "{what}");
         assert!(reason.contains(property), "{what}: {reason}");
@@ -654,5 +752,176 @@ fn the_switch_step_must_start_and_fail_as_nails_installed_it() {
             fix.contains("systemctl cat systemd-soft-reboot.service"),
             "{what}: {fix}"
         );
+    }
+}
+
+/// A job timeout of the step's own as long as the switch's, or longer, or
+/// none at all, lets the switch's power-off come first.
+#[test]
+fn a_job_timeout_of_the_step_no_shorter_than_the_switch_s_passes() {
+    for property in ["JobTimeoutUSec", "JobRunningTimeoutUSec"] {
+        for value in ["infinity", "30min", "1h", "1d 2h", "30min 0.5s"] {
+            let step = Step::changed(vec![(property, value.to_string())]);
+            assert!(
+                check_switch_step(&step, Path::new(BINARY)).is_ok(),
+                "{property}={value}"
+            );
+        }
+    }
+}
+
+/// PID 1's D-Bus reply sets each argument apart, so a start command whose
+/// argument holds the text of the step's own reads as the other program it
+/// runs, and refuses the entry; the step as NAILS installs it passes.
+#[test]
+fn the_start_command_read_over_d_bus_is_compared_argument_by_argument() {
+    let ours = ExecCommand {
+        path: BINARY.to_string(),
+        argv: vec![BINARY.to_string(), transition::TRANSITION_ARG.to_string()],
+        ignores: false,
+    };
+    let bus = |commands: Vec<ExecCommand>| Step {
+        changed: Vec::new(),
+        bus: Some(commands),
+    };
+    assert!(check_switch_step(&bus(vec![ours.clone()]), Path::new(BINARY)).is_ok());
+    let spoofed = ExecCommand {
+        path: "/opt/x".to_string(),
+        argv: vec![
+            format!("/opt/x}} {{ path={BINARY}"),
+            transition::TRANSITION_ARG.to_string(),
+        ],
+        ignores: false,
+    };
+    let joined = ExecCommand {
+        argv: vec![format!("{BINARY} {}", transition::TRANSITION_ARG)],
+        ..ours.clone()
+    };
+    for (commands, what) in [
+        (
+            vec![spoofed],
+            "an @ program whose name holds the step's path",
+        ),
+        (vec![joined], "the step's arguments as one argument"),
+        (vec![ours.clone(), ours.clone()], "the step twice"),
+        (Vec::new(), "no start command"),
+    ] {
+        let (check, reason, _) =
+            refusal(&check_switch_step(&bus(commands), Path::new(BINARY)).unwrap_err());
+        assert_eq!(check, "switch-step", "{what}");
+        assert!(reason.contains("ExecStart"), "{what}: {reason}");
+    }
+}
+
+/// A start command PID 1 cannot be asked about over D-Bus refuses the entry
+/// as one that does not read.
+#[test]
+fn a_start_command_that_cannot_be_read_refuses_the_entry() {
+    struct Silent;
+    impl GuardHost for Silent {
+        fn unit_stop_commands(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn job_timeout_action(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn job_timeout(&self, _: &str) -> Result<String> {
+            unreachable!()
+        }
+        fn service_watchdogs(&self) -> Result<String> {
+            unreachable!()
+        }
+        fn unit_commands(&self, _: &str, _: &str) -> Result<Vec<ExecCommand>> {
+            Err(NailsError::InvalidState("busctl not found".to_string()))
+        }
+    }
+    let (check, reason, _) = refusal(&check_switch_step(&Silent, Path::new(BINARY)).unwrap_err());
+    assert_eq!(check, "switch-step");
+    assert!(
+        reason.contains("ExecStart=) could not be read: busctl not found"),
+        "{reason}"
+    );
+}
+
+/// The failure action the check wants is the one the session's ending gives
+/// the step's drop-in.
+#[test]
+fn the_step_s_failure_action_is_the_session_s_ending() {
+    assert_eq!(
+        loaded_switch_step(Path::new(BINARY), "FailureAction"),
+        nails_teardown::whole_root::session_end::session_end().emergency_action()
+    );
+    assert!(
+        transition::dropin_text(Path::new(BINARY)).contains(&format!(
+            "FailureAction={}\n",
+            loaded_switch_step(Path::new(BINARY), "FailureAction")
+        ))
+    );
+    assert!(transition::dropin_text(Path::new(BINARY)).contains("Type=oneshot\n"));
+}
+
+/// The text of `systemctl show` reads into commands only where it reads in
+/// one way: several lines, each one brace pair around the fields systemd
+/// prints.
+#[test]
+fn the_text_of_systemctl_show_reads_into_commands_only_where_it_reads_one_way() {
+    let listing = "{ path=/a ; argv[]=/a -x ; ignore_errors=no ; start_time=[n/a] ; \
+                   stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n\
+                   { path=/b ; argv[]=b ; ignore_errors=yes }\n";
+    assert_eq!(
+        commands(listing).unwrap(),
+        vec![
+            ExecCommand {
+                path: "/a".to_string(),
+                argv: vec!["/a".to_string(), "-x".to_string()],
+                ignores: false,
+            },
+            ExecCommand {
+                path: "/b".to_string(),
+                argv: vec!["b".to_string()],
+                ignores: true,
+            },
+        ]
+    );
+    assert_eq!(commands("\n").unwrap(), Vec::new());
+    for listing in [
+        "{ path=/a ; argv[]=/a ; ignore_errors=no } { path=/b ; argv[]=/b ; ignore_errors=no }",
+        "path=/a ; argv[]=/a ; ignore_errors=no",
+        "{ path=/a ; argv[]=/a }",
+        "{ path=/a ; ignore_errors=no }",
+        "{ path=/a ; argv[]=/a ; ignore_errors=maybe }",
+        "{ path=/a ; argv[]=/a ; ignore_errors=no ; argv[]=/b }",
+        "{ argv[]=/a ; path=/a ; ignore_errors=no }",
+        "{ path=/a ; argv[]=/a ; ignore_errors=no ; extra }",
+    ] {
+        assert!(commands(listing).is_err(), "{listing}");
+    }
+}
+
+/// A span of time reads in microseconds as systemd counts its units.
+#[test]
+fn a_timespan_reads_in_microseconds() {
+    for (text, usec) in [
+        ("0", 0),
+        ("30min", 1_800_000_000),
+        ("1min 30s", 90_000_000),
+        ("1.500000s", 1_500_000),
+        ("2ms", 2_000),
+        ("7us", 7),
+        ("1w 1d", 691_200_000_000),
+        ("1y", 31_557_600_000_000),
+        ("1month", 2_629_800_000_000),
+    ] {
+        assert_eq!(timespan_usec(text), Some(usec), "{text}");
+    }
+    for text in [
+        "",
+        "infinity",
+        "30",
+        "min",
+        "1.s",
+        "99999999999999999999999999999999999999y",
+    ] {
+        assert_eq!(timespan_usec(text), None, "{text:?}");
     }
 }

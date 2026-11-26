@@ -2751,11 +2751,17 @@ of this changelog for that version becomes the release notes word for word, and
   units the hidden root does not need (the fstab policy binds the boot filesystems read-only) and
   the cleanup of `utab`, which lives in RAM.
 - After the reload, activation checks that PID 1 starts the last step as NAILS installed it: one
-  start command, whose program (`path=`) and arguments are the RAM copy with the step's argument
-  (an `@` prefix can set the two apart), a failure that is not ignored, no `ExecCondition=`,
-  `ExecStartPre=` or `ExecStartPost=` around it, no `SuccessExitStatus=`, and the power-off as the
-  unit's `FailureAction=`. A drop-in of the decoy's that sorts after NAILS's (an `override.conf`
-  from `systemctl edit`) and changes one of them refuses the entry (`switch-step`).
+  start command, whose program and arguments are the RAM copy with the step's argument (an `@`
+  prefix can set the two apart), a failure that is not ignored, no `ExecCondition=`,
+  `ExecStartPre=`, `ExecStartPost=`, `ExecStop=` or `ExecStopPost=` around it, no
+  `SuccessExitStatus=`, no `BindPaths=`, `BindReadOnlyPaths=`, `RootDirectory=` or `RootImage=`,
+  the power-off as the unit's `FailureAction=`, `SuccessAction=soft-reboot-force`, `Type=oneshot`,
+  `RemainAfterExit=no`, `JobTimeoutAction=none`, and no `JobTimeoutSec=` or
+  `JobRunningTimeoutSec=` shorter than the job timeout of `soft-reboot.target`. It reads the start
+  command from PID 1 over D-Bus (`busctl`), which sets each argument apart: the text of `systemctl
+  show` does not, and an argument that holds `} {` there reads as a second command. A drop-in of
+  the decoy's that sorts after NAILS's (an `override.conf` from `systemctl edit`) and changes one
+  of them refuses the entry (`switch-step`).
 - In a hidden session every soft-reboot now powers off, whatever sits at `/run/nextroot`. PID 1
   switches into any OS tree there, a link to the decoy root or a plain directory included, which
   the step's look at the mount table did not see. A hidden root whose plan is gone is told by its

@@ -204,6 +204,10 @@ impl GuardHost for RealEntryHost {
     fn unit_property(&self, unit: &str, property: &str) -> Result<String> {
         show(Some(unit), property)
     }
+
+    fn unit_commands(&self, unit: &str, property: &str) -> super::guards::Commands {
+        super::guards::bus_commands(unit, property)
+    }
 }
 
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`

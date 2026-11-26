@@ -61,7 +61,9 @@
 //! - [`program_label`]: the SELinux label of the RAM copies of the binary,
 //!   which decides the domain PID 1 starts NAILS's own steps in, with
 //!   [`selinux`] (what the running kernel's SELinux answers);
-//! - [`tools`]: the bounded `systemctl` and `dmsetup` calls.
+//! - [`tools`]: the bounded `systemctl` and `dmsetup` calls;
+//! - [`unit_bus`]: a service's commands as PID 1 has them loaded, read over
+//!   D-Bus.
 
 pub mod boot_records;
 pub mod boot_writer;
@@ -92,5 +94,6 @@ pub mod switch_refusal;
 pub mod tail;
 pub mod tools;
 pub mod transition;
+pub mod unit_bus;
 pub mod utab;
 pub mod zram;

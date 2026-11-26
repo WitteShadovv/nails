@@ -77,7 +77,7 @@ impl Inhibitor {
 }
 
 /// Run `busctl` with JSON output and parse what it printed.
-fn busctl_json(busctl: &Path, args: &[&str]) -> Option<Value> {
+pub(crate) fn busctl_json(busctl: &Path, args: &[&str]) -> Option<Value> {
     let mut all = vec!["--json=short", "--timeout=2"];
     all.extend_from_slice(args);
     let text = tools::run_output(busctl, &all, TOOL_BUDGET)?;

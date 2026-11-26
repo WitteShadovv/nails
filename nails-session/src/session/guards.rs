@@ -23,7 +23,11 @@ use crate::error::{NailsError, Result};
 use nails_teardown::whole_root::plan::Direction;
 use nails_teardown::whole_root::selinux::Selinux;
 use nails_teardown::whole_root::transition;
+pub use nails_teardown::whole_root::unit_bus::ExecCommand;
 use std::path::Path;
+
+/// A service's commands, or why they could not be read.
+pub type Commands = Result<Vec<ExecCommand>>;
 
 /// What PID 1 has loaded, as `systemctl show --property=<name> --value`
 /// prints it: tests replace it.
@@ -56,6 +60,16 @@ pub trait GuardHost {
         Err(NailsError::InvalidState(format!(
             "PID 1 was not asked for {property} of {unit}"
         )))
+    }
+    /// The commands of `unit`'s `property` (`ExecStart`) with every drop-in
+    /// loaded, each with its program and its arguments apart. The entry's
+    /// host asks PID 1 over D-Bus
+    /// ([`nails_teardown::whole_root::unit_bus::commands`]), whose reply
+    /// reads in one way only. By default they are read from the text of
+    /// [`GuardHost::unit_property`] ([`commands`]), which fails on a listing
+    /// an argument could have made up.
+    fn unit_commands(&self, unit: &str, property: &str) -> Result<Vec<ExecCommand>> {
+        commands(&self.unit_property(unit, property)?)
     }
     /// The SELinux context PID 1 starts `unit`'s processes in, with every
     /// drop-in loaded (`SELinuxContext`): empty where the policy picks it.
@@ -95,6 +109,21 @@ pub fn show_property(
     )
     .ok_or_else(|| {
         NailsError::InvalidState(format!("systemctl show {} failed", unit.unwrap_or(&flag)))
+    })
+}
+
+/// The commands of `unit`'s `property` (`ExecStart`), asked of PID 1 over
+/// D-Bus with the system's `busctl`
+/// ([`nails_teardown::whole_root::unit_bus::commands`]): what the entry's host
+/// answers for [`GuardHost::unit_commands`].
+pub fn bus_commands(unit: &str, property: &str) -> Commands {
+    use nails_teardown::whole_root::{logind, tools, unit_bus};
+    let busctl = tools::find(None, logind::BUSCTL)
+        .ok_or_else(|| NailsError::InvalidState("busctl not found".to_string()))?;
+    unit_bus::commands(&busctl, unit, property).ok_or_else(|| {
+        NailsError::InvalidState(format!(
+            "PID 1 did not answer for {property} of {unit} over D-Bus"
+        ))
     })
 }
 
@@ -353,20 +382,51 @@ pub fn switch_timeout(
 /// and set apart by a space, as in `30min`, `1min 30s` or `1.500000s`.
 /// `infinity`, the one other answer, is no span.
 fn is_timespan(text: &str) -> bool {
-    const UNITS: [&str; 9] = ["y", "month", "w", "d", "h", "min", "s", "ms", "us"];
-    let number = |digits: &str| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
-    text == "0"
-        || (!text.is_empty()
-            && text.split(' ').all(|part| {
-                let (amount, unit) =
-                    part.split_at(part.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0));
-                UNITS.contains(&unit)
-                    && amount
-                        .split_once('.')
-                        .map_or(number(amount), |(whole, fraction)| {
-                            number(whole) && number(fraction)
-                        })
-            }))
+    timespan_usec(text).is_some()
+}
+
+/// The span of time `text` reads as ([`is_timespan`]), in microseconds, as
+/// systemd counts its units (a year of 365.25 days, a month of a twelfth of
+/// that). `None` when it reads as none, or does not fit.
+fn timespan_usec(text: &str) -> Option<u128> {
+    const UNITS: [(&str, u128); 9] = [
+        ("y", 31_557_600_000_000),
+        ("month", 2_629_800_000_000),
+        ("w", 604_800_000_000),
+        ("d", 86_400_000_000),
+        ("h", 3_600_000_000),
+        ("min", 60_000_000),
+        ("s", 1_000_000),
+        ("ms", 1_000),
+        ("us", 1),
+    ];
+    let number = |digits: &str| {
+        (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| digits.parse::<u128>().ok())
+            .flatten()
+    };
+    if text == "0" {
+        return Some(0);
+    }
+    if text.is_empty() {
+        return None;
+    }
+    text.split(' ').try_fold(0u128, |sum, part| {
+        let (amount, unit) =
+            part.split_at(part.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(0));
+        let (_, scale) = UNITS.iter().find(|(name, _)| *name == unit)?;
+        let usec = match amount.split_once('.') {
+            None => number(amount)?.checked_mul(*scale)?,
+            Some((whole, fraction)) => {
+                let digits = u32::try_from(fraction.len()).ok()?;
+                let fraction = number(fraction)?
+                    .checked_mul(*scale)?
+                    .checked_div(10u128.checked_pow(digits)?)?;
+                number(whole)?.checked_mul(*scale)?.checked_add(fraction)?
+            }
+        };
+        sum.checked_add(usec)
+    })
 }
 
 /// The entry's refusal of `unheld`, a guard that does not hold in the decoy's
@@ -401,9 +461,10 @@ pub const SWITCH_STEP_UNIT: &str = "systemd-soft-reboot.service";
 
 /// What `systemctl show --property=<property> --value` prints of
 /// [`SWITCH_STEP_UNIT`] once PID 1 has loaded the step's drop-in as NAILS
-/// writes it for `binary` ([`transition::dropin_text`]): its one start
-/// command, its failure action, and nothing for the other properties
-/// [`check_switch_step`] asks about. A test's PID 1 answers with these.
+/// writes it for `binary` ([`transition::dropin_text`]) over the unit systemd
+/// ships: its one start command, the actions, type and timeouts
+/// [`check_switch_step`] wants, and nothing for the other properties it asks
+/// about. A test's PID 1 answers with these.
 pub fn loaded_switch_step(binary: &Path, property: &str) -> String {
     let binary = binary.display();
     match property {
@@ -412,56 +473,206 @@ pub fn loaded_switch_step(binary: &Path, property: &str) -> String {
              stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}",
             transition::TRANSITION_ARG
         ),
-        "FailureAction" => nails_teardown::whole_root::session_end::session_end()
-            .emergency_action()
-            .to_string(),
-        _ => String::new(),
+        "JobTimeoutUSec" | "JobRunningTimeoutUSec" => "infinity".to_string(),
+        _ => SWITCH_STEP_VALUES
+            .iter()
+            .find(|(name, _, _)| *name == property)
+            .map_or_else(String::new, |(_, value, _)| value.to_string()),
     }
 }
 
-/// One command of a list `systemctl show --value` prints (`ExecStart`,
-/// `ExecStartPre`, ...): the program it runs (`path=`), its arguments
-/// (`argv[]=`, the program's name first) and whether it ignores a failure.
-#[derive(Debug, PartialEq, Eq)]
-struct Command {
-    path: String,
-    argv: String,
-    ignores: bool,
-}
+/// The fields of one command as `systemctl show --value` prints it, in its
+/// order: `{ path=... ; argv[]=... ; ignore_errors=... ; ... }`.
+const COMMAND_FIELDS: [&str; 8] = [
+    "path",
+    "argv[]",
+    "ignore_errors",
+    "start_time",
+    "stop_time",
+    "pid",
+    "code",
+    "status",
+];
 
-/// The commands of `listing` as `systemctl show --value` prints them.
-fn commands(listing: &str) -> Vec<Command> {
+/// The commands of `listing` as `systemctl show --value` prints them, one to
+/// a line. That text does not set the program or an argument apart: an
+/// argument that holds ` ; `, `{` or `}` reads as another field or another
+/// command (`ExecStart=@"/opt/x} { path=/run/overlay-runtime/control" ...`
+/// would print a second `path=`). So a line that is not one brace pair around
+/// the fields systemd prints, each once and `path=` first, fails, and an
+/// argument with a blank in it reads as two.
+fn commands(listing: &str) -> Result<Vec<ExecCommand>> {
     listing
-        .split('}')
-        .filter_map(|command| {
-            let fields: Vec<&str> = command
-                .trim()
-                .trim_start_matches('{')
-                .split(" ; ")
-                .map(str::trim)
-                .collect();
-            let field = |name: &str| fields.iter().find_map(|f| f.strip_prefix(name));
-            let argv = field("argv[]=")?;
-            Some(Command {
-                path: field("path=").unwrap_or_default().to_string(),
-                argv: argv.to_string(),
-                ignores: field("ignore_errors=") == Some("yes"),
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let unreadable = || {
+                NailsError::InvalidState(format!(
+                    "systemctl show printed a command that does not read in one way only \
+                     ({line})"
+                ))
+            };
+            let inner = line
+                .strip_prefix("{ ")
+                .and_then(|inner| inner.strip_suffix(" }"))
+                .filter(|inner| !inner.contains(['{', '}']))
+                .ok_or_else(unreadable)?;
+            let mut fields = Vec::new();
+            for field in inner.split(" ; ") {
+                let (name, value) = field.split_once('=').ok_or_else(unreadable)?;
+                if !COMMAND_FIELDS.contains(&name) || fields.iter().any(|(seen, _)| *seen == name) {
+                    return Err(unreadable());
+                }
+                fields.push((name, value));
+            }
+            let field = |name: &str| {
+                fields
+                    .iter()
+                    .find_map(|(seen, value)| (*seen == name).then_some(*value))
+                    .ok_or_else(unreadable)
+            };
+            if fields.first().map(|(name, _)| *name) != Some("path") {
+                return Err(unreadable());
+            }
+            Ok(ExecCommand {
+                path: field("path")?.to_string(),
+                argv: field("argv[]")?.split(' ').map(str::to_string).collect(),
+                ignores: match field("ignore_errors")? {
+                    "yes" => true,
+                    "no" => false,
+                    _ => return Err(unreadable()),
+                },
             })
         })
         .collect()
 }
 
+/// `commands` as a refusal names them.
+fn shown(commands: &[ExecCommand]) -> String {
+    if commands.is_empty() {
+        return "none".to_string();
+    }
+    commands
+        .iter()
+        .map(|command| {
+            format!(
+                "path={} argv=[{}] ignore_errors={}",
+                command.path,
+                command.argv.join(", "),
+                if command.ignores { "yes" } else { "no" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The properties of [`SWITCH_STEP_UNIT`] that must be empty with every
+/// drop-in loaded, each with what the switch would do otherwise.
+const SWITCH_STEP_EMPTY: [(&str, &str); 10] = [
+    (
+        "ExecCondition",
+        "a command around the switch's last step could skip it or end the service first",
+    ),
+    (
+        "ExecStartPre",
+        "a command around the switch's last step could skip it or end the service first",
+    ),
+    (
+        "ExecStartPost",
+        "a command around the switch's last step could skip it or end the service first",
+    ),
+    (
+        "ExecStop",
+        "a command that runs once the switch's last step has ended could undo what it did \
+         before the switch goes on",
+    ),
+    (
+        "ExecStopPost",
+        "a command that runs once the switch's last step has ended could undo what it did \
+         before the switch goes on",
+    ),
+    (
+        "SuccessExitStatus",
+        "an exit status that counts as success would let a failed step go on with the switch",
+    ),
+    (
+        "BindPaths",
+        "the step would see other files mounted into its view, and act on those instead of the \
+         machine's",
+    ),
+    (
+        "BindReadOnlyPaths",
+        "the step would see other files mounted into its view, and act on those instead of the \
+         machine's",
+    ),
+    (
+        "RootDirectory",
+        "the step would run in another root, and act on that instead of the machine's",
+    ),
+    (
+        "RootImage",
+        "the step would run in another root, and act on that instead of the machine's",
+    ),
+];
+
+/// The properties of [`SWITCH_STEP_UNIT`] that must have one value with every
+/// drop-in loaded, as `systemctl show --value` prints it, each with what the
+/// switch would do otherwise. The failure action is the session's ending
+/// ([`nails_teardown::whole_root::session_end::SessionEnd::emergency_action`]),
+/// which the tests pin to this one.
+const SWITCH_STEP_VALUES: [(&str, &str, &str); 5] = [
+    (
+        "FailureAction",
+        "poweroff-force",
+        "a failed step would let the switch go on, or leave the machine stopped",
+    ),
+    (
+        "SuccessAction",
+        "soft-reboot-force",
+        "the step's success would not take the switch on, or would take it elsewhere",
+    ),
+    (
+        "Type",
+        "oneshot",
+        "PID 1 would not wait for the step to end before the switch goes on",
+    ),
+    (
+        "RemainAfterExit",
+        "no",
+        "the service would stay active once the step ends, and its success would not take the \
+         switch on",
+    ),
+    (
+        "JobTimeoutAction",
+        "none",
+        "a job timeout of the step's own would act instead of the switch's power-off",
+    ),
+];
+
+/// The job timeouts of [`SWITCH_STEP_UNIT`], each with the setting that sets
+/// it. systemd has one action for both, `JobTimeoutAction=`.
+const SWITCH_STEP_TIMEOUTS: [(&str, &str); 2] = [
+    ("JobTimeoutUSec", "JobTimeoutSec="),
+    ("JobRunningTimeoutUSec", "JobRunningTimeoutSec="),
+];
+
 /// Refuse the entry unless PID 1, with every drop-in loaded, starts the
 /// switch's last step as NAILS installed it ([`transition::dropin_text`]):
 ///
-/// - one start command, which runs the RAM copy `binary` (`path=`, which an
-///   `@` prefix can set apart from the arguments) with the step's argument,
-///   and does not ignore its failure;
-/// - no other command around it (`ExecCondition=`, `ExecStartPre=`,
-///   `ExecStartPost=`), which could skip the step or end the service first;
-/// - no exit status that counts as success but 0 (`SuccessExitStatus=`),
-///   since the step's non-zero exit is how it fails the service;
-/// - the power-off as the unit's failure action.
+/// - one start command, which runs the RAM copy `binary` (the program, which
+///   an `@` prefix can set apart from the arguments) with the step's
+///   argument, and does not ignore its failure. The entry's host reads it over
+///   D-Bus, where each argument stays apart ([`GuardHost::unit_commands`]);
+/// - no other command around it or after it, no exit status but 0 that counts
+///   as success, and no other root or mounts in the step's view
+///   ([`SWITCH_STEP_EMPTY`]);
+/// - the power-off as its failure action, the switch as its success action,
+///   a oneshot that does not stay active, and no action of its own at a job
+///   timeout ([`SWITCH_STEP_VALUES`]);
+/// - no job timeout of its own shorter than the switch's
+///   ([`transition::SWITCH_TIMEOUT_UNIT`], [`check_switch_timeout`]), at which
+///   the step's job would end before the switch's power-off.
 ///
 /// A drop-in of the decoy's that sorts after NAILS's (`override.conf` from
 /// `systemctl edit`) can change any of them, and the step would then no
@@ -473,57 +684,71 @@ pub fn check_switch_step(host: &(impl GuardHost + ?Sized), binary: &Path) -> Res
             "switch-step".to_string(),
             reason,
             Some(format!(
-                "Remove what changes {SWITCH_STEP_UNIT}'s commands, success status or \
-                 FailureAction= (`systemctl cat {SWITCH_STEP_UNIT}` shows every drop-in) and \
-                 activate again"
+                "Remove the setting that changes how {SWITCH_STEP_UNIT} runs the switch's last \
+                 step (`systemctl cat {SWITCH_STEP_UNIT}` shows every drop-in) and activate again"
             )),
         )]))
     };
-    let exec_start = host.unit_property(SWITCH_STEP_UNIT, "ExecStart")?;
     let path = binary.display().to_string();
-    let argv = format!("{path} {}", transition::TRANSITION_ARG);
-    let ours = |c: &Command| c.path == path && c.argv == argv && !c.ignores;
-    match commands(&exec_start).as_slice() {
+    let ours = |c: &ExecCommand| {
+        c.path == path && c.argv == [path.as_str(), transition::TRANSITION_ARG] && !c.ignores
+    };
+    let starts = match host.unit_commands(SWITCH_STEP_UNIT, "ExecStart") {
+        Ok(starts) => starts,
+        Err(NailsError::InvalidState(why)) => {
+            return refuse(format!(
+                "{SWITCH_STEP_UNIT}'s start command (ExecStart=) could not be read: {why}"
+            ));
+        }
+        Err(other) => return Err(other),
+    };
+    match starts.as_slice() {
         [command] if ours(command) => {}
         _ => {
             return refuse(format!(
                 "{SWITCH_STEP_UNIT} does not start the switch's last step as NAILS installed it \
-                 (ExecStart={}): the step would not run, or not fail closed",
-                exec_start.trim()
+                 (ExecStart: {}): the step would not run, or not fail closed",
+                shown(&starts)
             ));
         }
     }
-    for property in ["ExecCondition", "ExecStartPre", "ExecStartPost"] {
-        let listing = host.unit_property(SWITCH_STEP_UNIT, property)?;
-        if !commands(&listing).is_empty() {
+    for (property, why) in SWITCH_STEP_EMPTY {
+        let value = host.unit_property(SWITCH_STEP_UNIT, property)?;
+        if !value.trim().is_empty() {
             return refuse(format!(
-                "{SWITCH_STEP_UNIT} runs another command around the switch's last step \
-                 ({property}={}): it could skip the step or end the service first",
-                listing.trim()
+                "{SWITCH_STEP_UNIT} has {property}={} with every drop-in loaded: {why}",
+                value.trim()
             ));
         }
     }
-    let success = host.unit_property(SWITCH_STEP_UNIT, "SuccessExitStatus")?;
-    if !success.trim().is_empty() {
-        return refuse(format!(
-            "{SWITCH_STEP_UNIT} counts another exit status as success \
-             (SuccessExitStatus={}): a failed step would let the switch go on",
-            success.trim()
-        ));
+    for (property, wanted, why) in SWITCH_STEP_VALUES {
+        let value = host.unit_property(SWITCH_STEP_UNIT, property)?;
+        if value.trim() != wanted {
+            return refuse(format!(
+                "{SWITCH_STEP_UNIT} has {property}={} with every drop-in loaded, where NAILS \
+                 needs {wanted}: {why}",
+                value.trim()
+            ));
+        }
     }
-    let action = host.unit_property(SWITCH_STEP_UNIT, "FailureAction")?;
-    let wanted = nails_teardown::whole_root::session_end::session_end().emergency_action();
-    if action.trim() != wanted {
+    let unit = transition::SWITCH_TIMEOUT_UNIT;
+    let budget = host.job_timeout(unit)?;
+    let budget = timespan_usec(budget.trim()).ok_or_else(|| {
+        NailsError::InvalidState(format!(
+            "systemctl show printed JobTimeoutUSec={} for {unit}, which reads as no span of time",
+            budget.trim()
+        ))
+    })?;
+    for (property, setting) in SWITCH_STEP_TIMEOUTS {
+        let value = host.unit_property(SWITCH_STEP_UNIT, property)?;
+        let value = value.trim();
+        if value == "infinity" || timespan_usec(value).is_some_and(|usec| usec >= budget) {
+            continue;
+        }
         return refuse(format!(
-            "{SWITCH_STEP_UNIT} does {} when the switch's last step fails \
-             (FailureAction={}), where NAILS sets {wanted}: a failed step would let the switch go \
-             on or leave the machine stopped",
-            if action.trim().is_empty() {
-                "nothing"
-            } else {
-                action.trim()
-            },
-            action.trim()
+            "{SWITCH_STEP_UNIT} has {property}={value} with every drop-in loaded ({setting}), \
+             shorter than the job timeout of {unit} or no span of time: the step's job would \
+             end before the switch's power-off"
         ));
     }
     Ok(())
