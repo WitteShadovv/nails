@@ -1,0 +1,4 @@
+{
+  y = let a'' = 1; in 2 +a''; z = [ ] ++a''; w = { } //a''; f = { b ? 1 }@a'': 1;
+  p = /a''x''; x = 1;boot.initrd.luks.devices = { data = { device = "/dev/sdc1"; }; };
+}

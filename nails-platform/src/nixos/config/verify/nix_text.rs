@@ -7,8 +7,11 @@
 //! a time, so a marker matches in any case and a match maps back to the line
 //! by offset. Each line is matched as the file writes it and again with the
 //! escapes of its strings decoded ([`super::escapes`]), where a match maps
-//! back to the bytes that stand for it. Every marker counts in comments as
-//! well: an examiner reads them, and a commented-out line that names the
+//! back to the bytes that stand for it. A line that matches neither way is
+//! matched once more with fstab's octal escapes (`\141`) decoded in both,
+//! as libmount reads a value NixOS wrote into `/etc/fstab`. Every marker
+//! counts in comments as well: an examiner reads them, and a commented-out
+//! line that names the
 //! hidden volume points at it as plainly as a live one. The device-mapper
 //! name and a filesystem label, often ordinary words such as `data`, count
 //! only where they name the mapping or the filesystem ([`Pattern::Name`],
@@ -25,7 +28,9 @@ pub(super) enum Pattern {
     /// A path, or the name of a systemd unit made from one. It must begin a
     /// path and end at the end of a path component (the byte after it cannot
     /// continue a file name), and each `/` after its first byte may be
-    /// written as several, as the kernel reads a path. A path begins where
+    /// written as several or with `.` parts after it, as the kernel reads a
+    /// path, as may its leading `/` with `.` and `..` parts, which name the
+    /// root there (`/./mnt/data`, `/../mnt/data`). A path begins where
     /// the byte before it, past the slashes in front of it, cannot continue
     /// a file name (`file:///mnt/data`, `//mnt/data`), or after the prefixes
     /// systemd allows before a path where they start a value
@@ -214,7 +219,20 @@ fn mapping_name(
     if instance.is_some() {
         return instance;
     }
-    crypttab_starts(line).find_map(|from| crypttab_line(line, from, name.as_bytes()))
+    // Starts in one run of quotes, blanks and comment markers all lead to the
+    // same name: read it once, so a long run is read in linear time.
+    let mut read: Option<(usize, usize)> = None;
+    crypttab_starts(line).find_map(|from| {
+        if let Some((first, start)) = read
+            && first <= from
+            && from <= start
+        {
+            return None;
+        }
+        let start = crypttab_name_start(line, from);
+        read = Some((from, start));
+        crypttab_line(line, start, name.as_bytes())
+    })
 }
 
 /// A range of `line` the scanner found naming `what`, whose text is `text`.
@@ -257,13 +275,14 @@ fn crypttab_starts(line: &[u8]) -> impl Iterator<Item = usize> + '_ {
     )
 }
 
-/// A crypttab line from `from` that opens `name`: the name first (after any
-/// indentation, comment marker or opening quote), then the device. A device
+/// A crypttab line whose name would start at `start` that opens `name`: the
+/// name first ([`crypttab_name_start`] skips what may stand before it), then
+/// the device. A device
 /// that is neither a `/dev/` path nor a tag counts as an absolute path
 /// followed by a key file field (`none`, `-` or a path), so prose such as
 /// `# data /home is backed up` is no crypttab line. Fields may be separated
 /// by blanks or by `\t`, as a Nix string writes a tab.
-fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> {
+fn crypttab_line(line: &[u8], start: usize, name: &[u8]) -> Option<Range<usize>> {
     const DEVICE: &[&[u8]] = &[
         b"/dev/",
         b"uuid=",
@@ -272,6 +291,17 @@ fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> 
         b"partlabel=",
         b"id=",
     ];
+    let rest = line[start..].strip_prefix(name)?;
+    let gap = field_gap(rest);
+    let device = &rest[gap..];
+    let opens =
+        gap > 0 && (DEVICE.iter().any(|tag| device.starts_with(tag)) || file_device(device));
+    opens.then_some(start..start + name.len())
+}
+
+/// Where the name of a crypttab line from `from` starts: past indentation,
+/// comment markers and opening quotes.
+fn crypttab_name_start(line: &[u8], from: usize) -> usize {
     let mut start = from;
     loop {
         let rest = &line[start..];
@@ -283,15 +313,9 @@ fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> 
         ) {
             1
         } else {
-            break;
+            return start;
         };
     }
-    let rest = line[start..].strip_prefix(name)?;
-    let gap = field_gap(rest);
-    let device = &rest[gap..];
-    let opens =
-        gap > 0 && (DEVICE.iter().any(|tag| device.starts_with(tag)) || file_device(device));
-    opens.then_some(start..start + name.len())
 }
 
 /// The length of the field separator at the start of `text`: blanks and
@@ -333,11 +357,12 @@ fn file_device(fields: &[u8]) -> bool {
 /// be doubled, as in a [`Pattern::Path`]. The range of the whole path.
 fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
     const PREFIX: &[u8] = b"/dev/disk/by-id/dm-uuid-crypt-";
+    let mut begins = Begins::default();
     (0..line.len()).find_map(|start| {
-        let tail = path_end(line, start, PREFIX)?;
-        if !begins_path(line, start) {
+        if line[start] != b'/' || !begins.at(line, start) {
             return None;
         }
+        let tail = path_end(line, start, PREFIX)?;
         let end = tail
             + line[tail..]
                 .iter()
@@ -363,20 +388,29 @@ fn find_path(line: &[u8], path: &[u8]) -> Option<Range<usize>> {
     let mut path = path.to_vec();
     path.dedup_by(|byte, previous| *byte == b'/' && *previous == b'/');
     let rooted = path.first() == Some(&b'/');
+    let mut begins_at = Begins::default();
     (0..line.len()).find_map(|start| {
-        let end = path_end(line, start, &path)?;
+        // Whether the path begins here first: a start inside a run of `.`
+        // parts never begins one, so the run is read once, not from each.
         let begins = if rooted {
-            begins_path(line, start)
+            line[start] == b'/' && begins_at.at(line, start)
         } else {
             !continues_file_name(start.checked_sub(1).map(|i| line[i]))
         };
-        (begins && !continues_file_name(line.get(end).copied())).then_some(start..end)
+        if !begins {
+            return None;
+        }
+        let end = path_end(line, start, &path)?;
+        (!continues_file_name(line.get(end).copied())).then_some(start..end)
     })
 }
 
 /// Where `path`, read in `line` from `start`, ends: each `/` after its first
 /// byte stands for a run of slashes and `.` parts, as the kernel reads a
-/// path (`/mnt//data` and `/mnt/./data` are `/mnt/data`). `path` holds no
+/// path (`/mnt//data` and `/mnt/./data` are `/mnt/data`), and so does its
+/// first byte where `.` or `..` parts follow it, which at the root name the
+/// root (`/./mnt/data` and `/../mnt/data` are `/mnt/data`). A run of slashes
+/// alone in front of the path is left to [`begins_path`]. `path` holds no
 /// run and no `.` part of its own. `None` when `path` is not there.
 fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
     let mut at = start;
@@ -385,20 +419,31 @@ fn path_end(line: &[u8], start: usize, path: &[u8]) -> Option<usize> {
             return None;
         }
         at += 1;
-        if index > 0 && byte == b'/' {
-            loop {
-                let rest = &line[at..];
-                if rest.first() == Some(&b'/') {
-                    at += 1;
-                } else if rest.starts_with(b"./") {
-                    at += 2;
-                } else {
-                    break;
-                }
-            }
+        if byte == b'/' {
+            at = past_empty_parts(line, at, index == 0);
         }
     }
     (!path.is_empty()).then_some(at)
+}
+
+/// Where the parts that add nothing to a path end, from `at`, right after a
+/// `/` of it: runs of slashes and `.` parts, and at the `root`, the path's
+/// leading slash, `..` parts too, but there a run of slashes only after one
+/// of them.
+fn past_empty_parts(line: &[u8], mut at: usize, root: bool) -> usize {
+    let from = at;
+    loop {
+        let rest = &line[at..];
+        if rest.starts_with(b"./") {
+            at += 2;
+        } else if root && rest.starts_with(b"../") {
+            at += 3;
+        } else if rest.first() == Some(&b'/') && (!root || at > from) {
+            at += 1;
+        } else {
+            return at;
+        }
+    }
 }
 
 /// The prefixes systemd allows before a path in a setting: `-` for a file
@@ -428,6 +473,27 @@ fn begins_path(line: &[u8], start: usize) -> bool {
         .take_while(|b| SYSTEMD_PREFIXES.contains(b))
         .count();
     starts_value(line, at + 1 - prefixes)
+}
+
+/// [`begins_path`] for the slashes of a line in turn, read once for each run
+/// of slashes: every slash of a run has the same byte before the run, so a
+/// long run is not read back from each of its slashes.
+#[derive(Debug, Default)]
+struct Begins {
+    /// The slash read last and whether a path begins there.
+    last: Option<(usize, bool)>,
+}
+
+impl Begins {
+    /// Whether a path begins at `start`, a slash of `line`.
+    fn at(&mut self, line: &[u8], start: usize) -> bool {
+        let begins = match self.last {
+            Some((last, begins)) if last + 1 == start => begins,
+            _ => begins_path(line, start),
+        };
+        self.last = Some((start, begins));
+        begins
+    }
 }
 
 /// Whether a value starts at `at` in `line`: at the start of the line, or

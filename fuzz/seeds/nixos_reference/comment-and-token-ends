@@ -1,0 +1,5 @@
+{
+  x = 1; /* a 5" disk */ boot.initrd.luks.devices = { data = { device = "/dev/sdc1"; }; };
+  y = true/* it''s */; z = let a'' = 1; in a''; u = http://example.org/a'';
+  w = 2; # a note boot.initrd.luks.devices.data.keyFile = "/k";
+}

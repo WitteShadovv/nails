@@ -116,6 +116,39 @@ fn a_path_counts_however_many_slashes_part_it() {
     );
 }
 
+/// At the root the kernel reads a `.` part as the root and a `..` part too,
+/// so a path counts with such parts right after its leading slash, as a
+/// string or a path literal writes it, and the text reported begins at that
+/// slash. A part that only starts with dots is a name of its own.
+#[test]
+fn a_path_counts_with_dot_parts_after_its_leading_slash() {
+    let path = Pattern::Path("/mnt/data".into());
+    for (hit, text) in [
+        ("x = \"/./mnt/data\";", "/./mnt/data"),
+        ("x = /./mnt/data;", "/./mnt/data"),
+        ("x = \"/../mnt/data\";", "/../mnt/data"),
+        ("x = \"/.//.././mnt//data\";", "/.//.././mnt//data"),
+        ("x = \"//./mnt/data\";", "/./mnt/data"),
+        ("# mount it at /./MNT/./DATA first", "/./mnt/./data"),
+    ] {
+        assert_eq!(found(&path, hit).as_deref(), Some(text), "{hit}");
+    }
+    for miss in [
+        "x = \"/.../mnt/data\";",
+        "x = \"/.mnt/data\";",
+        "x = \"/./mnt/data2\";",
+        "x = \"/./srv/mnt/data\";",
+        "x = \"./mnt/data\";",
+    ] {
+        assert_eq!(found(&path, miss), None, "{miss}");
+    }
+    let device = Pattern::Path("/dev/mapper/data".into());
+    assert_eq!(
+        found(&device, "device = \"/./dev/mapper/data\";").as_deref(),
+        Some("/./dev/mapper/data")
+    );
+}
+
 /// systemd allows prefixes before a path in a setting (`-` for a file that
 /// may be missing, `+`, `!`, `!!`, `@`, `:`): a run of them that starts a
 /// value, after `=`, a quote, a blank or at the start of the line, is no

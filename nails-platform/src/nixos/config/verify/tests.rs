@@ -694,6 +694,343 @@ fn a_path_with_doubled_slashes_is_refused() {
     }
 }
 
+/// A path with a `.` or `..` part right after its leading slash is the path
+/// without it, as the kernel reads it and as Nix reads a path literal, and
+/// is refused as the plain path is.
+#[test]
+fn a_path_with_a_dot_part_after_its_leading_slash_is_refused() {
+    use ReferenceKind::{Device, MountPoint};
+    for (content, expected) in [
+        ("{ x = \"/./mnt/data\"; }", (1, "/./mnt/data", MountPoint)),
+        ("{ x = /./mnt/data; }", (1, "/./mnt/data", MountPoint)),
+        (
+            "{ imports = [ /../mnt/data/extra.nix ]; }",
+            (1, "/../mnt/data", MountPoint),
+        ),
+        (
+            "{ fileSystems.\"/srv\".device = \"/./dev/mapper/data\"; }",
+            (1, "/./dev/mapper/data", Device),
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+    let scan = scan_configuration("{ x = \"/.../mnt/data\"; }");
+    assert!(scan.is_clean(), "{scan:#?}");
+}
+
+/// NixOS writes a `fileSystems` entry's device, mount point and options
+/// into `/etc/fstab` as Nix reads them, and libmount decodes fstab's octal
+/// escapes there (`\141` is `a`). A name written with them is refused as
+/// the plain name is, in a `"…"` string that writes the backslash as `\\`,
+/// in a `''…''` string and in a comment. `\\\\141`, which libmount reads as
+/// a backslash and `a`, names nothing.
+#[test]
+fn a_name_written_with_fstab_s_octal_escapes_is_refused() {
+    use ReferenceKind::{Device, MountPoint};
+    for (content, expected) in [
+        (
+            "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\141ta\"; }",
+            (1, "/dev/mapper/d\\\\141ta", Device),
+        ),
+        (
+            "{ fileSystems.\"/mnt/d\\\\141ta\".device = \"/dev/sdc1\"; }",
+            (1, "/mnt/d\\\\141ta", MountPoint),
+        ),
+        (
+            "{ fileSystems.\"/x\".device = ''/dev/mapper/\\144\\141\\164\\141''; }",
+            (1, "/dev/mapper/\\144\\141\\164\\141", Device),
+        ),
+        (
+            "{ fileSystems.\"/x\".device = \"/DEV/MAPPER/D\\\\101TA\"; }",
+            (1, "/DEV/MAPPER/D\\\\101TA", Device),
+        ),
+        (
+            "{ }\n# device = /dev/mapper/d\\141ta\n",
+            (2, "/dev/mapper/d\\141ta", Device),
+        ),
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+    for content in [
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\\\\\141ta\"; }",
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\14ta\"; }",
+        "{ fileSystems.\"/x\".device = \"/dev/mapper/d\\\\141ta2\"; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert!(scan.is_clean(), "{content}: {scan:#?}");
+    }
+}
+
+/// The mapping name counts in a `luks.devices` block after a place where
+/// Nix's lexer ends a comment or a token otherwise than a scan that knows
+/// only strings and brackets would: an odd quote in a block comment, a block
+/// comment right after a word, a `#` comment a carriage return ends, and
+/// `''` in a name or a URI.
+#[test]
+fn a_mapping_after_a_comment_or_a_token_nix_ends_is_refused() {
+    for before in [
+        "x = 1; /* a 5\" disk */",
+        "y = true/* a 5\" disk */;",
+        "x = 1; # a note\r",
+        "y = let a'' = 1; in a'';",
+        "y = http://example.org/a'';",
+    ] {
+        let content = format!(
+            "{{ {before} boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }}; }}"
+        );
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            only_reference(&scan),
+            (1, "data", ReferenceKind::MapperName),
+            "{content:?}"
+        );
+    }
+}
+
+/// A name right after an operator, with no blank between them, is a name to
+/// Nix, `''` in it too: the mapping counts in a `luks.devices` block after
+/// `2 +a''`, `[ ] ++a''`, `{ } //a''`, `{ b ? 1 }@a''` and `{ b ? 1 }:a''`,
+/// which Nix 2.36 reads as the mapping `data`.
+#[test]
+fn a_mapping_after_a_name_right_after_an_operator_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for (before, entry) in [
+        ("y = let a'' = 1; in 2 +a'';", entry),
+        ("y = let a'' = [ ]; in [ ] ++a'';", entry),
+        ("y = let a'' = { }; in { } //a'';", entry),
+        ("f = { b ? 1 }@a'': 1;", entry),
+        ("f = let a'' = 1; in { b ? 1 }:a'';", entry),
+        (
+            "y = let a'' = 1; in 2 +a'';",
+            "boot.initrd.luks.devices = { inherit data; };",
+        ),
+    ] {
+        for content in [
+            format!("{{\n  {before}\n  {entry}\n}}\n"),
+            format!("{{ {before} {entry} }}"),
+        ] {
+            let scan = scan_configuration(&content);
+            assert_eq!(
+                shown_lines(&scan),
+                [ReferenceKind::MapperName],
+                "{content:?}"
+            );
+        }
+    }
+}
+
+/// Nix reads a carriage return in code as a blank, so a `luks.devices`
+/// block after one names its mapping: after `x = 1;` or a comment that a
+/// carriage return ends, and in a file whose lines end in a carriage return
+/// alone.
+#[test]
+fn a_mapping_after_a_carriage_return_in_code_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for content in [
+        format!("{{\n  x = 1;\r{entry}\n}}\n"),
+        format!("{{\n  x = 1; # note\r\r{entry}\n}}\n"),
+        format!("{{\n  x = 1; /* a */\r{entry}\n}}\n"),
+        "{\r  boot.initrd.luks.devices = {\r    data = { device = \"/dev/sdc1\"; };\r  };\r}\r"
+            .to_string(),
+    ] {
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// Nix reads a float only as `[1-9][0-9]*.[0-9]*` or `0?.[0-9]+` with an
+/// exponent after it, so `0.e5''` is the integer 0, a `.` and the name
+/// `e5''`, and no string starts there: the mapping counts in a
+/// `luks.devices` block after it, as Nix 2.36 reads it.
+#[test]
+fn a_mapping_after_a_name_nix_reads_after_a_number_is_refused() {
+    for number in [
+        "0.e5''", "00.e5''", "01.e5''", "0.E5''", "0.e5-''", "0.e-5''", "09.e1''",
+    ] {
+        for content in [
+            format!(
+                "let y = {number}; in {{ boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }}; }}"
+            ),
+            format!(
+                "{{ config, ... }}:\nlet\n  y = {number};\nin\n{{\n  boot.initrd.luks.devices = {{ data = {{ device = \"/dev/sdc1\"; }}; }};\n}}\n"
+            ),
+        ] {
+            let scan = scan_configuration(&content);
+            assert_eq!(
+                shown_lines(&scan),
+                [ReferenceKind::MapperName],
+                "{content:?}"
+            );
+        }
+    }
+}
+
+/// A carriage return in code is a blank also where an attribute path is
+/// read: between its names and around its `=`. A URI inside a run of tokens
+/// is read whole (`1a:1''` is the number 1 and the URI `a:1''`), so no
+/// string starts in it.
+#[test]
+fn a_mapping_after_a_carriage_return_in_an_attribute_path_or_a_uri_in_a_run_is_refused() {
+    for content in [
+        "{ boot.initrd.luks.devices = {\r data\r=\r{ device = \"/dev/sdc1\"; }; }; }",
+        "{ boot.initrd.luks.devices = { data\r.device = \"/dev/sdc1\"; }; }",
+        "{ boot.initrd.luks.devices = { data.\rdevice = \"/dev/sdc1\"; }; }",
+        "{ boot\r.initrd.luks\r.devices\r=\r{ data = { device = \"/dev/sdc1\"; }; }; }",
+        "{ y = 1a:1''; boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; }; }",
+    ] {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// Nix reads `0.e5''` as the integer 0, a `.` and the name `e5''`, so the
+/// mapping counts in the `luks.devices` block after it, here where only that
+/// reading of the number finds it: the reading by quotes opens a string at
+/// the `''`, and the entry follows a carriage return, which only the Nix
+/// reading takes for a blank. Nix 2.36 reads this file as the mapping `data`.
+#[test]
+fn a_mapping_only_the_number_rule_reads_is_refused() {
+    let scan = scan_configuration(
+        "{ y = 0.e5''; boot.initrd.luks.devices = {\rdata = { device = \"/dev/sdc1\"; }; }; }",
+    );
+    assert_eq!(
+        only_reference(&scan),
+        (1, "data", ReferenceKind::MapperName)
+    );
+}
+
+/// A token starts right after a block comment, so `''` in a name or a URI
+/// there starts no string, as in Nix, and the mapping counts in the block
+/// after it.
+#[test]
+fn a_mapping_after_a_name_right_after_a_block_comment_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for before in [
+        "let a'' = 1; in { y = [ /* x */a'' ];",
+        "{ y = true/**/http://x/a'';",
+        "let s = { a'' = 1; }; in { y = s./* x */a'';",
+    ] {
+        let content = format!("{before} {entry} }}");
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// Nix reads the rest of a path after an interpolation in it as path bytes,
+/// which a `'` ends, so `./a${x}b''` is a path and a string, and the string
+/// ends at the `''` after it. The mapping counts in the block after that,
+/// here after a comment whose quote the reading by quotes takes for a
+/// string.
+#[test]
+fn a_mapping_after_the_rest_of_a_path_after_an_interpolation_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for path in [
+        "./a${x}b",
+        "./a/${x}b",
+        "~/${x}b",
+        "./a${x}-b",
+        "./a${x}1a",
+        "./a${x}b.c",
+        "./a${x}.b",
+        "./a${x}b${x}c",
+        "./a${x}1e5",
+        "./a${x}b/c",
+    ] {
+        let content = format!("let x = \"s\"; p = {path}''; q = ''; /* \" */ in {{ {entry} }}");
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// The scan reads each line in time linear in its length. Each form below
+/// is one that a reading of the scan once read again from each of its
+/// bytes: slashes and `.` parts in a path, dots, words with dots, `+`, a
+/// ruler of dashes in a comment, numbers such as `0.e5`, an ellipsis,
+/// dashes, quotes and indented quotes in code, the escape of `''` in an
+/// indented string, braces, comment lines and block comments. A run four
+/// times as long takes at most about eight times as long. Sets nested
+/// inside each other are not linear and not tested here: each keeps the
+/// path of the sets around it, so a file thousands deep takes time that
+/// grows with the square of the depth.
+#[test]
+fn the_scan_reads_a_line_in_linear_time() {
+    use std::time::{Duration, Instant};
+    let cases: [(&str, &str, &str, &str); 17] = [
+        ("slashes", "{ x = \"", "/", "\"; }"),
+        ("slash dots", "{ x = \"", "/.", "\"; }"),
+        ("dot slashes", "{ x = \"", "./", "\"; }"),
+        ("mount slashes", "{ x = \"/mnt", "/", "x\"; }"),
+        ("dots", "{ x = ", ".", "; }"),
+        ("word dots", "{ x = ", "a.", "a; }"),
+        ("plus", "{ x = ", "+", "; }"),
+        ("ruler", "{ }\n# ", "-", "\n"),
+        ("numbers", "{ x = ", "0.e5", "; }"),
+        ("ellipsis", "{ x = ", "...", "; }"),
+        ("dashes", "{ x = ", "-", "; }"),
+        ("quotes", "{ x = ", "\"", "; }"),
+        ("indented quotes", "{ x = ", "''", "; }"),
+        ("escaped indented quotes", "{ x = ''", "'''", "''; }"),
+        ("braces", "", "{", ""),
+        ("comment lines", "{\n", "# a = 1; b = [ ];\n", "}\n"),
+        ("block comments", "{ ", "/* \" */ ", "}"),
+    ];
+    for (name, prefix, unit, suffix) in cases {
+        let time = |n: usize| {
+            let text = format!("{prefix}{}{suffix}", unit.repeat(n));
+            (0..3)
+                .map(|_| {
+                    let start = Instant::now();
+                    scan_configuration(&text);
+                    start.elapsed()
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        let short = time(2000);
+        let long = time(8000);
+        assert!(
+            long < Duration::from_millis(50) || long < short * 8,
+            "{name}: {short:?} for 2000, {long:?} for 8000"
+        );
+    }
+}
+
+/// The kinds of the references `scan` holds, in order.
+fn shown_lines(scan: &BaseConfigScan) -> Vec<ReferenceKind> {
+    scan.references.iter().map(|found| found.kind).collect()
+}
+
+/// Where a reading by quotes and brackets alone parts from Nix's lexer, what
+/// it finds counts too: here it takes the quote in the block comment for a
+/// string, which runs on to hold `/mnt/d\ata`, and Nix reads the second
+/// block comment as a comment with no string in it.
+#[test]
+fn a_name_that_only_the_reading_by_quotes_finds_still_counts() {
+    let scan = scan_configuration("{ x = [ true/* 5\" */ \"a\" ]; /* /mnt/d\\ata */ }");
+    assert_eq!(
+        only_reference(&scan),
+        (1, "/mnt/d\\ata", ReferenceKind::MountPoint)
+    );
+}
+
 /// A unit's setting that names a file on the hidden volume behind one of
 /// systemd's prefixes (`-` for a file that may be missing) names the mount
 /// point, and is refused as the bare path is.

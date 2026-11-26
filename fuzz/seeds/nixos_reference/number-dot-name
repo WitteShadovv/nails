@@ -1,0 +1,6 @@
+let
+  y = 0.e5''; z = 00.e5''; w = 0.e-5''; v = 1a:1'';
+in
+{
+  boot.initrd.luks.devices = { data = { device = "/dev/sdc1"; }; };
+}

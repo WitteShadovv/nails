@@ -911,9 +911,12 @@ logind.
   one backslash, as a comment or an indented `''…''` string holds it
   (`mnt-my\x2ddata.mount` for `/mnt/my-data`), and with two, as a
   double-quoted string must write it (`"mnt-my\\x2ddata.mount"`). A path
-  counts however many slashes separate its parts: `/mnt//data` and
-  `/dev/mapper//data` are refused as `/mnt/data` and `/dev/mapper/data` are,
-  while `/srv//mnt/data`, which is `/srv/mnt/data`, passes. A path counts
+  counts however many slashes separate its parts and with `.` parts between
+  them, and with `.` and `..` parts right after its leading slash, which
+  name the root there: `/mnt//data`, `/mnt/./data`, `/./mnt/data`,
+  `/../mnt/data` and `/dev/mapper//data` are refused as `/mnt/data` and
+  `/dev/mapper/data` are, while `/srv//mnt/data`, which is `/srv/mnt/data`,
+  passes. A path counts
   behind the prefixes systemd allows before one too, where they start the
   value (`EnvironmentFile=-/mnt/data/app.env`, `ExecStart=+/mnt/data/bin/app`),
   but not where such a prefix is part of another path (`/srv/-/mnt/data`).
@@ -928,6 +931,30 @@ logind.
   character after it the same way. So `"/mnt/d\ata"` and `''/mnt/d''\ata''`
   are refused as `/mnt/data` is, while `"/mnt/d\\ata"`, which Nix reads as
   `/mnt/d\ata`, passes.
+
+  NixOS writes a `fileSystems` entry's device, mount point and options into
+  `/etc/fstab` as Nix reads them, and libmount decodes fstab's octal escapes
+  there, a backslash and three octal digits (`\141` is `a`). A line that
+  names nothing otherwise counts with these decoded too, as the file writes
+  it and as Nix reads it: `"/dev/mapper/d\\141ta"` and `''/mnt/d\141ta''`
+  are refused as `/dev/mapper/data` and `/mnt/data` are, and so is
+  `"/mnt/d\141ta"`, which Nix reads as `/mnt/d141ta`. `"/mnt/d\\\\141ta"`,
+  which libmount reads as `/mnt/d\ata`, passes.
+
+  The check ends a comment where Nix's lexer ends it: a block comment at
+  its first `*/`, whatever quotes it holds (`/* a 5" disk */`), also one
+  that starts right after a word (`true/* … */`), and a `#` comment at a
+  carriage return as well as at the end of the line, so what follows the
+  carriage return is code, where Nix reads a carriage return as a blank.
+  `''` in a name or a URI (`a''`, also right after an operator as in
+  `2 +a''`, or after a number Nix reads as an integer and a `.`, as in
+  `0.e5''`, or right after a block comment as in `/* x */a''`, and
+  `http://example.org/a''`) starts no string, as in Nix, while right after
+  a path it does, also after the rest of one that follows an interpolation
+  in it (`./a''`, `./a${x}b''`). So a `luks.devices` block after such a
+  place names its mapping as it does anywhere else. What a reading by quotes alone finds there counts as
+  well, as before: one that takes such a quote for the start of a string
+  and reads the escapes of that string.
 
   A kernel name counts as the kernel gives it while the check runs. The
   numbers of `dm-<n>` and `loop<n>` are handed out as the devices appear, so
@@ -949,10 +976,10 @@ logind.
   mapping defined through a `let` binding, `lib.listToAttrs` or an
   interpolated name (`luks.devices.${"data"}`), nor a name Nix builds from
   parts (`"/mnt/da" + "ta"`, `lib.concatStrings`), nor a path written with a
-  `..` component or relative to the file (`/mnt/x/../data`,
-  `../../mnt/data`), nor a `.` part right after the leading slash
-  (`/./mnt/data`); a `.` part or a doubled slash between the parts of a path
-  it reads as the kernel does (`/mnt/./data`, `/mnt//data`). It does not
+  `..` component after one of its names or relative to the file
+  (`/mnt/x/../data`, `../../mnt/data`); a `.` part or a doubled slash it
+  reads as the kernel does, and so a `..` part right after the leading slash
+  (`/mnt/./data`, `/mnt//data`, `/./mnt/data`, `/../mnt/data`). It does not
   know these names of the storage: the
   units systemd names after its device nodes and links (`dev-sdb2.device`,
   `dev-dm\x2d0.device`), and its `<major>:<minor>` outside `/dev/block/`
@@ -960,7 +987,10 @@ logind.
   yourself; an entry defined in one of these ways still counts by its device
   when that is written in one of the forms above. Run
   `nixos-generate-config` only while the hidden volume is closed: it writes
-  an entry for every mounted filesystem.
+  an entry for every mounted filesystem. The check reads each line in time
+  linear in its length, but for sets nested inside each other: a file that
+  nests thousands of them deep takes time that grows with the square of the
+  depth.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
   (notes, scripts, a README) free of these names too, and, where

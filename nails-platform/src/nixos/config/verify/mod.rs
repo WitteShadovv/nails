@@ -285,10 +285,13 @@ struct Marker {
 /// (`luks.devices.${"data"}`) is not followed; its device still counts when
 /// it is written as above. A name Nix builds from parts
 /// (`"/mnt/da" + "ta"`, `lib.concatStrings`) is not read. A path written
-/// with a `..` component or relative to the file (`/srv/../mnt/data`,
-/// `../../mnt/data`) is not matched, and neither are the units systemd names after the storage's devices
-/// (`dev-sdb2.device`) nor the storage's `<major>:<minor>` outside
-/// `/dev/block/` (`8:18` in a device-mapper table). A kernel name counts as
+/// with a `..` component after one of its names or relative to the file
+/// (`/srv/../mnt/data`, `../../mnt/data`) is not matched, while `.` and
+/// `..` parts right after its leading slash are read as the root
+/// (`/../mnt/data` is matched). The units systemd names after the storage's
+/// devices (`dev-sdb2.device`) and the storage's `<major>:<minor>` outside
+/// `/dev/block/` (`8:18` in a device-mapper table) are not matched either.
+/// A kernel name counts as
 /// the kernel gives it while the scan runs: `/dev/dm-1` is refused while the
 /// hidden volume's mapping holds that number, also where the decoy means a
 /// device of its own that holds it at other times.
