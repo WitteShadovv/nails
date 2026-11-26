@@ -732,6 +732,60 @@ class Control(unittest.TestCase):
         self.assertFalse(blockwrites.watching(machine))
 
 
+class Evidence(unittest.TestCase):
+    def test_an_error_about_a_cut_shows_the_switch_s_console_lines(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        machine.full_console_log += ["old line", "blkstat-mark hold"]
+        since = 1
+        machine.full_console_log += [
+            "noise",
+            "blkstat-mark release",
+            "x Starting Boot marker",
+        ]
+        blockwrites.after_switch(
+            machine, "deactivate", False, None, None, hidden=False, since=since
+        )
+        self.assertIn("without the mark unit's hold line", oracle.errors[0])
+        shown = [line for line in machine.logged if ": console " in line]
+        self.assertEqual(
+            shown,
+            [
+                "block-write oracle: deactivate: console 1: blkstat-mark hold",
+                "block-write oracle: deactivate: console 3: blkstat-mark release",
+                "block-write oracle: deactivate: console 4: x Starting Boot marker",
+            ],
+        )
+
+    def test_a_switch_without_an_error_shows_none_and_each_cut_says_where(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        machine.full_console_log += ["blkstat-mark hold"]
+        cut = blockwrites.at_hold(machine, opened_here=True, since=0)
+        self.assertIn(
+            f"block-write oracle: activate: cut at console line {cut}, "
+            "hold at 0, answered",
+            machine.logged,
+        )
+        blockwrites.after_switch(
+            machine, "activate", True, cut, None, hidden=True, since=0
+        )
+        self.assertFalse([line for line in machine.logged if ": console " in line])
+
+    def test_a_flush_that_never_ends_shows_the_console_from_the_hold(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "soft-reboot", control=True)
+        machine.full_console_log += ["blkstat-mark hold"]
+        machine.send_console = machine.typed.append  # type: ignore[method-assign, assignment]
+        with mock.patch.object(blockwrites, "SYNC_WAIT", 0.2):
+            blockwrites.at_hold(machine, opened_here=True, since=0)
+        self.assertIn("typed at console line 1", oracle.errors[0])
+        self.assertIn(
+            "block-write oracle: soft-reboot: console 0: blkstat-mark hold",
+            machine.logged,
+        )
+
+
 class Threads(unittest.TestCase):
     def test_the_watch_thread_finishes_a_paused_power_off(self) -> None:
         machine = FakeMachine()

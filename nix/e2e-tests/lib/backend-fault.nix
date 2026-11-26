@@ -92,6 +92,7 @@
                 cut_at,
                 None if release is None else console_index + release,
                 hidden=False,
+                since=console_index,
             )
         return "decoy"
   '';

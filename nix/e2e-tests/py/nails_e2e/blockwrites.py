@@ -1163,6 +1163,31 @@ def before_switch(machine: Any, label: str, control: bool = False) -> bool:
     return opened
 
 
+#: The console lines an oracle error about a cut shows from its switch.
+EVIDENCE = re.compile(
+    r"blkstat|soft-reboot|oft-reboot|Boot marker|systemd-journald|Journal Service"
+)
+#: The most of them it shows.
+EVIDENCE_LIMIT = 80
+
+
+def evidence(machine: Any, label: str, since: int | None) -> None:
+    """Report the console lines of a switch, from index ``since``, that tell
+    when the mark unit held and ended and when the host answered: the lines an
+    oracle error about the cut rests on. The report keeps them; a passing
+    test's log does not."""
+    if since is None:
+        return
+    lines = machine.full_console_log[since:]
+    shown = [
+        (since + i, line.strip()[:200])
+        for i, line in enumerate(lines)
+        if EVIDENCE.search(line)
+    ]
+    for index, line in shown[:EVIDENCE_LIMIT]:
+        machine.log(f"block-write oracle: {label}: console {index}: {line}")
+
+
 def at_hold(machine: Any, opened_here: bool, since: int | None = None) -> int:
     """At the mark unit's hold line: cut the window, then end the unit's wait
     by typing :data:`GO` on the serial console, unless it already stopped
@@ -1172,11 +1197,13 @@ def at_hold(machine: Any, opened_here: bool, since: int | None = None) -> int:
     would end before the host saw the hold line."""
     oracle = oracle_of(machine)
     send = getattr(machine, "send_console", None)
+    label = "a switch"
     if oracle is not None:
         with oracle.lock:
             if oracle.window is not None:
+                label = oracle.window.label
                 if oracle.window.control and send is not None:
-                    _flush(machine, oracle, send)
+                    _flush(machine, oracle, send, since)
                 try:
                     oracle.cut(SESSION if opened_here else "after the way back")
                 except Exception as e:  # noqa: BLE001 - judged with the rest
@@ -1186,20 +1213,33 @@ def at_hold(machine: Any, opened_here: bool, since: int | None = None) -> int:
     # hold and release pair would keep the answer back.
     lines = machine.full_console_log[since if since is not None else -200 :]
     _, release = hold_and_release(lines)
+    answered = False
     if send is not None and release is None:
         send(GO)
+        answered = True
+    machine.log(
+        f"block-write oracle: {label}: cut at console line {cut_at}, hold at "
+        f"{since}, " + ("answered" if answered else "not answered")
+    )
     return cut_at
 
 
-def _flush(machine: Any, oracle: Oracle, send: Any) -> None:
+def _flush(machine: Any, oracle: Oracle, send: Any, hold: int | None = None) -> None:
     """Have the mark unit flush the guest's page cache before a control's
-    cut, and wait, bounded, until it says it has."""
+    cut, and wait, bounded, until it says it has. ``hold`` is the console
+    index of the hold line, from which an error shows the console."""
     since = len(machine.full_console_log)
     send(SYNC)
     deadline = time.monotonic() + SYNC_WAIT
     while not any(SYNCED in line for line in machine.full_console_log[since:]):
         if time.monotonic() > deadline:
-            oracle.errors.append("a control's flush did not end in time")
+            oracle.errors.append(
+                f"a control's flush did not end in time (typed at console line {since})"
+            )
+            if oracle.window is not None:
+                evidence(
+                    machine, oracle.window.label, hold if hold is not None else since
+                )
             return
         time.sleep(
             0.1
@@ -1377,6 +1417,7 @@ def after_switch(
     cut_at: int | None,
     release_at: int | None,
     hidden: bool,
+    since: int | None = None,
 ) -> None:
     """Once the new userspace is up: keep the window in the hidden root, drop
     it when this switch opened it and did not land there, and close it on the
@@ -1384,8 +1425,11 @@ def after_switch(
     oracle = oracle_of(machine)
     if oracle is None:
         return
+    errors = len(oracle.errors)
     with oracle.lock:
         _after_switch(oracle, label, opened_here, cut_at, release_at, hidden)
+    if len(oracle.errors) > errors:
+        evidence(machine, label, since)
     disarm(machine)
 
 

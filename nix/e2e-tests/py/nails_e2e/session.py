@@ -334,6 +334,7 @@ def follow_soft_reboot(
             cut_at,
             None if release is None else console_index + release,
             hidden=root_fstype(machine) == "overlay",
+            since=console_index,
         )
     return timings
 
