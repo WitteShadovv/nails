@@ -240,9 +240,7 @@ pub fn on_watched_disk(layout: &Layout, sys: &Sysfs, dev: DevNum) -> bool {
 /// as a filesystem left frozen stops every writer.
 #[allow(unsafe_code)]
 pub fn freeze_and_thaw(mount_point: &Path) -> io::Result<()> {
-    use rustix::ioctl::{NoArg, ioctl, opcode};
-    const FIFREEZE: rustix::ioctl::Opcode = opcode::read_write::<libc::c_int>(b'X', 119);
-    const FITHAW: rustix::ioctl::Opcode = opcode::read_write::<libc::c_int>(b'X', 120);
+    use rustix::ioctl::{NoArg, ioctl};
     let dir = std::fs::File::open(mount_point)?;
     // SAFETY: FIFREEZE takes no argument the kernel reads.
     unsafe { ioctl(&dir, NoArg::<FIFREEZE>::new()) }.map_err(io::Error::from)?;
@@ -256,6 +254,11 @@ pub fn freeze_and_thaw(mount_point: &Path) -> io::Result<()> {
     }
     thawed
 }
+
+/// `FIFREEZE`, `_IOWR('X', 119, int)` in `linux/fs.h`.
+const FIFREEZE: rustix::ioctl::Opcode = rustix::ioctl::opcode::read_write::<libc::c_int>(b'X', 119);
+/// `FITHAW`, `_IOWR('X', 120, int)`.
+const FITHAW: rustix::ioctl::Opcode = rustix::ioctl::opcode::read_write::<libc::c_int>(b'X', 120);
 
 /// The device a file lies on, when that is a block device (not a tmpfs).
 fn file_device(path: &Path) -> Option<DevNum> {

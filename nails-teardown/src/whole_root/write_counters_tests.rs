@@ -475,3 +475,44 @@ fn a_file_lies_on_the_device_its_filesystem_shows() {
     let expected = (shown.major != 0).then_some(shown);
     assert_eq!(file_device(&exe), expected);
 }
+
+#[test]
+fn the_freeze_and_the_thaw_are_the_kernel_s_requests() {
+    assert_eq!(u64::from(FIFREEZE), 0xC004_5877);
+    assert_eq!(u64::from(FITHAW), 0xC004_5878);
+    assert!(freeze_and_thaw(Path::new("/nonexistent")).is_err());
+}
+
+/// A real XFS filesystem, as root: `NAILS_XFS_MOUNT` names where it is
+/// mounted and `NAILS_XFS_DEV` its device (`major:minor`). After writes and a
+/// `sync`, XFS writes again 20 to 80 seconds later; after a freeze and thaw
+/// it writes nothing for 100 seconds. Without the variables, nothing runs.
+#[test]
+fn a_frozen_and_thawed_xfs_filesystem_writes_nothing_later() {
+    let (Some(mount), Some(dev)) = (
+        std::env::var_os("NAILS_XFS_MOUNT"),
+        std::env::var("NAILS_XFS_DEV").ok(),
+    ) else {
+        return;
+    };
+    let mount = PathBuf::from(mount);
+    let sys = Sysfs::system();
+    for i in 0..50 {
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(mount.join("wtmp"))
+            .unwrap();
+        std::io::Write::write_all(&mut log, format!("rec {i}\n").as_bytes()).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(mount.join("tmp"));
+    rustix::fs::sync();
+    freeze_and_thaw(&mount).unwrap();
+    let before = sectors(&sys, &dev).unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(100));
+    assert_eq!(
+        sectors(&sys, &dev).unwrap(),
+        before,
+        "XFS wrote after the thaw"
+    );
+}
