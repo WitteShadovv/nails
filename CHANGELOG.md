@@ -2763,6 +2763,11 @@ of this changelog for that version becomes the release notes word for word, and
   to power off, and resolves its `systemctl` when it starts, so a part that fails after the repoint
   no longer goes straight to the kernel's power-off with the decoy root mounted read-write. A
   leftover tree whose runtime directory or `noexec` cannot be put back powers off too.
+- The access-time scenario masks NetworkManager-dispatcher.service on Fedora 44, as it masks the
+  timers. The dispatcher runs its hooks at the decoy's stop and on each change of a connection, which
+  a plain soft-reboot control hits only sometimes, so a hit in a session's window with clean controls
+  read as unexplained. No path is allowlisted, and the gate and the smoke keep the stock
+  dispatcher.
 - The soak test's neighbour VMs now soft-reboot their plain decoys into themselves, with no hidden
   session: in a hidden session every soft-reboot powers off, which would end their churn at its
   first round.

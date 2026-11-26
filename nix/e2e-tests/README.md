@@ -1113,7 +1113,13 @@ times NAILS judges, as the aging would have NAILS refuse the entry: apt's
 configuration, which NAILS compares with the start of Debian's
 unattended-upgrades helper (its entries still show a read, as their access times
 are older than a day), and `/etc/selinux/config`, which `lsm-status` compares
-with the boot (a read of it may not show). Four controls, each with the
+with the boot (a read of it may not show). Before the first phase it masks the
+decoy's timers and, where it exists (Fedora 44), NetworkManager-dispatcher.service:
+the dispatcher runs its hooks at the decoy's stop and on each change of a
+connection, which a plain soft-reboot control hits only sometimes, so a read of
+its scripts and libraries in a session's window would read as unexplained. No
+path is allowlisted for it, and the gate and the smoke keep the stock
+dispatcher. Four controls, each with the
 hidden root mounted as for a session, show what the decoy's own stop and start
 read: a plain soft-reboot of the decoy into itself and a plain power cycle
 (the decoy's own power-off and a cold boot of the same disk), each once

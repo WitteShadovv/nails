@@ -58,7 +58,13 @@
 # left; the variables are set by the backdoor's shell, so nothing starts for
 # them. The decoy is made amnesic, as NAILS requires, its
 # timers are masked and cloud-init is turned off before the first measured
-# phase, so nothing the decoy schedules runs into a phase. apt's configuration
+# phase, so nothing the decoy schedules runs into a phase.
+# NetworkManager-dispatcher.service is masked too, where it exists (Fedora
+# 44): the dispatcher runs its hooks, which read their scripts and
+# libraries, at the decoy's stop and on each change of a connection, which a plain soft-reboot control hits only
+# sometimes, so a hit in a session's window with clean controls would read
+# as unexplained (decision 54). No path is allowlisted for it. The gate and
+# the smoke keep the stock dispatcher. apt's configuration
 # is not aged: NAILS compares its change times with the start of Debian's
 # unattended-upgrades helper, and refuses where it changed after it (its
 # entries still show a read, as their access times are older than a day).
@@ -465,12 +471,17 @@ distroVm.buildVmTest {
     write_config()
     print(vm.succeed("cat /etc/os-release; uname -r; findmnt -rn -o TARGET,SOURCE,FSTYPE,OPTIONS"))
 
-    with subtest("prepare the decoy: amnesic, no timers, no cloud-init"):
+    with subtest("prepare the decoy: amnesic, no timers, no cloud-init, no NetworkManager dispatcher"):
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(
             "for timer in $(systemctl list-units --type=timer --all --plain --no-legend "
             + "| awk '{print $1}'); do systemctl mask --now \"$timer\"; done; "
             + "if [ -d /etc/cloud ]; then touch /etc/cloud/cloud-init.disabled; fi"
+        )
+        # NetworkManager's dispatcher, where it exists (see the header).
+        vm.succeed(
+            "if systemctl cat NetworkManager-dispatcher.service >/dev/null 2>&1; then "
+            + "systemctl mask --now NetworkManager-dispatcher.service; fi"
         )
         vm.succeed("""${hiddenRoot.stopAptTimers}""")
         # The operator account, with a home and a shell as useradd makes them.
