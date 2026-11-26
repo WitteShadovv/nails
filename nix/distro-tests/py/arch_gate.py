@@ -50,9 +50,10 @@ with a plain soft-reboot. What differs is what Arch is:
   why. An archinstall image with its default zram swap would run them. Each
   session must run no swap on a disk;
 - NAILS's processes in a session run as root from its copy in RAM
-  (``/proc/<pid>/exe``, :func:`processes_from_ram`), and each session writes
-  a file on ``/efi`` (:data:`EFI_PROBE`) that must not be on the decoy after
-  the way back;
+  (``/proc/<pid>/exe``, :func:`processes_from_ram`), and no process runs a
+  program of NAILS's from elsewhere (:func:`nails_elsewhere`); each session
+  writes a file on ``/efi`` (:data:`EFI_PROBE`) that must not be on the
+  decoy after the way back;
 - the guest runs the driver's own Python (``python`` of the settings) from
   the Nix store the harness mounts, for the reading of the kernel log, the
   failed console logins and the rehearsal's state, so the gate does not
@@ -173,6 +174,15 @@ UPDATE_UNITS = (
 # transaction, the positive control of that reading.
 UP_TO_DATE = "/etc current; /var current"
 PENDING = "/etc pending; /var pending"
+# Every process with the program it runs (``/proc/<pid>/exe``), the kernel's
+# threads, which run none, aside.
+PROCESS_EXES = (
+    'for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; '
+    'echo "${p#/proc/} $e"; done'
+)
+# The names of NAILS's programs: the binary the harness shares and the copy
+# in RAM it runs from.
+NAILS_PROGRAMS = ("nails", "control")
 # A file each session tries to write on the ESP (``/efi``), which the hidden
 # session masks and binds read-only: whatever the write does, the file must
 # not be on the decoy's ESP after the way back, whose files the way back's
@@ -312,16 +322,44 @@ def fstab_notes(message: str) -> str | None:
     return notes.strip()
 
 
+def process_exes(text: str) -> dict[str, str]:
+    """Each process :data:`PROCESS_EXES` listed, with its program."""
+    found = {}
+    for line in text.splitlines():
+        pid, _, exe = line.partition(" ")
+        if pid.isdigit() and exe:
+            found[pid] = exe
+    return found
+
+
+def nails_elsewhere(exes: str) -> list[str]:
+    """The processes :data:`PROCESS_EXES` listed that run a program of
+    NAILS's (:data:`NAILS_PROGRAMS`) from anywhere but its copy in RAM."""
+    return sorted(
+        f"{pid} {exe}"
+        for pid, exe in process_exes(exes).items()
+        if exe != fg.RAM
+        and (
+            exe.rsplit("/", 1)[-1] in NAILS_PROGRAMS
+            or exe.startswith(fg.RUNTIME + "/")
+            or exe.startswith(fg.HIDDEN + "/")
+        )
+    )
+
+
 def processes_from_ram(lines: Sequence[str], exes: str) -> bool:
     """Whether NAILS's processes (``lines`` of ``ps -o user=,pid=,...``) run
-    as root, each from its copy in RAM (:data:`fedora_gate.RAM`) as
-    ``exes`` (``<pid> <readlink of /proc/<pid>/exe>`` lines) gives them."""
-    read = dict(
-        line.split(None, 1) for line in exes.splitlines() if len(line.split()) == 2
-    )
-    return bool(lines) and all(
-        line.split()[0] == "root" and read.get(line.split()[1]) == fg.RAM
-        for line in lines
+    as root, each from its copy in RAM (:data:`fedora_gate.RAM`) as ``exes``
+    (:data:`PROCESS_EXES`) gives them, and no process runs a program of
+    NAILS's from anywhere else (:func:`nails_elsewhere`)."""
+    read = process_exes(exes)
+    return (
+        bool(lines)
+        and all(
+            line.split()[0] == "root" and read.get(line.split()[1]) == fg.RAM
+            for line in lines
+        )
+        and not nails_elsewhere(exes)
     )
 
 
@@ -459,15 +497,11 @@ class ArchGate(fg.Gate):
             "grep -v grep; true",
         )
         lines = [line for line in processes.splitlines() if "overlay-runtime" in line]
-        pids = [line.split()[1] for line in lines if len(line.split()) > 1]
-        exes = self.fact(
-            f"processes-exe-{n}",
-            "".join(f"echo {pid} $(readlink /proc/{pid}/exe); " for pid in pids),
-        )
+        exes = self.fact(f"processes-exe-{n}", PROCESS_EXES, again=True)
         self.check(
             f"session {n}: NAILS's processes run from its copy in RAM, as root",
             processes_from_ram(lines, exes),
-            {"processes": processes, "exe": exes},
+            {"processes": processes, "fromElsewhere": nails_elsewhere(exes)},
         )
 
     def volume_label(self, n: int) -> None:
@@ -710,6 +744,20 @@ class ArchGate(fg.Gate):
         )
         self.left_pending("1")
 
+    def drift_update(self) -> None:
+        """Between the sessions: the decoy updates the drift control's
+        package the hidden session updated, which leaves /etc and /var out of
+        date with /usr, and the gate brings them up to date by hand before the
+        second entry."""
+        out = self.fact("drift-install-3", pacman_install("3", self.builddate()))
+        self.check(
+            "the decoy updates the drift control's package after the session",
+            "rc=0" in out and installed_version(out) == "3-1",
+            out[-1500:],
+        )
+        self.left_pending("3")
+        self.up_to_date("drift", "second")
+
     def left_pending(self, version: str) -> None:
         """The positive control of the update state's reading: right after
         pacman changed /usr, /etc and /var read out of date with it."""
@@ -882,14 +930,7 @@ class ArchGate(fg.Gate):
         # sessions list it twice, theirs and the decoy's.
         self.where = "decoy between the sessions"
         self.mark("prep-drift")
-        out = self.fact("drift-install-3", pacman_install("3", self.builddate()))
-        self.check(
-            "the decoy updates the drift control's package after the session",
-            "rc=0" in out and installed_version(out) == "3-1",
-            out[-1500:],
-        )
-        self.left_pending("3")
-        self.up_to_date("drift", "second")
+        self.drift_update()
         self.sh("hidden-root-2", self.hidden_root)
         _, rows = self.check_rows("check-drift")
         row = rows.get("package-drift", {})

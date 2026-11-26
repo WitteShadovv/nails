@@ -1006,7 +1006,9 @@ class GuestCommandTest(unittest.TestCase):
     the tools they call, so that a change in what they print shows here."""
 
     def setUp(self) -> None:
-        self.tmp = tempfile.mkdtemp(prefix="gate-guest-")
+        holder = tempfile.TemporaryDirectory(prefix="gate-guest-")
+        self.addCleanup(holder.cleanup)
+        self.tmp = holder.name
 
     def test_needs_update_reads_systemd_s_verdict(self) -> None:
         verdict = (
@@ -1037,10 +1039,10 @@ class GuestCommandTest(unittest.TestCase):
             f'-nrpo) printf "%s part\\n" {" ".join(parts)}; echo /dev/vda disk ;; esac'
         )
         out = guest(fg.PARTITIONS, {"findmnt": findmnt, "lsblk": lsblk}, self.tmp)
-        expected = {
-            part: hashlib.sha256(open(part, "rb").read()).hexdigest()
-            for part in parts[:2]
-        }
+        expected = {}
+        for part in parts[:2]:
+            with open(part, "rb") as handle:
+                expected[part] = hashlib.sha256(handle.read()).hexdigest()
         self.assertEqual(fg.partition_hashes(out), {**expected, root: "mounted"})
 
     def test_journal_streams_lists_each_stream_with_its_unit(self) -> None:
@@ -1068,33 +1070,57 @@ class GuestCommandTest(unittest.TestCase):
         )
 
     def disk_tree(self) -> tuple[str, dict[str, str]]:
-        """A disk mount with a nested folder and another filesystem mounted
-        below it, and the stubs of findmnt that list them."""
+        """A disk mount with a nested folder, a bind of the same filesystem
+        and another filesystem mounted below it, and the stubs that list them:
+        findmnt, stat giving the other filesystem a device of its own, and find
+        writing down how it was called before it runs."""
         top = os.path.join(self.tmp, "root")
-        os.makedirs(os.path.join(top, "var/lib/machines/deep"))
-        os.makedirs(os.path.join(top, "other"))
-        for path in ("var/lib/machines/deep/file", "other/not-mine"):
+        for folder in ("var/lib/machines/deep", "other", "srv/bind"):
+            os.makedirs(os.path.join(top, folder))
+        for path in ("var/lib/machines/deep/file", "other/not-mine", "srv/bind/kept"):
             open(os.path.join(top, path), "w").close()
-        other = os.path.join(top, "other")
+        other, bind = os.path.join(top, "other"), os.path.join(top, "srv/bind")
         findmnt = (
-            f'if [ "$4" = TARGET ]; then printf "%s\\n" {top} {other}; '
-            f'else echo "{top} btrfs"; echo "{other} tmpfs"; fi'
+            f'if [ "$4" = TARGET ]; then printf "%s\\n" {top} {other} {bind}; '
+            f'else echo "{top} btrfs"; echo "{other} tmpfs"; echo "{bind} btrfs"; fi'
         )
-        return top, {"findmnt": findmnt}
+        real_stat, real_find = shutil.which("stat"), shutil.which("find")
+        stat = (
+            f'if [ "$3" = {other} ]; then echo 999999; else exec {real_stat} "$@"; fi'
+        )
+        find = f'echo "$@" >> {self.tmp}/find-calls; exec {real_find} "$@"'
+        self.bind = bind
+        return top, {"findmnt": findmnt, "stat": stat, "find": find}
+
+    def as_gate_bind(self, script: str) -> str:
+        """``script`` with the tree's bind as the gate's own bind, which it
+        reads only through the mount it binds."""
+        return script.replace(fg.UTAB_BIND, self.bind)
+
+    def find_calls(self) -> str:
+        with open(f"{self.tmp}/find-calls", encoding="utf-8") as handle:
+            return handle.read()
 
     def test_the_names_reach_every_depth_and_no_other_filesystem(self) -> None:
         top, stubs = self.disk_tree()
-        out = guest(fg.names_command(), stubs, self.tmp)
+        out = guest(self.as_gate_bind(fg.names_command()), stubs, self.tmp)
         names = gzip.decompress(base64.b64decode(out.strip())).decode().split("\n")
         self.assertIn(f"{top}/var/lib/machines/deep/file", names)
+        self.assertIn(f"{top}/srv/bind/kept", names)
         self.assertIn(top, names)
         self.assertFalse([n for n in names if n.startswith(f"{top}/other")], names)
+        # find crosses devices itself, as -xdev would stop at a btrfs
+        # subvolume nested in the mount.
+        self.assertNotIn("-xdev", self.find_calls())
 
     def test_the_changes_reach_every_depth_and_no_other_filesystem(self) -> None:
         top, stubs = self.disk_tree()
-        out = guest(fg.disk_listing("1"), stubs, self.tmp)
+        out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
         self.assertIn(f"{top}/var/lib/machines/deep/file", out.splitlines())
+        self.assertIn(f"{top}/srv/bind/kept", out.splitlines())
         self.assertNotIn(f"{top}/other/not-mine", out)
+        self.assertNotIn("-xdev", self.find_calls())
+        self.assertNotIn("-path / ", self.find_calls())
 
     def test_fat_files_hashes_every_file(self) -> None:
         top = os.path.join(self.tmp, "efi")
@@ -1151,8 +1177,27 @@ class FatAndRecordsTest(unittest.TestCase):
                 "/efi/c is new",
             ],
         )
-        # A mount on one side alone is left to the partitions' bytes.
-        self.assertEqual(fg.fat_problems(before, {}), [])
+        # A mount on one side alone is a change too: its partition was not
+        # read byte for byte on the side it was mounted.
+        self.assertEqual(
+            fg.fat_problems(before, {}), ["/efi is mounted only before the entry"]
+        )
+        self.assertEqual(
+            fg.fat_problems({}, before), ["/efi is mounted only after the way back"]
+        )
+
+    def test_a_file_beside_the_records_is_compared(self) -> None:
+        listing = "\n".join(
+            (
+                "/var/lib/lastlog",
+                "/var/lib/lastlog/lastlog2.db",
+                "/var/lib/lastlog/lastlog2.db-journal",
+                "/var/lib/lastlog/planted",
+                "/var/lib/wtmpdb/wtmp.db-wal",
+                "/var/log/wtmp",
+            )
+        )
+        self.assertEqual(fg.changed_paths(listing), {"/var/lib/lastlog/planted"})
 
     def test_a_record_file_only_grows(self) -> None:
         before = {"/var/log/btmp": 768, "/var/lib/wtmpdb/wtmp.db-journal": 512}
@@ -1165,9 +1210,19 @@ class FatAndRecordsTest(unittest.TestCase):
 
 
 class WayBackDiskTest(unittest.TestCase):
+    FAT = "mount /efi\ndir /efi\nfile d1  /efi/BOOTX64.EFI\n"
+
     def run_way_back(
-        self, partitions_before: dict[str, str], partitions_after: str
+        self,
+        partitions_before: dict[str, str],
+        partitions_after: str,
+        fat_before: str = FAT,
+        fat_after: str = FAT,
+        sizes_before: str = "384 /var/log/wtmp",
+        sizes_after: str = "384 /var/log/wtmp",
     ) -> fg.Gate:
+        """way_back_disk on fakes of what the guest prints before the entry
+        (the state) and after the way back."""
         run = gate()
         read: list[str] = []
         run.disk_changes = lambda label, since: set()  # type: ignore[method-assign]
@@ -1182,7 +1237,9 @@ class WayBackDiskTest(unittest.TestCase):
             if cmd == fg.PARTITIONS:
                 return partitions_after
             if cmd == fg.RECORD_SIZES:
-                return "384 /var/log/wtmp"
+                return sizes_after
+            if cmd == fg.FAT_FILES:
+                return fat_after
             return ""
 
         run.disk_names = disk_names  # type: ignore[method-assign]
@@ -1191,12 +1248,16 @@ class WayBackDiskTest(unittest.TestCase):
             "since": "1",
             "names": {"/before-1"},
             "partitions": partitions_before,
-            "fat": {},
-            "records-sizes": {"/var/log/wtmp": 384},
+            "fat": fg.fat_files(fat_before),
+            "records-sizes": fg.record_sizes(sizes_before),
         }
         quiet(run.way_back_disk, 1, state)
         self.assertEqual(read, ["after-1"])
         return run
+
+    @staticmethod
+    def passed(run: fg.Gate, name: str) -> list[bool]:
+        return [c["passed"] for c in run.checks if c["name"].startswith(name)]
 
     def test_the_names_after_are_read_after(self) -> None:
         run = self.run_way_back({"/dev/vda1": "d1"}, "/dev/vda1 d1")
@@ -1211,8 +1272,68 @@ class WayBackDiskTest(unittest.TestCase):
             ({"/dev/vda1": "d1"}, "/dev/vda1 d2"),
         ):
             run = self.run_way_back(before, after)
-            judged = [c for c in run.checks if c["name"].startswith(name)]
-            self.assertEqual([c["passed"] for c in judged], [False], (before, after))
+            self.assertEqual(self.passed(run, name), [False], (before, after))
+
+    def test_the_fat_files_after_are_read_and_compared(self) -> None:
+        name = "way back 1: every file of the decoy's FAT filesystems"
+        part = ({"/dev/vda1": "d1"}, "/dev/vda1 d1")
+        changed = self.FAT.replace("d1  ", "d2  ")
+        for before, after in (
+            (self.FAT, changed),
+            ("", self.FAT),
+            ("", ""),
+            (self.FAT, ""),
+        ):
+            run = self.run_way_back(*part, fat_before=before, fat_after=after)
+            self.assertEqual(self.passed(run, name), [False], (before, after))
+
+    def test_the_record_sizes_after_are_read_and_held(self) -> None:
+        name = "way back 1: no login or boot record file shrank or went"
+        part = ({"/dev/vda1": "d1"}, "/dev/vda1 d1")
+        run = self.run_way_back(*part, sizes_after="768 /var/log/wtmp")
+        self.assertEqual(self.passed(run, name), [True])
+        for before, after in (("384 /var/log/wtmp", "0 /var/log/wtmp"), ("", "")):
+            run = self.run_way_back(*part, sizes_before=before, sizes_after=after)
+            self.assertEqual(self.passed(run, name), [False], (before, after))
+
+    def test_the_state_before_the_entry_is_read_from_the_guest(self) -> None:
+        run = gate()
+        answers = {
+            fg.PARTITIONS: "/dev/vda1 d1",
+            fg.FAT_FILES: self.FAT,
+            fg.RECORD_SIZES: "384 /var/log/wtmp",
+        }
+        run.disk_names = lambda label: {f"/{label}"}  # type: ignore[method-assign]
+        run.fact = lambda label, cmd, timeout=300, again=False: answers.get(cmd, "")  # type: ignore[method-assign]
+        state = run.before_disk(1)
+        self.assertEqual(state["names"], {"/before-1"})
+        self.assertEqual(state["partitions"], {"/dev/vda1": "d1"})
+        self.assertEqual(state["fat"], fg.fat_files(self.FAT))
+        self.assertEqual(state["records-sizes"], {"/var/log/wtmp": 384})
+        # What it read before is what the way back is held to.
+        run = self.run_way_back(
+            state["partitions"], "/dev/vda1 d1", fat_before=self.FAT
+        )
+        self.assertTrue(all(c["passed"] for c in run.checks), run.checks)
+
+    def test_the_session_files_are_the_gate_s_own(self) -> None:
+        cmds: list[str] = []
+
+        class Gate(fg.Gate):
+            session_files = ("/efi/gate-efi-1",)
+
+        run = Gate(None, None, None, None, {"image": "x"}, tempfile.mkdtemp())
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            cmds.append(cmd)
+            return ""
+
+        run.fact = fact  # type: ignore[method-assign]
+        quiet(run.session_files_left, 1)
+        self.assertIn("/efi/gate-efi-1", cmds[0])
+        self.assertNotIn("/etc/gate-new", cmds[0])
 
 
 class AdvisoryTest(unittest.TestCase):

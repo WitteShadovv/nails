@@ -422,16 +422,19 @@ WAY_BACK_PIECES = (
     "/run/systemd/system/multi-user.target.wants/overlay-runtime-boot.service",
 )
 # The decoy's login and boot record files: the records checks judge them, so
-# the comparison of the decoy disk leaves them out, with the folders sqlite
-# writes its journal in beside them.
+# the comparison of the decoy disk leaves them out, with the files SQLite
+# makes beside each as it writes it (``<file>-journal``, ``-wal``, ``-shm``),
+# and the folders those come and go in, whose own times change with them.
+# Any other file in those folders is compared as every file is.
 RECORD_PATHS = (
     "/var/log/wtmp",
     "/var/log/btmp",
     "/var/log/lastlog",
     "/var/log/wtmp.db",
-    "/var/lib/lastlog",
-    "/var/lib/wtmpdb",
+    "/var/lib/lastlog/lastlog2.db",
+    "/var/lib/wtmpdb/wtmp.db",
 )
+RECORD_DIRS = ("/var/lib/lastlog", "/var/lib/wtmpdb")
 # The filesystem types of the decoy's disk mounts.
 DISK_FSTYPES = ("btrfs", "ext4", "xfs", "vfat")
 # How often the gate reads a part of the kernel log before it counts it as
@@ -577,15 +580,14 @@ findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do
   find "$target" -xdev -type f -exec sha256sum {} + | sed 's/^/file /'
 done
 """
-# The size of each login and boot record file (:data:`RECORD_PATHS`, and the
-# files in its folders), which the comparison of the decoy disk leaves to the
-# records checks: whatever a way back does to them, none may shrink or go,
-# as a login record file only grows.
+# The size of each login and boot record file (:data:`RECORD_PATHS`) the
+# decoy has, which the comparison of the decoy disk leaves to the records
+# checks: whatever a way back does to them, none may shrink or go, as a login
+# record file only grows.
 RECORD_SIZES = (
     "for p in "
     + " ".join(RECORD_PATHS)
-    + '; do if test -d "$p"; then find "$p" -xdev -type f -printf \'%s %p\\n\'; '
-    'elif test -f "$p"; then stat -c \'%s %n\' "$p"; fi; done'
+    + '; do test -f "$p" && stat -c \'%s %n\' "$p"; done; true'
 )
 # The files beside the record files that SQLite makes and removes as it
 # writes, which may go.
@@ -668,9 +670,10 @@ _PRIVATE_TMP = re.compile(
 
 def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
     """The paths of a listing of changed files on the decoy, without those the
-    records checks judge (:data:`RECORD_PATHS`, a folder of them with what is
-    below it), and without ``mount_points``, which ``find -xdev`` lists with
-    the times of the filesystem mounted there. A unit's private temporary
+    records checks judge (:data:`RECORD_PATHS`, with SQLite's files beside
+    each, and the folders :data:`RECORD_DIRS` themselves), and without
+    ``mount_points``, which find may list with the times of the filesystem
+    mounted there. A unit's private temporary
     folder is named by its unit alone, its boot ID and random part as ``*``:
     each start of the unit makes a new one, after a way back as after a plain
     soft-reboot, and a control taken before the cold power cycle that comes
@@ -681,7 +684,10 @@ def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
         path = line.strip()
         if not path.startswith("/") or path in mounted:
             continue
-        if any(path == kept or path.startswith(kept + "/") for kept in RECORD_PATHS):
+        if path in RECORD_DIRS or any(
+            path == kept or path.startswith((kept + "/", kept + "-"))
+            for kept in RECORD_PATHS
+        ):
             continue
         private = _PRIVATE_TMP.match(path)
         if private:
@@ -903,15 +909,20 @@ def disk_find(tests: str) -> str:
     sorts what it prints. find does not stop at another device, as ``-xdev``
     would at each btrfs subvolume nested in the mount without a mount of its
     own (arch-boxes's ``/var/lib/portables``, ``/var/lib/machines`` and
-    ``/swap``): it leaves out every other mount point instead, so no other
-    filesystem is read."""
+    ``/swap``): it leaves out each mount point below the mount whose device
+    is not the mount's own, so it reads no other filesystem, and reads on
+    through a bind of the same filesystem (the gate's own bind of
+    :data:`UTAB_BIND`), as ``-xdev`` did."""
     return (
         "mounts=$(findmnt -rn -o TARGET); "
         "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
         f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
         f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
-        "set --; for m in $mounts; do "
-        '[ "$m" = "$target" ] || set -- "$@" -path "$m" -prune -o; done; '
+        'dev=$(stat -c %d "$target"); set --; for m in $mounts; do '
+        'case "$target" in /) ;; *) case "$m" in "$target"/*) ;; *) continue ;; '
+        "esac ;; esac; "
+        '[ "$(stat -c %d "$m" 2>/dev/null)" = "$dev" ] && continue; '
+        'set -- "$@" -path "$m" -prune -o; done; '
         f'find "$target" "$@" \\( {tests} \\); done | sort -u'
     )
 
@@ -1032,11 +1043,14 @@ def fat_files(text: str) -> dict[str, dict[str, str]]:
 def fat_problems(
     before: Mapping[str, Mapping[str, str]], after: Mapping[str, Mapping[str, str]]
 ) -> list[str]:
-    """What changed on a FAT filesystem mounted both before an entry and after
-    its way back (:func:`fat_files`): a file whose contents differ, and a file
-    or folder that came or went. One mounted on one side alone is judged by
-    its partition's bytes (:func:`partition_problems`)."""
-    problems = []
+    """What changed on the FAT filesystems mounted before an entry and after
+    its way back (:func:`fat_files`): one mounted on one side alone, a file
+    whose contents differ, and a file or folder that came or went."""
+    problems = [
+        f"{mount} is mounted only "
+        + ("before the entry" if mount in before else "after the way back")
+        for mount in sorted(set(before) ^ set(after))
+    ]
     for mount in sorted(set(before) & set(after)):
         was, now = before[mount], after[mount]
         for path in sorted(set(was) | set(now)):
@@ -2320,6 +2334,39 @@ class Gate:
         self.facts[f"disk-names-{label}"] = {"not read": failures}
         return None
 
+    def before_disk(self, n: int) -> dict[str, Any]:
+        """What way back ``n`` is held to on the decoy disk, read right before
+        its entry (:meth:`way_back_disk` reads the same after it): its names,
+        the bytes of its partitions that no filesystem is mounted from, the
+        files of its FAT filesystems and the sizes of its record files."""
+        return {
+            "names": self.disk_names(f"before-{n}"),
+            "partitions": partition_hashes(
+                self.fact(f"partitions-before-{n}", PARTITIONS, 600, again=True)
+            ),
+            "fat": fat_files(self.fact(f"fat-before-{n}", FAT_FILES, 600, again=True)),
+            "records-sizes": record_sizes(
+                self.fact(f"record-sizes-before-{n}", RECORD_SIZES, again=True)
+            ),
+        }
+
+    def session_files_left(self, n: int) -> None:
+        """None of the files session ``n`` wrote is on the decoy after its way
+        back: the canaries and :attr:`session_files`."""
+        files = [f"/{t}/{distro_checks.canary_name(t)}-{n}" for t in CANARY_TREES]
+        on_decoy = self.fact(
+            f"session-files-{n}",
+            "for p in "
+            + " ".join(shlex.quote(p) for p in (*files, *self.session_files))
+            + '; do test -e "$p" -o -L "$p" && echo "$p"; done; '
+            "grep -nx '# gate' /etc/protocols; true",
+        )
+        self.check(
+            f"way back {n}: none of the session's files is on the decoy",
+            not on_decoy,
+            on_decoy,
+        )
+
     def way_back_disk(self, n: int, state: Mapping[str, Any]) -> None:
         """What way back ``n`` left on the decoy disk, read right after it as
         before its entry (``state``): its changes since the entry, its names,
@@ -2336,7 +2383,7 @@ class Gate:
         self.check(
             f"way back {n}: every file of the decoy's FAT filesystems holds the "
             "bytes it held before the entry, and none came or went",
-            not problems,
+            bool(set(state["fat"]) & set(fat)) and not problems,
             {"mounts": sorted(set(state["fat"]) & set(fat)), "problems": problems},
         )
         sizes = record_sizes(
@@ -2773,16 +2820,7 @@ class Gate:
         # mounts, /run as the decoy has it, at every depth, and the time from
         # which the decoy disk's changes count.
         self.update_states[f"way-back-{n}"] = self.needs_update(f"before-{n}")
-        state["names"] = self.disk_names(f"before-{n}")
-        state["partitions"] = partition_hashes(
-            self.fact(f"partitions-before-{n}", PARTITIONS, 600, again=True)
-        )
-        state["fat"] = fat_files(
-            self.fact(f"fat-before-{n}", FAT_FILES, 600, again=True)
-        )
-        state["records-sizes"] = record_sizes(
-            self.fact(f"record-sizes-before-{n}", RECORD_SIZES, again=True)
-        )
+        state.update(self.before_disk(n))
         state["run"] = self.run_listing(f"before-{n}")
         state["since"] = self.wall()
         self.mark(f"enter-{n}")
@@ -3589,19 +3627,7 @@ class Gate:
             self.check(
                 f"way back {n}: the attached disk reads getro 0", ro.strip() == "0", ro
             )
-        files = [f"/{t}/{distro_checks.canary_name(t)}-{n}" for t in CANARY_TREES]
-        on_decoy = self.fact(
-            f"session-files-{n}",
-            "for p in "
-            + " ".join(shlex.quote(p) for p in (*files, *self.session_files))
-            + '; do test -e "$p" -o -L "$p" && echo "$p"; done; '
-            "grep -nx '# gate' /etc/protocols; true",
-        )
-        self.check(
-            f"way back {n}: none of the session's files is on the decoy",
-            not on_decoy,
-            on_decoy,
-        )
+        self.session_files_left(n)
         # A boolean set in the session would still be the kernel's after the
         # way back, as a policy loaded there would.
         now = self.booleans(f"after-{n}")

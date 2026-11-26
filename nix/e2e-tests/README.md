@@ -1311,11 +1311,14 @@ the power-of-two range the cold boot gave each. After the first way back the
 rehearsal's scan must find nothing and name the btrfs root, which compresses,
 as not checked. Across each way back the decoy's disk mounts must change only
 where a plain soft-reboot changes them, read at every depth, a btrfs
-subvolume nested in a mount without a mount of its own included, and no
-other filesystem mounted below them: every file and folder whose contents
+subvolume nested in a mount without a mount of its own included, through a
+bind of the same filesystem (the gate's own) and into no other filesystem
+mounted below them: every file and folder whose contents
 or inode, its labels among its extended attributes, changed since right
 before the entry, held against those that changed across either plain
-soft-reboot, the login record files aside, and a unit's private temporary
+soft-reboot, the login record files aside with the `-journal`, `-wal` and
+`-shm` files SQLite makes beside them and the folders those come and go in
+(any other file there is compared), and a unit's private temporary
 folder counted by its unit, since each start of the unit names a new one; and
 every name on them right before the entry that is gone after the way back,
 held against the names either plain soft-reboot took away, since a file
@@ -1350,9 +1353,11 @@ point) must hold the same bytes after each way back as right before its
 entry, and at least one must be read so: every image of the gate has a BIOS
 boot partition. Every file of a FAT filesystem mounted from the decoy's disk
 (an ESP) must hold the same bytes, and no file or folder of it may come or
-go, as FAT keeps a file's time to two seconds and no inode change time. And
-no login or boot record file may shrink or go, as such a file only grows; the
-records checks judge what is in it. The gate reads the names three times
+go, as FAT keeps a file's time to two seconds and no inode change time; one
+mounted on one side of the way back only fails too, and at least one must be
+compared. And no login or boot record file may shrink or go, as such a file
+only grows, SQLite's `-journal`, `-wal` and `-shm` files beside them aside,
+which come and go as it writes; the records checks judge what is in them. The gate reads the names three times
 before it counts them as not read, which fails the comparison. In this
 driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
@@ -1505,7 +1510,10 @@ Arch:
   ships zram-generator. arch-boxes does neither, so they do not run there;
   each session must run no swap on a disk instead;
 - NAILS's processes in each session must run as root from its copy in RAM,
-  as `/proc/<pid>/exe` shows; each session writes a file on `/efi`, which
+  as `/proc/<pid>/exe` shows, and no process may run a program of NAILS's
+  (`nails`, `control`, or one below `/run/overlay-runtime` or the hidden
+  volume) from anywhere else, as the program of every process shows; each
+  session writes a file on `/efi`, which
   the hidden session masks and binds read-only, and after the way back that
   file must not be on the decoy;
 - the guest runs the driver's Python from the Nix store the harness mounts,
@@ -1523,8 +1531,9 @@ too, and its partitions that nothing mounts byte for byte. On arch-boxes the
 first are the btrfs root and the ESP, mounted at `/efi` whenever the gate
 compares only because dbus-broker's start looks it up and so triggers
 `efi.automount`, and the last the BIOS boot partition. Of the mounted ESP no
-comparison reads the FAT tables, the FSInfo sector, the entries of deleted
-files, or the times of `/efi` itself, which a FAT root does not keep.
+comparison reads the boot sectors, the FAT tables, the FSInfo sector, the
+free clusters, the entries of deleted files, the files' attributes, or the
+times of `/efi` itself, which a FAT root does not keep.
 
 `<image>-btrfs` runs the btrfs scan controls of the Fedora gate on the stock
 image, for an image whose root is btrfs. On arch-boxes the controls' folder is
@@ -1543,7 +1552,9 @@ What the gate leaves to the admission:
   (`PREPARE_DECOY`) and expects the stock swap file refused
   (`STOCK_VERDICTS`). Its gate needs those arguments in its loader entries
   instead, stock verdicts of its own, and the `fstabPolicy` its own layout
-  gives.
+  gives. systemd-boot's `loader/random-seed` on its ESP is rewritten at
+  each start, so the comparison of the ESP's files will need an excuse for
+  that file, held to the plain soft-reboots as the other paths are.
 - the oracle nightly's records scan does not run on arch-boxes, as it plants
   a Fedora decoy's record controls, and no oracle runs on the archinstall
   image.
@@ -1551,12 +1562,15 @@ What the gate leaves to the admission:
   the tests with one (`lib/graphical-vm-config.nix`) boot NixOS alone.
 - fstab-policy masks `/var/lib/machines` in the hidden session, so no session
   of the gate uses it.
-- the comparison of the decoy disk, the Fedora gate's too, excuses a path
-  that a plain soft-reboot changes whatever its new contents: the journal's
+- the comparison of the decoy disk excuses a path that a plain soft-reboot
+  changes whatever its new contents: on arch-boxes the journal's
   `system.journal`, the random seed, the clock file of timesyncd, the
-  keystore of tpm2-tss and `/var/tmp`. And it leaves the login and boot
-  record files to the records checks, which read the records in them, while
-  the comparison only holds each such file to growing.
+  keystore of tpm2-tss and `/var/tmp`; on Fedora, whose plain soft-reboots
+  change about 70 paths, among them `resolv.conf`, tuned's profile files,
+  root's `.bashrc`, NetworkManager's state and chrony's drift. And it leaves
+  the login and boot record files to the records checks, which read the
+  records in them, while the comparison only holds each such file to
+  growing.
 
 ### Running and CI
 

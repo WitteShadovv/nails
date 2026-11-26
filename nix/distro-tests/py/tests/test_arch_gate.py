@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -253,7 +255,12 @@ class SwapTest(unittest.TestCase):
     LINE = "/swap/swapfile none swap defaults 0 0\n"
 
     def judged(
-        self, fstab: str, swaps: str, torn: int = 0, garble: bool = False
+        self,
+        fstab: str,
+        swaps: str,
+        torn: int = 0,
+        garble: bool = False,
+        torn_read: int = 0,
     ) -> tuple[bool, list[str]]:
         """swap_off against a guest whose /etc/fstab holds ``fstab`` and
         /proc/swaps ``swaps``; the first ``torn`` reads of the fstab come torn,
@@ -262,6 +269,7 @@ class SwapTest(unittest.TestCase):
         check said, and every text written to the fstab."""
         g = gate()
         guest: dict[str, Any] = {"fstab": fstab, "reads": 0, "torn": torn}
+        torn_reads = {torn_read} if torn_read else set()
         written: list[str] = []
 
         def sh(
@@ -269,6 +277,9 @@ class SwapTest(unittest.TestCase):
         ) -> tuple[int, str]:
             if cmd == "cat /etc/fstab":
                 guest["reads"] += 1
+                if guest["reads"] in torn_reads:
+                    g.torn.append(label)
+                    return 0, guest["fstab"]
                 if guest["torn"]:
                     guest["torn"] -= 1
                     g.torn.append(label)
@@ -301,6 +312,11 @@ class SwapTest(unittest.TestCase):
         running = self.OFF + "/swap/swapfile file 4G 0 -2\n"
         self.assertEqual(self.judged(noauto, running)[0], False)
 
+    def test_a_torn_read_of_the_prepared_fstab_fails(self) -> None:
+        noauto = self.LINE.replace("defaults", "defaults,noauto")
+        # Reads 1 and 2 are the fstab before, 3 and 4 the prepared one.
+        self.assertEqual(self.judged(noauto, self.OFF, torn_read=3), (False, []))
+
     def test_writes_back_nothing_read_garbled(self) -> None:
         self.assertEqual(self.judged(self.LINE, self.OFF, torn=1), (False, []))
         self.assertEqual(self.judged(self.LINE, self.OFF, garble=True), (False, []))
@@ -309,9 +325,28 @@ class SwapTest(unittest.TestCase):
 class ProcessesTest(unittest.TestCase):
     LINES = ["root 1602 control /run/overlay-runtime/control watch"]
 
+    def test_the_guest_command_reads_each_process_s_program(self) -> None:
+        bash = shutil.which("bash") or "/bin/sh"
+        out = subprocess.run(
+            [bash, "-c", ag.PROCESS_EXES], capture_output=True, text=True, timeout=60
+        ).stdout
+        exes = ag.process_exes(out)
+        pid = str(os.getpid())
+        self.assertEqual(exes[pid], os.readlink(f"/proc/{pid}/exe"))
+
+    def test_a_program_of_nails_run_from_elsewhere_fails(self) -> None:
+        exes = f"1602 {fg.RAM}\n1700 /run/tools/nails\n1701 /usr/bin/bash\n"
+        self.assertEqual(ag.nails_elsewhere(exes), ["1700 /run/tools/nails"])
+        self.assertFalse(ag.processes_from_ram(self.LINES, exes))
+        self.assertEqual(
+            ag.nails_elsewhere(f"1800 {fg.HIDDEN}/x/control\n"),
+            [f"1800 {fg.HIDDEN}/x/control"],
+        )
+
     def test_each_runs_from_the_copy_in_ram(self) -> None:
         self.assertTrue(ag.processes_from_ram(self.LINES, f"1602 {fg.RAM}\n"))
         self.assertFalse(ag.processes_from_ram(self.LINES, "1602 /mnt/data/nails\n"))
+        self.assertFalse(ag.processes_from_ram(self.LINES, "1602 /usr/bin/python3\n"))
         self.assertFalse(
             ag.processes_from_ram(self.LINES, f"1602 {fg.RAM} (deleted)\n")
         )
@@ -351,6 +386,7 @@ class SessionTest(unittest.TestCase):
             found = {c["name"]: c["passed"] for c in g.checks}
             self.assertEqual(found["session 1: no swap is on a disk"], passed, swaps)
             self.assertIn(f"touch {ag.EFI_PROBE}-1 2>&1; echo rc=$?", ran)
+        self.assertIn(f"{ag.EFI_PROBE}-1", ag.ArchGate.session_files)
         self.assertIn(f"{ag.EFI_PROBE}-2", ag.ArchGate.session_files)
         self.assertTrue(set(fg.SESSION_FILES) <= set(ag.ArchGate.session_files))
 
@@ -463,6 +499,43 @@ class UpdateStateTest(unittest.TestCase):
                 "which ran the units of the update pacman left pending"
             ]
         )
+
+    def test_each_install_checks_the_update_is_left_pending(self) -> None:
+        g = gate()
+        labels: list[str] = []
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            labels.append(label)
+            if label.startswith("drift-install-"):
+                version = label.rsplit("-", 1)[-1]
+                return f"rc=0\n{ag.DRIFT_PACKAGE} {version}-1"
+            if label.startswith("update-units"):
+                return "ldconfig.service"
+            if label == "needs-update-after-drift":
+                return "/etc current\n/var current"
+            return "/etc pending\n/var pending"
+
+        g.fact = fact  # type: ignore[method-assign]
+        g.sh = lambda label, cmd, timeout=300, again=False: (0, "")  # type: ignore[method-assign]
+        g.wall = lambda: "1700000000.5"  # type: ignore[method-assign]
+        quiet(g.drift_install)
+        quiet(g.drift_update)
+        self.assertIn("needs-update-after-drift-1", labels)
+        self.assertIn("needs-update-after-drift-3", labels)
+        self.assertLess(
+            labels.index("needs-update-after-drift-3"),
+            labels.index("needs-update-after-drift"),
+        )
+        found = {c["name"]: c["passed"] for c in g.checks}
+        for version in ("1", "3"):
+            self.assertTrue(
+                found[
+                    f"pacman's install of version {version} leaves /etc and /var out "
+                    "of date with /usr, as the next start of PID 1 reads them"
+                ]
+            )
 
     def test_pacman_leaves_the_update_pending(self) -> None:
         for read, passed in (
