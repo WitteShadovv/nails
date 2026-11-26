@@ -425,8 +425,9 @@ configuration (`--nixos-flake`), the activation's own writes to the decoy's
 session phase: the decoy root's ext4 superblock and a journal block at a
 power-off from the session in `session-wayback-poweroff` (after `deactivate`
 and after a plain `emergency`), `session-sleep-guard`, `session-switch-timeout`,
-`session-window-emergency` and `faults-backend-watch-planless`, and at
-`emergency --poweroff` in `session-emergency` in four of eight runs; the
+`session-window-emergency` and `faults-backend-watch-planless`, and in
+`session-emergency` at the plain `emergency` with a disk over the hidden root
+(8 of the last 10 runs) and at `emergency --poweroff` (5 of 10); the
 first sector of the ESP in
 `session-decoy-mount-table` and in Arch's smoke and records scenarios; blocks
 of Arch's btrfs root the oracle does not attribute, in Arch's smoke scenario;
@@ -447,6 +448,12 @@ there.
   the guest made after its hold and before the host's cut. A hidden start
   without a hold line (a hidden NixOS system built without the mark unit) is an
   oracle error: its switch and session phases are one.
+- The end-of-test control ended in 3 of the last 10 CI runs with "a
+  control's flush did not end in time" and "the mark unit stopped waiting
+  before the host cut the window" (`uefi-esp-nvram-invariant` twice,
+  `faults-backend-watch-planless` once): the host read the hold line only
+  after the unit's 15 s wait, which then released without the flush. Known,
+  not fixed; the report now carries that switch's console lines.
 - A switch that is refused and restarts the decoy drops its window, the
   activation's writes included. A test that ends inside the hidden root has no
   control. A disk the session mounts and writes itself counts as a decoy

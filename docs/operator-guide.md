@@ -3158,8 +3158,10 @@ dark or still and no login screen comes). Once the old system's units have
 stopped, PID 1 can go to sleep with work still queued and wait until something
 wakes it. This matches a fault in systemd,
 [systemd issue #44107](https://github.com/systemd/systemd/issues/44107). In
-NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the
-way in, and one on the way back in a test run set up to provoke it. Press Alt+Up
+NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way on the way
+in, one on the way back in a test run set up to provoke it, and one on the way
+back in an ordinary run (`session-console-history`, where the stall report's
+key press woke PID 1 after 600 s). Press Alt+Up
 with the left Alt key on the computer's keyboard: in the tests that woke PID 1
 and the switch went on. If nothing happens, power off. If you leave it, the
 machine powers itself off about 30 minutes after the switch began. That is the

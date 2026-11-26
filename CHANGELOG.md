@@ -3136,8 +3136,9 @@ of this changelog for that version becomes the release notes word for word, and
   superblock and a journal block, as the final shutdown unmounts the decoy root that stays mounted
   read-write below the overlay, which dates the session's end: the way back powering off after
   `deactivate` and after a plain `emergency`, the sleep guard's `teardown`, the switch-timeout
-  guard, the window's emergency power-off and the backend watcher without a plan, and
-  `emergency --poweroff` in four of eight runs; (2) the first sector of the ESP, in `session-decoy-mount-table` (NixOS)
+  guard, the window's emergency power-off and the backend watcher without a plan, and in most
+  runs a plain `emergency` with a disk over the hidden root (8 of the last 10) and
+  `emergency --poweroff` (5 of 10); (2) the first sector of the ESP, in `session-decoy-mount-table` (NixOS)
   and in Arch's smoke and records scenarios, most likely vfat's clean mark in its boot sector as
   the last read-write mount of the ESP ends (the cause is not confirmed); (3) on Arch's btrfs root,
   blocks the oracle cannot attribute, in the smoke scenario. A disk
@@ -3172,8 +3173,9 @@ of this changelog for that version becomes the release notes word for word, and
   screen stays dark or still and no login screen comes. Once the old system's units have stopped,
   PID 1 can go to sleep with work still queued and wait until something wakes it. This matches a
   fault in systemd ([systemd issue #44107](https://github.com/systemd/systemd/issues/44107)). In
-  NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way, all on the way in, and one
-  on the way back in a test run set up to provoke it. Pressing Alt+Up with the left Alt key on the
+  NAILS's NixOS VM tests 7 of about 13,000 switches stopped this way on the way in, one on the
+  way back in a test run set up to provoke it, and one on the way back in an ordinary run
+  (`session-console-history`, where the stall report's key press woke PID 1 after 600 s). Pressing Alt+Up with the left Alt key on the
   computer's keyboard woke PID 1 in the tests, and the switch went on. If that does nothing, power
   off. Left alone, the machine powers itself off about 30 minutes after the switch began, where
   systemd would have switched by force without NAILS's last step before the switch (see

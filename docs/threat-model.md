@@ -754,8 +754,9 @@ session:
    superblock and one journal block: the way back powering off after
    `deactivate` and after a plain `emergency` that cannot delete a link, the
    sleep guard's `teardown`, the switch-timeout guard, the window's emergency
-   power-off, and the backend watcher without a plan; `emergency --poweroff`
-   in about half of the runs (four of eight). The decoy root stays mounted read-write below the overlay,
+   power-off, and the backend watcher without a plan; in most runs a plain
+   `emergency` with a disk over the hidden root (8 of the last 10), and in
+   about half of them `emergency --poweroff` (5 of 10). The decoy root stays mounted read-write below the overlay,
    and the final shutdown unmounts it, so the superblock's write time dates the
    session's end.
 2. The first sector of the ESP, in `session-decoy-mount-table` (NixOS, its ESP

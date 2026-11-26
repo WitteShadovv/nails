@@ -519,6 +519,25 @@ class HiddenVolume(unittest.TestCase):
         self.assertEqual(volume.alone, set())
         self.assertEqual(volume.shared, {"d": "it also holds /dev/vdb1 (ext4)"})
 
+    def test_a_drive_reached_alone_and_beside_other_data_is_shared(self) -> None:
+        # A mapping over vdb and over a file on vdb's own filesystem.
+        volume = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/mapper/hid ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/mapper/hid": (
+                    "/dev/mapper/hid lvm \n/dev/vdb disk data\n/dev/loop0 loop "
+                ),
+                "lsblk -nrpo PATH,FSTYPE /dev/vdb": (
+                    "/dev/vdb LVM2_member\n/dev/mapper/hid ext4"
+                ),
+                "BACK-FILE --raw /dev/loop0": "252:16 /srv/part.img",
+                "readlink /sys/dev/block/252:16": "vdb",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb": "/dev/vdb disk data",
+            }
+        )
+        self.assertEqual(volume.alone, set())
+        self.assertEqual(volume.shared, {"data": "the file /srv/part.img holds it"})
+
     def test_a_folder_or_a_subvolume_shares_its_filesystem(self) -> None:
         folder = self.volume(
             {

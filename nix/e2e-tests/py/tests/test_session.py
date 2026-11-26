@@ -144,6 +144,36 @@ class NoPolling:
 
 
 class FollowSoftRebootTest(unittest.TestCase):
+    def test_the_hold_line_after_the_backdoor_s_is_still_cut(self) -> None:
+        # The test backdoor does not wait for the mark unit: on a forced
+        # soft-reboot its line comes first, and the hold line after it.
+        machine = FakeMachine(["Soft-rebooting.", "backdoor: connecting to host..."])
+        polls: list[float] = []
+
+        def poll(seconds: float) -> None:
+            polls.append(seconds)
+            if len(polls) == 1:
+                machine.full_console_log.append("blkstat-mark hold")
+
+        with (
+            mock.patch.object(session.blockwrites, "before_switch", return_value=True),
+            mock.patch.object(session.blockwrites, "watching", return_value=True),
+            mock.patch.object(
+                session.blockwrites, "paused_at_shutdown", return_value=False
+            ),
+            mock.patch.object(
+                session.blockwrites, "at_hold", return_value=9
+            ) as at_hold,
+            mock.patch.object(session.blockwrites, "after_switch") as after_switch,
+            mock.patch.object(session.time, "sleep", side_effect=poll),
+        ):
+            session.follow_soft_reboot(machine, "true", "forced", deadline_s=5)
+        at_hold.assert_called_once()
+        self.assertEqual(
+            after_switch.call_args.args[3], 9, "the cut reaches the oracle"
+        )
+        self.assertEqual(len(polls), 1, "the wait ends once the hold line is cut")
+
     def test_reconnects_once_the_new_backdoor_announces_itself(self) -> None:
         machine = FakeMachine(
             ["Soft-rebooting.", "backdoor: connecting to host..."],

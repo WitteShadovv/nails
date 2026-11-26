@@ -1310,6 +1310,9 @@ def hidden_volume(machine: Any, known: dict[str, str] | None = None) -> HiddenVo
         raise ValueError("the session plan names no hidden root")
     volume = HiddenVolume(known=dict(known or {}))
     _place(machine, root, volume, None, 0)
+    # A drive the volume reaches along two paths, one with nothing else on
+    # it and one beside other data (a mapping over the disk and over a file
+    # on it), holds that other data: it stays a decoy drive.
     for serial in volume.shared:
         volume.alone.discard(serial)
     return volume
