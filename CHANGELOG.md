@@ -3136,8 +3136,8 @@ of this changelog for that version becomes the release notes word for word, and
   superblock and a journal block, as the final shutdown unmounts the decoy root that stays mounted
   read-write below the overlay, which dates the session's end: the way back powering off after
   `deactivate` and after a plain `emergency`, the sleep guard's `teardown`, the switch-timeout
-  guard, the window's emergency power-off and the backend watcher without a plan, but not
-  `emergency --poweroff`; (2) the first sector of the ESP, in `session-decoy-mount-table` (NixOS)
+  guard, the window's emergency power-off and the backend watcher without a plan, and
+  `emergency --poweroff` in four of eight runs; (2) the first sector of the ESP, in `session-decoy-mount-table` (NixOS)
   and in Arch's smoke and records scenarios, most likely vfat's clean mark in its boot sector as
   the last read-write mount of the ESP ends (the cause is not confirmed); (3) on Arch's btrfs root,
   blocks the oracle cannot attribute, in the smoke scenario. A disk

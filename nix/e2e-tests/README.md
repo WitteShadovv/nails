@@ -417,8 +417,9 @@ configuration (`--nixos-flake`), the activation's own writes to the decoy's
 session phase: the decoy root's ext4 superblock and a journal block at a
 power-off from the session in `session-wayback-poweroff` (after `deactivate`
 and after a plain `emergency`), `session-sleep-guard`, `session-switch-timeout`,
-`session-window-emergency` and `faults-backend-watch-planless` (not at
-`emergency --poweroff` in `session-emergency`); the first sector of the ESP in
+`session-window-emergency` and `faults-backend-watch-planless`, and at
+`emergency --poweroff` in `session-emergency` in four of eight runs; the
+first sector of the ESP in
 `session-decoy-mount-table` and in Arch's smoke and records scenarios; blocks
 of Arch's btrfs root the oracle does not attribute, in Arch's smoke scenario;
 and what the tests that mount a disk in the session
