@@ -273,6 +273,11 @@ class RunBuildTest(unittest.TestCase):
             "                  'fields': [drv]})\n"
             "            emit({'action': 'result', 'type': 101, 'id': ident,\n"
             "                  'fields': [name + ' logged this']})\n"
+            # A test FAKE_NIX_ORACLE names logs a block-write oracle verdict.
+            "            if name in os.environ.get('FAKE_NIX_ORACLE', '').split():\n"
+            "                line = 'machine: block-write oracle verdict: x'\n"
+            "                emit({'action': 'result', 'type': 101, 'id': ident,\n"
+            "                      'fields': [line]})\n"
             # The test FAKE_NIX_HANG names never finishes: the build waits
             # until it is stopped, and the tests after it never start.
             "            if name == os.environ.get('FAKE_NIX_HANG'):\n"
@@ -403,6 +408,23 @@ class RunBuildTest(unittest.TestCase):
         (self.tmp / "u.log").write_text("nothing\n", encoding="utf-8")
         self.assertIsNone(run.keep_oracle_report(self.tmp / "u.log"))
         self.assertIsNone(run.keep_oracle_report(self.tmp / "missing.log"))
+
+    def test_a_passing_build_keeps_the_oracle_report_of_its_log(self) -> None:
+        logs = self.tmp / "logs"
+        with (
+            mock.patch.dict(
+                os.environ, self.environ(FAKE_NIX_ORACLE="verify"), clear=True
+            ),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            status = run.run_build(["basic-workflow", "verify"], log_dir=logs)
+        self.assertEqual(status, 0)
+        self.assertFalse((logs / "verify.log").exists())
+        self.assertEqual(
+            (logs / "verify.block-writes.txt").read_text(encoding="utf-8"),
+            "machine: block-write oracle verdict: x\n",
+        )
+        self.assertFalse((logs / "basic-workflow.block-writes.txt").exists())
 
     def test_a_pass_on_retry_keeps_the_log_of_the_attempt_that_failed(self) -> None:
         logs = self.tmp / "logs"
@@ -1087,6 +1109,8 @@ class RunDriversTest(unittest.TestCase):
         )
         for name, script in {
             "steady": "echo booted; exit 0\n",
+            # Passes with a block-write oracle verdict in its log.
+            "judged": "echo 'machine: block-write oracle verdict: x'; exit 0\n",
             # Fails on the first run and passes on the second.
             "wobbly": (
                 f'if [ -e "{self.tmp}/wobbly.seen" ]; then exit 0; fi\n'
@@ -1152,6 +1176,16 @@ class RunDriversTest(unittest.TestCase):
             )
         self.stderr = stderr.getvalue()
         return status, reported, logs
+
+    def test_a_passing_driver_keeps_the_oracle_report_of_its_log(self) -> None:
+        status, _, logs = self.execute(["judged", "steady"], retries=0)
+        self.assertEqual(status, 0)
+        self.assertEqual(list(logs.glob("*.log")), [])
+        self.assertEqual(
+            (logs / "judged.block-writes.txt").read_text(encoding="utf-8"),
+            "machine: block-write oracle verdict: x\n",
+        )
+        self.assertFalse((logs / "steady.block-writes.txt").exists())
 
     def test_a_driver_passing_on_retry_is_flaky(self) -> None:
         status, outcomes, logs = self.execute(["steady", "wobbly"], retries=1)

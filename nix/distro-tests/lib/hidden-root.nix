@@ -28,7 +28,8 @@ let
   installMark = ''
     # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py),
     # as nix/e2e-tests/lib/vm-config.nix has it on NixOS: at every start of the
-    # service manager after the first 8 s of uptime, a hold line on the serial
+    # service manager the host armed it for with /run/blkstat-arm (a
+    # soft-reboot carries /run, a cold boot has none), a hold line on the serial
     # console each second (a kernel line can cut one in two) and a wait, at
     # most 15 s, for the line the host types there once
     # it has cut its dirty bitmaps of the decoy disk, before the units that
@@ -41,8 +42,7 @@ let
       mkdir -p /usr/local/sbin
       cat > /usr/local/sbin/blkstat-mark <<'MARK'
     #!/bin/sh
-    read -r up _ < /proc/uptime
-    if [ "''${up%%.*}" -ge 8 ]; then
+    if [ -e /run/blkstat-arm ]; then
       (
         exec 3<>/dev/ttyS0
         i=0

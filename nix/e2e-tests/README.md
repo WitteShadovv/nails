@@ -195,7 +195,7 @@ The tests, one link farm per group, and the metadata live under `legacyPackages.
 `scripts/run-e2e-tests.sh` wraps `python3 -m ci.e2e` (see `--help`). It expands groups such as `ci`, `all`, or tag names into leaf tests using the `e2e-metadata` output, removes duplicates in first-seen order, and builds every resolved test in one `nix build --keep-going`, so independent VMs run in parallel and one failure does not stop the rest. Without a target it runs the `ci` group; `NAILS_E2E_DEFAULT_TARGET` names a different default. `--exclude TARGET` leaves out the tests of a test or group.
 
 - `--shard i/N` runs one of N weighted shards (see [Timeouts and shard weights](#timeouts-and-shard-weights)); `python3 -m ci.e2e plan` prints the split.
-- `--retries 1` runs failed tests once more and reports a pass on that retry as FLAKY.
+- `--retries 1` runs failed tests once more and reports a pass on that retry as FLAKY. Known flakes it covers: QEMU that never gets past `starting vm` (on every branch, cause not known), and, in the batched tests, a baseline read while `systemd-machine-id-commit.service` still had its tmpfs on `/etc/machine-id` (the batch now waits for the boot's jobs to end first, `batch.SETTLE`).
 - `--execute` runs each test's driver directly instead of building the test, so a cached result does not count.
 - `--jobs N` bounds the VM tests built at once (nix `--max-jobs`); `--jobs auto` sizes it from the host's RAM and cores (3 on a 15 GiB, 12-core host).
 - Every test is evaluated before anything is built, in batches: each batch in a `nix eval` process of its own, so evaluation memory stays bounded however many tests are selected, and several processes at once, since the evaluator works on one core. `--eval-jobs N` bounds the processes that run at once; the default, `auto`, sizes it from the host's cores and RAM. `--eval-batch N` puts N tests in each process; without it the tests are spread evenly over the processes, at most 8 in each (a process grows by about 250 MiB a test). The tests are then built by derivation path, and in `--execute` mode their drivers in one `nix build`.
@@ -330,21 +330,30 @@ packaged in nixpkgs, so there is none. The bodyfiles feed `mactime` directly.
 session from the host, without knowing which program might write, and reports
 them. QEMU keeps a dirty bitmap (512-byte granularity) of every drive on the
 host, where the guest cannot reach it; it records every write and write-zeroes,
-and every discard a drive with `discard=unmap` passes on (the NixOS root disk
-has it; the distribution image's IDE drive, which nix-vm-test defines without
-an id, does not, so its discards are not counted).
+and every discard a drive with `discard=unmap` passes on (the NixOS root disk and
+extra disks have it; the distribution image's IDE drive, which nix-vm-test
+defines without an id, does not, so its discards are not counted).
 
-- **Decoy drives**: every writable drive but the ones the hidden volume lies
-  on. The oracle reads those from the session plan's hidden root at the hidden
-  root's start (`hidden_serials`: the serials of the devices below it) and
-  takes every other drive as a decoy drive: the root disk, a disk with a decoy
-  filesystem (`/srv/data` of `session-decoy-mount-table`, the disks of
-  `session-fstab-policy` and `preflight-decoy-filesystem`), the UEFI variable
-  store, and a disk the session mounts itself. Until a session has started, and
-  where the hidden volume lies on no drive with a serial, it falls back to the
-  extra disks of `emptyDiskImages` (`empty<N>.qcow2`) as the hidden volume's.
-  The hidden volume's drives are reported, never judged. No allowed extent is
-  set: every fixture keeps the hidden volume on another disk or in RAM.
+- **Decoy drives**: every writable drive but the ones that hold the hidden
+  volume and nothing else. The oracle reads those from the session plan's
+  hidden root at the hidden root's start (`hidden_volume`): the drives below
+  its filesystem, through device mapper and LVM, and through a loop device to
+  the drive its backing file lies on; a hidden volume in RAM (tmpfs, or a loop
+  device whose file is there) lies on none. Every other drive is a decoy drive:
+  the root disk, a disk with a decoy filesystem (`/srv/data` of
+  `session-decoy-mount-table`, the disks of `session-fstab-policy`), the UEFI
+  variable store, and a disk the session mounts itself. A drive that holds the
+  hidden volume beside other data stays a decoy drive, and the oracle says so
+  with an error, as the hidden volume's own writes there are findings: a
+  hidden volume that is a file of a decoy filesystem (`preflight-decoy-filesystem`
+  keeps its LUKS container in a file on the `/srv` disk, beside the decoy's
+  files), a partition or logical volume beside decoy ones, a subvolume or a
+  folder. Until a session has started, the extra disks of `emptyDiskImages`
+  (`empty<N>.qcow2`) count as the hidden volume's; where the oracle cannot tell
+  the hidden volume's drives (a disk with no serial, a loop device without its
+  file), that stays so and is an oracle error. The hidden volume's own drives
+  are reported, never judged. No allowed extent is set, so the writes of a
+  hidden volume beside decoy data are findings.
 - **The window** opens in `session.follow_soft_reboot`, just before the
   trigger, after a guest `sync`: it covers the activation, the decoy's own
   shutdown and the switch. A switch that does not land in the hidden root (no
@@ -352,9 +361,15 @@ an id, does not, so its discards are not counted).
   `setupHiddenRootMarked` installs it on a distribution VM in the tests that
   run the oracle; plain `setupHiddenRoot` leaves the decoy as it was, as the
   real-image oracle images it) prints `blkstat-mark hold` on the serial console
-  at every start of the service manager after 8 s of uptime, before journald
+  at every start of the service manager the host armed it for, before journald
   and the units that write early in a start, again each second (a kernel line
   can cut one in two), and waits, at most 15 s, for the line `blkstat-go`. The
+  host arms it with `/run/blkstat-arm`, made just before the trigger of a
+  watched switch and removed once the window ends: a soft-reboot keeps `/run`
+  (the entry binds it into the hidden root, and the way back's scrub keeps
+  what the decoy had there before the entry), and a cold boot starts without
+  it, so no boot is held. The report's `boot:` line names how long the unit
+  ran at the boot the test started with, and when journald started. The
   host cuts the bitmaps at the first hold line it reads and then types
   `blkstat-go` on the serial console (`send_console`): the driver's console
   reader can fall seconds behind the guest in the burst of lines a switch
@@ -400,9 +415,13 @@ window or a control by chance; and, for an activation with a hidden NixOS
 configuration (`--nixos-flake`), the activation's own writes to the decoy's
 `/nix/var/nix` (its store database's `db.sqlite-shm`, `temproots`). In the
 session phase: the decoy root's ext4 superblock and a journal block at a
-power-off from the session; the first sector of the ESP in
-`session-decoy-mount-table` and on Arch; blocks of Arch's btrfs root the oracle
-does not attribute; and what the tests that mount a disk in the session
+power-off from the session in `session-wayback-poweroff` (after `deactivate`
+and after a plain `emergency`), `session-sleep-guard`, `session-switch-timeout`,
+`session-window-emergency` and `faults-backend-watch-planless` (not at
+`emergency --poweroff` in `session-emergency`); the first sector of the ESP in
+`session-decoy-mount-table` and in Arch's smoke and records scenarios; blocks
+of Arch's btrfs root the oracle does not attribute, in Arch's smoke scenario;
+and what the tests that mount a disk in the session
 (`session-disk-mounts`, `session-emergency`, `session-alert-delivery`) write
 there.
 

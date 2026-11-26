@@ -229,10 +229,18 @@ def _depth_first(targets: Iterable[str]) -> list[str]:
     return sorted(targets, key=lambda target: (-target.count("/"), target))
 
 
+#: Waits, bounded, for the boot's jobs to end. multi-user.target can be
+#: reached while systemd-machine-id-commit.service still has a tmpfs on
+#: /etc/machine-id, which it unmounts: a baseline read before that names a
+#: mount the next check finds gone.
+SETTLE = "timeout 300 systemctl is-system-running --wait || true"
+
+
 def _power_cycle(machine: object) -> None:
     machine.crash()  # type: ignore[attr-defined]
     machine.start()  # type: ignore[attr-defined]
     machine.wait_for_unit("multi-user.target")  # type: ignore[attr-defined]
+    machine.succeed(SETTLE, timeout=_COMMAND_TIMEOUT * 2)  # type: ignore[attr-defined]
 
 
 def reset_guest(
@@ -313,6 +321,7 @@ def run_scenarios(
     Raises at the end when any scenario failed, or immediately (after naming
     the scenarios that will not run) when the guest could not be reset.
     """
+    machine.succeed(SETTLE, timeout=_COMMAND_TIMEOUT * 2)  # type: ignore[attr-defined]
     baseline = capture_state(machine)
     failures: list[str] = []
     for index, (name, body) in enumerate(scenarios):

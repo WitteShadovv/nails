@@ -67,8 +67,9 @@
   };
 
   # The block-write oracle's cut (nix/e2e-tests/py/nails_e2e/blockwrites.py):
-  # at every start of the service manager after 8 s of uptime (a soft-reboot
-  # into the hidden root, or back to the decoy; a cold boot reaches it sooner),
+  # at every start of the service manager the host armed it for, with
+  # /run/blkstat-arm (a soft-reboot into the hidden root, or back to the decoy:
+  # /run goes along, and a cold boot has none, so it never holds one),
   # print a hold line on the serial console the driver reads, each second,
   # and wait, at most 15 s, for the line the host types on that console once
   # it has cut the dirty bitmaps it keeps of the decoy disk. Ordered
@@ -100,8 +101,7 @@
       TimeoutStartSec = "30s";
     };
     script = ''
-      read -r up _ < /proc/uptime
-      if [ "''${up%%.*}" -ge 8 ]; then
+      if [ -e /run/blkstat-arm ]; then
         # The console is opened in a child, which is no session leader: the
         # service itself is one, and the console would become its controlling
         # terminal, which the kernel hangs up for every process that has it
@@ -136,10 +136,18 @@
   };
 
   # The block-write oracle counts a discard only where the drive passes it on:
-  # QEMU drops it at the drive otherwise. drive1 is the root disk.
-  virtualisation.qemu.options = lib.mkIf (config.virtualisation.diskImage != null) [
-    "-set drive.drive1.discard=unmap"
-  ];
+  # QEMU drops it at the drive otherwise. The drives are numbered as
+  # qemu-vm.nix lists them: drive1 the root disk, then the store image where
+  # there is one, then the extra disks (emptyDiskImages), which the oracle
+  # judges as decoy drives unless the hidden volume alone lies there.
+  virtualisation.qemu.options =
+    let
+      vm = config.virtualisation;
+      root = if vm.diskImage != null then 1 else 0;
+      before = root + (if vm.useNixStoreImage then 1 else 0);
+      extra = lib.genList (i: before + 1 + i) (lib.length vm.emptyDiskImages);
+    in
+    map (n: "-set drive.drive${toString n}.discard=unmap") (lib.optional (root == 1) 1 ++ extra);
 
   # Model an amnesic decoy: journald keeps no persistent journal on the decoy
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite

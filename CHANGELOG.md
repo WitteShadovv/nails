@@ -63,7 +63,11 @@ of this changelog for that version becomes the release notes word for word, and
   the trigger of the switch into the hidden root until the session ends at the way back (cut by
   a marker unit at the decoy's start) or at a power-off (which QEMU holds until the bitmaps are
   read), and report each one with its sector ranges and, on ext4, the file or metadata area it
-  holds. Discards count on the NixOS root disk, not on the distribution images' drive. Two
+  holds. Every drive counts but those that hold the hidden volume alone (a drive that holds it
+  beside decoy data counts too, with an oracle error), and an oracle error stands where the oracle
+  cannot tell them. The marker holds a start only after the host armed it in `/run`, so no cold
+  boot waits for it. Discards count on the NixOS root and extra disks, not on the distribution
+  images' drive. Two
   verdicts judge them: the switch phase must write no file and no kind of ext4 metadata that a
   plain soft-reboot of the decoy in the same test does not (the control, run at the end of the
   test where it has none), and the session phase must write nothing at all. Both only report and
@@ -3126,14 +3130,17 @@ of this changelog for that version becomes the release notes word for word, and
 ### Known issues
 
 - A hidden session still writes to the decoy disk, as the block-write oracle of the VM tests
-  measures it on NixOS, Debian 13, Ubuntu 24.04 and 26.04 and Arch (none of these is fixed yet):
-  (1) a power-off from inside the session (the way back powering off, the sleep guard's
-  `teardown`, an emergency or the window's power-off, the switch-timeout guard) writes the decoy
-  root's ext4 superblock and a journal block, as the final shutdown unmounts the decoy root that
-  stays mounted read-write below the overlay, which dates the session's end; (2) the first sector
-  of the ESP, in `session-decoy-mount-table` (NixOS) and on Arch, most likely vfat's clean mark in
-  its boot sector as the last read-write mount of the ESP ends (the cause is not confirmed); (3) on
-  Arch's btrfs root, blocks the oracle cannot attribute, in the smoke and records scenarios. A disk
+  measures it on NixOS and Arch (none of these is fixed yet; the Debian 13 and Ubuntu scenarios
+  measured no write after the switch, and none of the distribution scenarios powers off from a
+  session): (1) on NixOS, a power-off from inside the session writes the decoy root's ext4
+  superblock and a journal block, as the final shutdown unmounts the decoy root that stays mounted
+  read-write below the overlay, which dates the session's end: the way back powering off after
+  `deactivate` and after a plain `emergency`, the sleep guard's `teardown`, the switch-timeout
+  guard, the window's emergency power-off and the backend watcher without a plan, but not
+  `emergency --poweroff`; (2) the first sector of the ESP, in `session-decoy-mount-table` (NixOS)
+  and in Arch's smoke and records scenarios, most likely vfat's clean mark in its boot sector as
+  the last read-write mount of the ESP ends (the cause is not confirmed); (3) on Arch's btrfs root,
+  blocks the oracle cannot attribute, in the smoke scenario. A disk
   the session mounts and writes itself takes those writes too. What looked like the decoy's writes
   reaching the disk after the switch was the decoy's own journald at the way back, which started
   before the oracle's cut; the cut now comes before it. Besides, the switch itself writes what the

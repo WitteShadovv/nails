@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import time
 import unittest
 from typing import Any
 from unittest import mock
 
-from nails_e2e import blockwrites
+from nails_e2e import blockwrites, session
 
 ROOT = {
     "device": "drive1",
+    "qdev": "/machine/peripheral/root",
     "inserted": {"node-name": "#block100", "file": "/tmp/vm-state/machine.qcow2"},
 }
 DATA = {
     "device": "drive2",
+    "qdev": "/machine/peripheral/data",
     "inserted": {"node-name": "#block200", "file": "/tmp/vm-state/empty0.qcow2"},
+}
+#: A drive the extra-disk rule takes as a decoy drive.
+HIDDEN = {
+    "device": "drive5",
+    "qdev": "/machine/peripheral/hid",
+    "inserted": {"node-name": "#block500", "file": "/tmp/vm-state/hidden.qcow2"},
+}
+
+#: What the guest answers about the hidden volume, by a part of the command:
+#: an ext4 filesystem alone on the drive with serial "data".
+ON_DATA = {
+    "cat /run/overlay-runtime/plan.json": '{"version": 1, "hidden_root": "/mnt/data"}',
+    "--target /mnt/data": "/dev/vdb ext4 /mnt/data",
+    "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb": "/dev/vdb disk data",
+    "lsblk -nrpo PATH,FSTYPE /dev/vdb": "/dev/vdb ext4",
 }
 STORE = {
     "device": "drive3",
@@ -33,15 +51,21 @@ class FakeQmp:
         self.counts: dict[tuple[str, str], int] = {}
         self.bitmaps: dict[str, list[str]] = {"#block100": [], "#block200": []}
         self.status = "running"
-        self.serials: dict[str, str] = {}
+        self.serials: dict[str, str] = {
+            "/machine/peripheral/root": "root",
+            "/machine/peripheral/data": "data",
+            "/machine/peripheral/hid": "hid",
+        }
         self.fail_transactions = False
+        #: Drives besides the usual ones.
+        self.extra: list[dict[str, Any]] = []
 
     def send(self, command: str, args: dict[str, Any] | None = None) -> dict[str, Any]:
         args = args or {}
         self.sent.append((command, args))
         if command == "query-block":
             out = []
-            for block in (ROOT, DATA, STORE, CDROM):
+            for block in (ROOT, DATA, STORE, CDROM, *self.extra):
                 block = json.loads(json.dumps(block))
                 inserted = block.get("inserted")
                 if inserted:
@@ -58,7 +82,7 @@ class FakeQmp:
             for action in args["actions"]:
                 data = action["data"]
                 if action["type"] == "block-dirty-bitmap-add":
-                    self.bitmaps[data["node"]].append(data["name"])
+                    self.bitmaps.setdefault(data["node"], []).append(data["name"])
         if command == "block-dirty-bitmap-remove":
             self.bitmaps[args["node"]].remove(args["name"])
         if command == "query-status":
@@ -90,18 +114,29 @@ class FakeMachine:
         self.crashed = 0
         self.monitor: list[str] = []
         self.typed: list[str] = []
-        self.hidden_serials = ""
+        #: The guest's answers, by a part of the command: the first that
+        #: matches.
+        self.answers: dict[str, str] = dict(ON_DATA)
+        self.started = 0
 
     def succeed(self, *commands: str, timeout: int | None = None) -> str:
         self.ran.extend(commands)
-        if "lsblk" in commands[0]:
-            return self.hidden_serials
+        for part, answer in self.answers.items():
+            if part in commands[0]:
+                return answer
         return ""
 
     def log(self, msg: str) -> None:
         self.logged.append(msg)
 
-    def wait_for_shutdown(self) -> None:
+    def start(self) -> None:
+        self.started += 1
+        self.process = FakeProcess()
+
+    def wait_for_unit(self, unit: str) -> None:
+        pass
+
+    def wait_for_shutdown(self, timeout: object = None) -> None:
         self.waited += 1
 
     def send_console(self, chars: str) -> None:
@@ -346,15 +381,71 @@ class HiddenDrives(unittest.TestCase):
         self,
     ) -> None:
         machine, oracle = installed()
-        machine.hidden_serials = "data\n"
         blockwrites.before_switch(machine, "activate")
         assert oracle.window is not None
-        oracle.window.other[0] = blockwrites.Drive("drive2", "#block200", "f", "data")
-        oracle.window.decoy[0] = blockwrites.Drive("drive1", "#block100", "f", "root")
+        # QEMU told each drive's serial.
+        self.assertEqual(
+            [(d.device, d.serial) for d in oracle.window.decoy + oracle.window.other],
+            [("drive1", "root"), ("drive2", "data")],
+        )
         blockwrites.after_switch(machine, "activate", True, None, None, hidden=True)
         self.assertEqual(oracle.hidden, {"data"})
         self.assertEqual([d.device for d in oracle.window.other], ["drive2"])
         self.assertIn("without the mark unit's hold line", oracle.errors[0])
+
+    def test_the_open_window_is_sorted_again_by_the_hidden_volume_s_drives(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        machine.qmp_client.extra.append(HIDDEN)
+        machine.answers["lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb"] = "/dev/vdb disk hid"
+        blockwrites.before_switch(machine, "activate")
+        assert oracle.window is not None
+        # By the extra-disk rule until the hidden root's start.
+        self.assertEqual([d.device for d in oracle.window.decoy], ["drive1", "drive5"])
+        blockwrites.at_hold(machine, opened_here=True)
+        blockwrites.after_switch(machine, "activate", True, 0, None, hidden=True)
+        self.assertEqual(oracle.errors, [])
+        # The hidden volume's drive leaves the decoy drives, and the extra
+        # disk it does not lie on joins them.
+        self.assertEqual([d.device for d in oracle.window.other], ["drive5"])
+        self.assertEqual([d.device for d in oracle.window.decoy], ["drive1", "drive2"])
+        self.assertIn("lies on the drive with serial hid", " ".join(machine.logged))
+
+    def test_hidden_drives_that_cannot_be_told_are_an_oracle_error(self) -> None:
+        machine, oracle = installed()
+        machine.answers["lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb"] = "/dev/vdb disk "
+        blockwrites.before_switch(machine, "activate")
+        blockwrites.after_switch(machine, "activate", True, 0, None, hidden=True)
+        self.assertIn(
+            "cannot be told (/dev/vdb, below /mnt/data, has no serial)",
+            oracle.errors[0],
+        )
+        self.assertIsNone(oracle.hidden)
+        assert oracle.window is not None
+        self.assertEqual([d.device for d in oracle.window.other], ["drive2"])
+
+    def test_a_drive_the_hidden_volume_shares_stays_a_decoy_drive(self) -> None:
+        machine, oracle = installed()
+        machine.answers = {
+            "cat /run/overlay-runtime/plan.json": '{"hidden_root": "/mnt/hidden"}',
+            "--target /mnt/hidden": "/dev/mapper/hid ext4 /mnt/hidden",
+            "lsblk -nrspo PATH,TYPE,SERIAL /dev/mapper/hid": (
+                "/dev/mapper/hid crypt \n/dev/loop0 loop "
+            ),
+            "losetup -nO BACK-FILE /dev/loop0": "/srv/c.img\n",
+            "--target /srv/c.img": "/dev/vdc ext4 /srv",
+            "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdc": "/dev/vdc disk data",
+        }
+        blockwrites.before_switch(machine, "activate")
+        blockwrites.after_switch(machine, "activate", True, 0, None, hidden=True)
+        self.assertEqual(oracle.hidden, set())
+        self.assertIn(
+            "serial data holds the hidden volume beside other data", oracle.errors[0]
+        )
+        self.assertIn("the file /srv/c.img holds it", oracle.errors[0])
+        assert oracle.window is not None
+        self.assertEqual([d.device for d in oracle.window.decoy], ["drive1", "drive2"])
 
     def test_a_plain_soft_reboot_that_lands_hidden_drops_its_window(self) -> None:
         machine, oracle = installed()
@@ -388,6 +479,210 @@ class HiddenDrives(unittest.TestCase):
         blockwrites.skip_control(machine, "its fstab state breaks a soft-reboot")
         self.assertFalse(blockwrites.needs_control(oracle))
         self.assertIn("fstab state", oracle.verdict()[0][0])
+
+
+class HiddenVolume(unittest.TestCase):
+    def volume(self, answers: dict[str, str]) -> blockwrites.HiddenVolume:
+        machine = FakeMachine()
+        machine.answers = {
+            "cat /run/overlay-runtime/plan.json": '{"hidden_root": "/mnt/hidden"}',
+            **answers,
+        }
+        return blockwrites.hidden_volume(machine)
+
+    def test_a_disk_of_its_own(self) -> None:
+        volume = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/dm-0 ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/dm-0": (
+                    "/dev/dm-0 crypt \n/dev/vdb disk hid"
+                ),
+                "lsblk -nrpo PATH,FSTYPE /dev/vdb": (
+                    "/dev/vdb crypto_LUKS\n/dev/dm-0 ext4"
+                ),
+            }
+        )
+        self.assertEqual((volume.alone, volume.shared), ({"hid"}, {}))
+
+    def test_a_partition_beside_a_decoy_one(self) -> None:
+        volume = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/vdb2 ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb2": (
+                    "/dev/vdb2 part \n/dev/vdb disk d"
+                ),
+                "lsblk -nrpo PATH,FSTYPE /dev/vdb": (
+                    "/dev/vdb \n/dev/vdb1 ext4\n/dev/vdb2 ext4"
+                ),
+            }
+        )
+        self.assertEqual(volume.alone, set())
+        self.assertEqual(volume.shared, {"d": "it also holds /dev/vdb1 (ext4)"})
+
+    def test_a_folder_or_a_subvolume_shares_its_filesystem(self) -> None:
+        folder = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/vda ext4 /",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/vda": "/dev/vda disk root",
+            }
+        )
+        self.assertIn("a folder of the filesystem at /", folder.shared["root"])
+        subvolume = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/vdb[/@hidden] btrfs /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb": "/dev/vdb disk b",
+            }
+        )
+        self.assertIn("the subvolume /@hidden", subvolume.shared["b"])
+
+    def test_a_hidden_volume_in_ram_lies_on_no_drive(self) -> None:
+        for answers in (
+            {"--target /mnt/hidden": "tmpfs tmpfs /mnt/hidden"},
+            {
+                "--target /mnt/hidden": "/dev/zram0 ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/zram0": "/dev/zram0 disk ",
+            },
+            {
+                "--target /mnt/hidden": "/dev/loop1 ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
+                "losetup -nO BACK-FILE /dev/loop1": "/tmp/h.img",
+                "--target /tmp/h.img": "tmpfs tmpfs /tmp",
+            },
+        ):
+            volume = self.volume(answers)
+            self.assertEqual((volume.alone, volume.shared), (set(), {}), answers)
+
+    def test_what_it_cannot_tell_raises(self) -> None:
+        for answers, why in (
+            ({"--target /mnt/hidden": "overlay overlay /"}, "lies on overlay"),
+            (
+                {
+                    "--target /mnt/hidden": "/dev/loop1 ext4 /mnt/hidden",
+                    "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
+                },
+                "no backing file",
+            ),
+        ):
+            with self.assertRaises(ValueError) as raised:
+                self.volume(answers)
+            self.assertIn(why, str(raised.exception))
+        machine = FakeMachine()
+        machine.answers = {"cat /run/overlay-runtime/plan.json": "{}"}
+        with self.assertRaises(ValueError):
+            blockwrites.hidden_volume(machine)
+
+
+class Arming(unittest.TestCase):
+    ARM = f"[ -e {blockwrites.ARM} ] || : > {blockwrites.ARM}"
+    DISARM = f"rm -f {blockwrites.ARM}"
+
+    def test_the_mark_unit_is_armed_while_a_window_is_open(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        self.assertEqual(machine.ran.count(self.ARM), 1)
+        blockwrites.after_switch(machine, "activate", True, 0, 0, hidden=True)
+        self.assertNotIn(self.DISARM, machine.ran)
+        # The way back arms it again, and its end disarms it.
+        blockwrites.before_switch(machine, "deactivate")
+        self.assertEqual(machine.ran.count(self.ARM), 2)
+        blockwrites.after_switch(machine, "deactivate", False, None, None, hidden=False)
+        self.assertEqual(machine.ran[-1], self.DISARM)
+
+    def test_a_switch_that_never_enters_disarms_and_a_failure_is_an_error(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "soft-reboot")
+        blockwrites.after_switch(machine, "soft-reboot", True, None, None, hidden=False)
+        self.assertEqual(machine.ran[-1], self.DISARM)
+
+        def refuse(*commands: str, timeout: int | None = None) -> str:
+            if "blkstat-arm" in commands[0]:
+                raise RuntimeError("no shell")
+            return ""
+
+        machine, oracle = installed()
+        machine.succeed = refuse  # type: ignore[method-assign]
+        blockwrites.before_switch(machine, "activate")
+        self.assertIn("could not be armed: no shell", oracle.errors[0])
+        oracle.discard()
+        blockwrites.disarm(machine)
+        self.assertIn("could not be disarmed", oracle.errors[1])
+
+    def test_the_first_window_reports_the_boot_s_mark_and_journald(self) -> None:
+        machine, oracle = installed()
+        machine.answers[blockwrites.BOOT_TIMES] = (
+            "InactiveExitTimestampMonotonic=3100000\n"
+            "InactiveEnterTimestampMonotonic=3150000\n"
+            "ExecMainStartTimestampMonotonic=3300000\n"
+        )
+        blockwrites.before_switch(machine, "activate")
+        oracle.discard()
+        blockwrites.before_switch(machine, "again")
+        boot = [line for line in machine.logged if "boot:" in line]
+        self.assertEqual(
+            boot,
+            [
+                "block-write oracle: boot: the mark unit ran 0.05 s from 3.10 s; "
+                "journald started at 3.30 s"
+            ],
+        )
+        self.assertIn(
+            "the mark unit did not run",
+            blockwrites.boot_times("InactiveExitTimestampMonotonic=0\n"),
+        )
+
+
+class Control(unittest.TestCase):
+    def test_a_test_that_ended_in_the_hidden_root_has_no_control(self) -> None:
+        machine, oracle = installed()
+        machine.answers["findmnt -no FSTYPE /"] = "overlay"
+        with mock.patch.object(session, "follow_soft_reboot") as follow:
+            blockwrites._control(machine, oracle)
+        follow.assert_not_called()
+        self.assertEqual(
+            oracle.errors, ["no control: the test ended in the hidden root"]
+        )
+
+    def test_the_control_installs_the_mark_unit_first_and_starts_a_machine_off(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        oracle.tools["mark_setup"] = "install the mark unit"
+        machine.answers["findmnt -no FSTYPE /"] = "ext4"
+        machine.process.code = 0
+        seen: list[str] = []
+        with mock.patch.object(
+            session,
+            "follow_soft_reboot",
+            side_effect=lambda m, trigger, label: seen.extend(m.ran),
+        ) as follow:
+            blockwrites._control(machine, oracle)
+        follow.assert_called_once_with(
+            machine, blockwrites.CONTROL_TRIGGER, "oracle-control"
+        )
+        self.assertEqual(machine.started, 1)
+        self.assertIn("install the mark unit", seen)
+        self.assertEqual(oracle.errors, [])
+
+    def test_a_failed_control_is_an_oracle_error(self) -> None:
+        machine, oracle = installed()
+        machine.answers["findmnt -no FSTYPE /"] = "ext4"
+        with mock.patch.object(
+            session, "follow_soft_reboot", side_effect=RuntimeError("boom")
+        ):
+            blockwrites._control(machine, oracle)
+        self.assertEqual(oracle.errors, ["the control soft-reboot failed: boom"])
+
+    def test_qemu_gone_at_the_end_with_a_window_open_is_an_oracle_error(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        machine.process.code = 0
+        blockwrites.finish([machine])
+        self.assertEqual(oracle.errors, ["activate: QEMU ended without the oracle"])
+        self.assertFalse(blockwrites.watching(machine))
 
 
 class Threads(unittest.TestCase):
@@ -605,6 +900,23 @@ class Windows(unittest.TestCase):
         blockwrites.before_switch(machine, "activate")
         blockwrites.after_switch(machine, "activate", True, 9, 3, hidden=True)
         self.assertIn("stopped waiting before the host cut", oracle.errors[0])
+
+    def test_the_wait_for_a_power_off_keeps_the_caller_s_timeout(self) -> None:
+        machine, oracle = installed()
+        blockwrites.before_switch(machine, "activate")
+        with mock.patch.object(blockwrites, "wait_for_exit", return_value=True) as w:
+            machine.wait_for_shutdown(timeout=datetime.timedelta(seconds=7))
+            w.assert_called_once_with(machine, 7.0)
+            machine.wait_for_shutdown(9)
+            w.assert_called_with(machine, 9)
+        self.assertEqual(machine.waited, 2)
+        # A wait that ran out raises at once, without the driver's own wait.
+        with (
+            mock.patch.object(blockwrites, "wait_for_exit", return_value=False),
+            self.assertRaises(TimeoutError),
+        ):
+            machine.wait_for_shutdown(timeout=3)
+        self.assertEqual(machine.waited, 2)
 
     def test_a_power_off_is_read_while_qemu_waits_then_qemu_quits(self) -> None:
         machine, oracle = installed()

@@ -22,11 +22,17 @@ live, at a crash and at the end of the test script. The same hold line at the
 hidden root's own start splits the window into the phases ``switch`` and
 ``session``.
 
-Decoy drives are every writable drive but those the hidden volume lies on, told
-by their serial from the session plan's hidden root once a session has started
-(:func:`hidden_serials`); before that, every writable drive but the suite's
-extra disks (``empty<N>.qcow2``). Writes to the hidden volume's drives are
-reported and never judged.
+The mark unit holds a start only while the host armed it (:data:`ARM`, a
+file in ``/run``, which a soft-reboot carries and a cold boot does not have):
+from just before the trigger of a watched switch until the window ends.
+
+Decoy drives are every writable drive but those that hold the hidden volume
+and nothing else, told by their serial from the session plan's hidden root
+once a session has started (:func:`hidden_volume`); before that, every
+writable drive but the suite's extra disks (``empty<N>.qcow2``). A drive that
+holds the hidden volume beside other data stays a decoy drive, with an oracle
+error, and so does every extra disk when the hidden volume's drives cannot be
+told. Writes to the hidden volume's own drives are reported and never judged.
 """
 
 from __future__ import annotations
@@ -34,6 +40,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -45,8 +52,13 @@ from typing import Any
 #: The bitmaps' granularity: one guest sector.
 GRANULARITY = 512
 
+#: The file in ``/run`` that arms the mark unit: it holds a start only where
+#: this file is there. A soft-reboot keeps ``/run``, the session's switch
+#: binds it into the hidden root, and the way back's scrub of ``/run`` keeps
+#: what the decoy had there before the entry; a cold boot starts without it.
+ARM = "/run/blkstat-arm"
 #: What the mark unit prints on the serial console at each userspace start
-#: after the first boot, then waits.
+#: the host armed it for, then waits.
 HOLD = "blkstat-mark hold"
 #: What it prints when it stops waiting (its start: a kernel line can cut
 #: the rest off).
@@ -231,6 +243,33 @@ def sector_text(ranges: list[Range], limit: int = 40) -> str:
         parts.append(f"{first}" if first == last else f"{first}-{last}")
     more = len(ranges) - limit
     return ", ".join(parts) + (f" and {more} more" if more > 0 else "")
+
+
+#: The shell that tells when the mark unit last started and ended, and when
+#: journald started, in microseconds of uptime (0 where it did not).
+BOOT_TIMES = (
+    "systemctl show -p InactiveExitTimestampMonotonic "
+    "-p InactiveEnterTimestampMonotonic blkstat-mark.service; "
+    "systemctl show -p ExecMainStartTimestampMonotonic systemd-journald.service"
+)
+
+
+def boot_times(text: str) -> str:
+    """The report line of :data:`BOOT_TIMES`' output."""
+    values: dict[str, float] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition("=")
+        if value.strip().isdigit():
+            values[key.strip()] = int(value) / 1e6
+    start = values.get("InactiveExitTimestampMonotonic", 0.0)
+    end = values.get("InactiveEnterTimestampMonotonic", 0.0)
+    journald = values.get("ExecMainStartTimestampMonotonic", 0.0)
+    mark = (
+        f"the mark unit ran {end - start:.2f} s from {start:.2f} s"
+        if start and end >= start
+        else "the mark unit did not run"
+    )
+    return f"{mark}; journald started at {journald:.2f} s"
 
 
 def hold_and_release(lines: list[str]) -> tuple[int | None, int | None]:
@@ -487,10 +526,13 @@ class Oracle:
         #: own start too.
         self.uncut_control = False
         #: The serials of the drives the hidden volume lies on, once a session
-        #: told them (:func:`hidden_serials`).
+        #: told them (:func:`hidden_volume`).
         self.hidden: set[str] | None = None
         #: Why the test's end runs no control (:func:`skip_control`).
         self.no_control: str | None = None
+        #: Whether the report names how long the mark unit held the boot the
+        #: first window opened in (:meth:`_note_boot`).
+        self.boot_noted = False
         self.serial = 0
         #: Held by every step that reads or changes the window, from the test
         #: script's thread and from the watch thread (:func:`install`).
@@ -538,6 +580,9 @@ class Oracle:
         if self.window is not None:
             return
         self.machine.succeed("sync")
+        if not self.boot_noted:
+            self.boot_noted = True
+            self._note_boot()
         blocks = self._qmp("query-block")
         decoy, other = drives(blocks, self._serials(blocks), self.hidden)
         if not decoy:
@@ -553,6 +598,17 @@ class Oracle:
             f"block-write oracle: {label}: watching "
             + ", ".join(d.device or d.node for d in decoy)
         )
+
+    def _note_boot(self) -> None:
+        """Report when the mark unit last ran and when journald started, in
+        seconds of uptime: at the first window of a test, the boot the test
+        started with, which the unit must not hold (:data:`ARM`)."""
+        try:
+            text = self.machine.succeed(BOOT_TIMES)
+        except Exception as e:  # noqa: BLE001 - a report line, nothing more
+            self.machine.log(f"block-write oracle: boot times unread: {e}")
+            return
+        self.machine.log(f"block-write oracle: boot: {boot_times(text)}")
 
     def _serials(self, blocks: list[dict[str, Any]]) -> dict[str, str]:
         """The serial of each drive's device, by drive ("" where it has none
@@ -971,7 +1027,10 @@ def install(machine: Any, tools: dict[str, str], watch: bool = True) -> Oracle:
         if oracle.window is not None:
             timeout = kwargs.get("timeout", args[0] if args else None)
             seconds = getattr(timeout, "total_seconds", lambda: timeout)()
-            wait_for_exit(machine, seconds)
+            # The caller's timeout bounds the whole wait: run out here, and
+            # the driver's own wait would take as long again.
+            if not wait_for_exit(machine, seconds):
+                raise TimeoutError(f"the machine did not power off in {seconds} s")
         return original_wait(*args, **kwargs)
 
     def crash(*args: Any, **kwargs: Any) -> Any:
@@ -1071,18 +1130,29 @@ def wait_for_exit(machine: Any, timeout: float | None) -> bool:
 
 
 def before_switch(machine: Any, label: str, control: bool = False) -> bool:
-    """Before the trigger of a switch: open a window when none is open.
-    Returns whether this switch opened it."""
+    """Before the trigger of a switch: open a window when none is open, and
+    arm the mark unit (:data:`ARM`) while one is. Returns whether this switch
+    opened it."""
     oracle = oracle_of(machine)
-    if oracle is None or oracle.window is not None:
+    if oracle is None:
         return False
-    try:
-        with oracle.lock:
-            oracle.open(label, control)
-    except Exception as e:  # noqa: BLE001 - recorded, raised at the end
-        oracle.errors.append(f"{label}: the window could not be opened: {e}")
-        return False
-    return oracle.window is not None
+    opened = False
+    if oracle.window is None:
+        try:
+            with oracle.lock:
+                oracle.open(label, control)
+        except Exception as e:  # noqa: BLE001 - recorded, raised at the end
+            oracle.errors.append(f"{label}: the window could not be opened: {e}")
+            return False
+        opened = oracle.window is not None
+    if oracle.window is not None:
+        try:
+            # Created once, never rewritten: the way back's scrub of /run
+            # keeps an entry the decoy had before the entry, by its inode.
+            machine.succeed(f"[ -e {ARM} ] || : > {ARM}")
+        except Exception as e:  # noqa: BLE001 - judged with the rest
+            oracle.errors.append(f"{label}: the mark unit could not be armed: {e}")
+    return opened
 
 
 def at_hold(machine: Any, opened_here: bool, since: int | None = None) -> int:
@@ -1128,21 +1198,102 @@ def _flush(machine: Any, oracle: Oracle, send: Any) -> None:
         )  # sync-lint: allow sleep -- polls the console under the deadline
 
 
-#: The shell that names the serials of the drives below the session plan's
-#: hidden root, one per line, in the hidden session.
-_HIDDEN_SERIALS = (
-    'r=$(sed -n \'s/.*"hidden_root":"\\([^"]*\\)".*/\\1/p\' '
-    "/run/overlay-runtime/plan.json); "
-    's=$(findmnt -nro SOURCE --target "$r" | head -n 1 | sed "s/\\[.*//"); '
-    'lsblk -nrso SERIAL "$s" 2>/dev/null | sort -u || true'
-)
+#: The session plan the hidden session runs by; it names the hidden root.
+PLAN = "/run/overlay-runtime/plan.json"
+#: The filesystems in RAM, on no drive.
+_IN_RAM = ("tmpfs", "ramfs")
+#: The block devices in RAM: a hidden volume there lies on no drive.
+_RAM_DEVICE = re.compile(r"/dev/(zram|ram)\d+")
 
 
-def hidden_serials(machine: Any) -> set[str]:
-    """The serials of the drives the session plan's hidden root lies on, read
-    in the hidden session; empty where it lies on none (a loop device in RAM,
-    or a drive with no serial)."""
-    return {s for s in machine.succeed(_HIDDEN_SERIALS).split() if s}
+@dataclass
+class HiddenVolume:
+    """The drives a hidden volume lies on, by serial."""
+
+    #: Those that hold the hidden volume and nothing else.
+    alone: set[str] = field(default_factory=set)
+    #: Those that hold other data beside it, each with what that is.
+    shared: dict[str, str] = field(default_factory=dict)
+
+
+def _row(line: str, width: int) -> list[str]:
+    """The fields of a raw ``lsblk``/``findmnt`` line, ``width`` of them: an
+    empty field is an empty string, a space in one is ``\\x20``."""
+    return (line.split(" ") + [""] * width)[:width]
+
+
+def hidden_volume(machine: Any) -> HiddenVolume:
+    """The drives the session plan's hidden root lies on, read in the hidden
+    session: below its filesystem, through device mapper and LVM, and through
+    a loop device to the drive of its backing file. Raises ``ValueError``
+    naming what it cannot tell."""
+    plan = json.loads(machine.succeed(f"cat {PLAN}"))
+    root = str(plan.get("hidden_root") or "")
+    if not root:
+        raise ValueError("the session plan names no hidden root")
+    volume = HiddenVolume()
+    _place(machine, root, volume, None, 0)
+    for serial in volume.shared:
+        volume.alone.discard(serial)
+    return volume
+
+
+def _place(
+    machine: Any, path: str, volume: HiddenVolume, beside: str | None, depth: int
+) -> None:
+    """Add the drives ``path`` lies on to ``volume``; ``beside``, when known,
+    is the other data they hold."""
+    if depth > 3:
+        raise ValueError(f"{path} lies below too many loop devices")
+    quoted = shlex.quote(path)
+    line = machine.succeed(
+        f"findmnt -nro SOURCE,FSTYPE,TARGET --target {quoted} | head -n 1"
+    ).strip()
+    source, fstype, target = _row(line, 3)
+    device, _, sub = source.partition("[")
+    if fstype in _IN_RAM:
+        return
+    if not device.startswith("/dev/"):
+        raise ValueError(f"{path} lies on {source or 'nothing'} ({fstype})")
+    if beside is None and sub.strip("]/"):
+        beside = f"{path} is the subvolume {sub.rstrip(']')} of its filesystem"
+    if beside is None and os.path.normpath(target) != os.path.normpath(path):
+        beside = f"{path} is a folder of the filesystem at {target}"
+    chain: set[str] = set()
+    disks: list[tuple[str, str]] = []
+    for row in machine.succeed(
+        f"lsblk -nrspo PATH,TYPE,SERIAL {shlex.quote(device)}"
+    ).splitlines():
+        name, kind, serial = _row(row, 3)
+        chain.add(name)
+        if kind == "loop":
+            back = machine.succeed(f"losetup -nO BACK-FILE {shlex.quote(name)}")
+            back = back.strip()
+            if not back:
+                raise ValueError(f"{name}, below {path}, has no backing file")
+            _place(machine, back, volume, f"the file {back} holds it", depth + 1)
+        elif kind == "disk" and not _RAM_DEVICE.fullmatch(name):
+            if not serial:
+                raise ValueError(f"{name}, below {path}, has no serial")
+            disks.append((name, serial))
+    for disk, serial in disks:
+        what = beside
+        if what is None:
+            others = [
+                f"{name} ({fs})"
+                for name, fs in (
+                    _row(row, 2)
+                    for row in machine.succeed(
+                        f"lsblk -nrpo PATH,FSTYPE {shlex.quote(disk)}"
+                    ).splitlines()
+                )
+                if fs and name not in chain
+            ]
+            what = ("it also holds " + ", ".join(others)) if others else None
+        if what is None:
+            volume.alone.add(serial)
+        else:
+            volume.shared[serial] = what
 
 
 def skip_control(machine: Any, why: str) -> None:
@@ -1175,6 +1326,7 @@ def after_switch(
         return
     with oracle.lock:
         _after_switch(oracle, label, opened_here, cut_at, release_at, hidden)
+    disarm(machine)
 
 
 def _after_switch(
@@ -1198,12 +1350,7 @@ def _after_switch(
             )
             oracle.discard()
             return
-        try:
-            found = hidden_serials(oracle.machine)
-        except Exception:  # noqa: BLE001 - the extra-disk rule stays
-            found = set()
-        if found:
-            oracle.learn_hidden(found)
+        learn(oracle, label)
         if opened_here and cut_at is None:
             oracle.errors.append(
                 f"{label}: the hidden root's start came without the mark unit's "
@@ -1225,6 +1372,43 @@ def _after_switch(
         oracle.close("the way back, without a cut")
         return
     oracle.close("the way back", keep_last=False)
+
+
+def learn(oracle: Oracle, label: str) -> None:
+    """In the hidden session: tell the hidden volume's drives, and sort the
+    open window's drives by them."""
+    try:
+        volume = hidden_volume(oracle.machine)
+    except Exception as e:  # noqa: BLE001 - fails closed, as an oracle error
+        oracle.errors.append(
+            f"{label}: the hidden volume's drives cannot be told ({e}); "
+            "the extra disks stay unjudged"
+        )
+        return
+    for serial, what in sorted(volume.shared.items()):
+        oracle.errors.append(
+            f"{label}: the drive with serial {serial} holds the hidden volume "
+            f"beside other data ({what}); it stays a decoy drive, so the "
+            "hidden volume's own writes there are findings"
+        )
+    oracle.learn_hidden(volume.alone)
+    held = sorted(volume.alone | set(volume.shared))
+    oracle.machine.log(
+        f"block-write oracle: {label}: the hidden volume lies on "
+        + (", ".join(f"the drive with serial {s}" for s in held) or "no drive")
+    )
+
+
+def disarm(machine: Any) -> None:
+    """Remove :data:`ARM` once no window is open, so the next start the host
+    does not watch is not held."""
+    oracle = oracle_of(machine)
+    if oracle is None or oracle.window is not None or not _running(machine):
+        return
+    try:
+        machine.succeed(f"rm -f {ARM}")
+    except Exception as e:  # noqa: BLE001 - a later start waits 15 s, no more
+        oracle.errors.append(f"the mark unit could not be disarmed: {e}")
 
 
 def finish(machines: list[Any]) -> None:

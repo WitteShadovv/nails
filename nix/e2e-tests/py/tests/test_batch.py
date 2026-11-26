@@ -261,6 +261,9 @@ class ResetGuestTest(unittest.TestCase):
 
         self.assertEqual(guest.boots, 2)
         self.assertIn("<crash>", guest.commands)
+        # The new boot's jobs end before the guest is read again.
+        crash = guest.commands.index("<crash>")
+        self.assertEqual(guest.commands[crash + 2], batch.SETTLE)
         self.assertTrue(actions[0].startswith("power-cycled"))
         # The disk survives the power cycle, so its leftovers are still removed.
         self.assertEqual(leftovers(baseline, parse_state(guest.snapshot())), [])
@@ -317,6 +320,8 @@ class RunScenariosTest(unittest.TestCase):
 
         batch.run_scenarios(guest, RecordingSubtest(), [("only", leaves_a_session)])
         self.assertEqual(guest.boots, 1)
+        # The boot's jobs end before the baseline is read.
+        self.assertEqual(guest.commands[0], batch.SETTLE)
 
     def test_a_reset_that_fails_stops_the_batch(self) -> None:
         guest = FakeGuest()

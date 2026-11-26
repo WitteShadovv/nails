@@ -745,20 +745,25 @@ leaves none of this to chance.
 **Writes to the decoy disk during a session: measured, not fenced yet.**
 
 The VM tests count the writes to the decoy disk from the host (the block-write
-oracle, see `nix/e2e-tests/README.md`). On NixOS, Debian 13, Ubuntu 24.04 and
-26.04 and Arch these writes remain after the switch into the hidden root:
+oracle, see `nix/e2e-tests/README.md`). These writes remain after the switch
+into the hidden root, on NixOS and Arch; the Debian 13 and Ubuntu 24.04 and
+26.04 scenarios measured none, and no distribution scenario powers off from a
+session:
 
-1. A power-off from inside the session (the way back powering off, the sleep
-   guard's `teardown`, an emergency or the window's power-off, the switch-timeout
-   guard) writes the decoy root's ext4 superblock and one journal block. The
-   decoy root stays mounted read-write below the overlay, and the final shutdown
-   unmounts it, so the superblock's write time dates the session's end.
+1. On NixOS, a power-off from inside the session writes the decoy root's ext4
+   superblock and one journal block: the way back powering off after
+   `deactivate` and after a plain `emergency` that cannot delete a link, the
+   sleep guard's `teardown`, the switch-timeout guard, the window's emergency
+   power-off, and the backend watcher without a plan. `emergency --poweroff`
+   wrote nothing. The decoy root stays mounted read-write below the overlay,
+   and the final shutdown unmounts it, so the superblock's write time dates the
+   session's end.
 2. The first sector of the ESP, in `session-decoy-mount-table` (NixOS, its ESP
-   behind an automount) and on Arch: most likely vfat's clean mark in its boot
-   sector, written when the last read-write mount of the ESP ends. Not
-   confirmed.
-3. On Arch's btrfs root, in the smoke and records scenarios, blocks the oracle
-   does not attribute (it names the writers on ext4 only).
+   behind an automount) and in Arch's smoke and records scenarios: most likely
+   vfat's clean mark in its boot sector, written when the last read-write mount
+   of the ESP ends. Not confirmed.
+3. On Arch's btrfs root, in the smoke scenario, blocks the oracle does not
+   attribute (it names the writers on ext4 only).
 
 A disk the session mounts and writes itself takes the session's writes too.
 What once looked like the decoy's own writes reaching the disk after the switch
