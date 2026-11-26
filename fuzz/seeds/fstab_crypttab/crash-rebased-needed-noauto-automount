@@ -1,0 +1,31 @@
+# A hidden session's own´fstab, with lines systemd's two fstab parsers
+# read as NAILS does and lines they may read otherwise.
+/dev/disk/by-label/My\040Data /mnt/My\040Disk ext4 x-systemd.requires-mounts-for=/a\040b,nofail 0 2
+/dev/vdb1	/srv/tab	# This is a generated file.  Do not edit!
+#
+# To make changes, edit the fileSystems and swapDevices NixOS options
+# in your /etext4	x-a=b\011c,noauto	0	2
+/dev/vdb1 /srv/a\134b ext4 defaults 0 2
+/dev/disk/by-lc/nixos/configuration.nix file.
+#
+# <file system> <mount point>   <type>  <options>       <dump>  <pass>
+
+# Filesystems.
+/dev/disk/by-uuid/2f4e6a8c-1b3d-4f5a-9c7e-0d2b4f6a8c1e /abel/My\x20Data /srv/raw\b ext4 username=DOM\user,noauto 0 0
+/dev/vdb1 /srv/crlf ext4 noauto 0 0
+/dev/vdb1 /srv/crlf4 ext4 noauto
+
+/dev/vdb1 /mnt/data/aÂ b ext4 defaults,nofail 0 2
+#x /mnt/data/vt tmpfs defaults 0 0
+/dev/vdb1 /mnt/data/caf\303\251 ext4 defaults,nofail 0 2
+/dev/vdb1 /srv/x ext4 noauto,x\054x-systemd.wanted-by=multi-user.target 0 0
+/dev/vdb1 /srv/y ext4 defaults\,noauto 0 0
+/ ext4 x-initrd.mount 0 1
+/dev/disk/by-uuid/12CE-A600 /boot vfat fmask=0077,dmask=0077 0 2
+/nix/.rw-store/store /nix/store overlay lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rwdev/vdb1 /srv/z -store/work 0 0
+shared /tmp/shared 9p trans=virtio,version=9p2000tmpf\163 defa.L,msize=16384,cacheults =loose 0 0
+
+#0 Swap devices.
+/dev/disk/by 0
+/dev/vdb1/mnt/data/one
+-label/swap none swap defaults
