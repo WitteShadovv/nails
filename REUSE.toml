@@ -55,7 +55,6 @@ SPDX-License-Identifier = "GPL-3.0-only"
 [[annotations]]
 path = [
     "nails-core/src/preflight/checks/locate_database/fixtures/debian-13-*",
-    "nails-core/src/preflight/checks/locate_database/fixtures/ubuntu-26.04-*",
     "nails-core/src/preflight/checks/locate_database/fixtures/fedora-44-plocate-updatedb.service",
 ]
 SPDX-FileCopyrightText = "2020 Steinar H. Gunderson"
@@ -76,20 +75,6 @@ path = [
 ]
 SPDX-FileCopyrightText = "Red Hat, Inc. and the tuned, firewalld and abrt contributors"
 SPDX-License-Identifier = "GPL-2.0-or-later"
-
-# Fedora's updatedb.conf, which its plocate.spec writes; Fedora's spec files
-# are under the MIT licence.
-[[annotations]]
-path = "nails-core/src/preflight/checks/locate_database/fixtures/fedora-44-updatedb.conf"
-SPDX-FileCopyrightText = "Fedora Project contributors"
-SPDX-License-Identifier = "MIT"
-
-# Arch Linux's updatedb.conf, from its plocate package sources, which Arch
-# Linux licenses as 0BSD.
-[[annotations]]
-path = "nails-core/src/preflight/checks/locate_database/fixtures/arch-updatedb.conf"
-SPDX-FileCopyrightText = "Arch Linux Contributors"
-SPDX-License-Identifier = "0BSD"
 
 # The apt configuration files the apt_conf reader's and the
 # decoy-persistence check's unit tests read, and the apt_conf fuzz target's

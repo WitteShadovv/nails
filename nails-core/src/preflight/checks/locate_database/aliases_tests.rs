@@ -494,23 +494,3 @@ fn an_alias_is_one_of_the_same_kind() {
         Path::new("/usr/lib/x")
     );
 }
-
-#[test]
-fn nixos_with_dbus_broker_and_its_fix_passes_the_locate_check() {
-    // The stock NixOS layout, with services.locate and its fix: dbus-broker
-    // runs no updatedb, and NAILS reads its drop-ins as systemd does.
-    use super::super::tests::{NIXOS_PRUNEPATHS, nixos};
-    let mut pruned = NIXOS_PRUNEPATHS.to_vec();
-    pruned.push("/mnt");
-    let decoy = nixos(&pruned, &[]);
-    nixos_dbus_broker(|path, target, text| {
-        if target.starts_with('/') {
-            decoy.file(target, text);
-        }
-        // The mock reads no file through a link.
-        decoy.link(path, target);
-        decoy.fs.mock_set_file_content(path, text);
-    });
-    let result = decoy.check(true);
-    assert!(result.is_pass(), "{result:?}");
-}

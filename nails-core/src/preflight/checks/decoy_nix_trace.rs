@@ -651,10 +651,7 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyNixTraceCheck {
             ));
         }
         let guarded = Guarded::new(fs.clone(), &snapshot);
-        let hidden: Vec<PathBuf> = hidden_locations(&guarded, &self.hidden_root)
-            .into_iter()
-            .map(|location| location.path)
-            .collect();
+        let hidden: Vec<PathBuf> = hidden_locations(&guarded, &self.hidden_root);
         let traces = Traces::read(&guarded, &self.root, &hidden);
         Ok(settle(
             verdict(&traces.found, &traces.unread),

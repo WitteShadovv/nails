@@ -1,101 +1,98 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Pre-flight check that refuses a decoy whose locate database would list the
-//! hidden volume.
+//! Pre-flight check that refuses a decoy that may run updatedb.
 //!
-//! updatedb (plocate's, mlocate's, or NixOS's `update-locatedb.service`)
-//! walks the whole tree and writes the name of every file it finds into the
-//! locate database on the decoy disk (`/var/lib/plocate/plocate.db`,
-//! `/var/lib/mlocate/mlocate.db`, `/var/cache/locatedb` on NixOS). A run
-//! while the hidden volume is mounted on the decoy, before activation or
-//! after the way back, writes every name on the volume there. The stock
-//! timers run daily and catch a missed run up right after boot, when the
-//! volume is unlocked for a session. Fedora installs and enables plocate by
-//! default, and the default `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora
-//! 44 and NixOS do not skip `/mnt`.
+//! updatedb (plocate's, mlocate's, findutils', or NixOS's
+//! `update-locatedb.service`) walks the whole tree and writes the name of
+//! every file it finds into the locate database on the decoy disk
+//! (`/var/lib/plocate/plocate.db`, `/var/lib/mlocate/mlocate.db`,
+//! `/var/cache/locatedb` on NixOS). A run while the hidden volume is mounted
+//! on the decoy, before activation or after the way back, writes every name
+//! on the volume there. The stock timers run daily and catch a missed run up
+//! right after boot, when the volume is unlocked for a session, and Debian's
+//! and Ubuntu's plocate package starts its service again at every upgrade.
 //!
-//! The check judges the hidden volume where NAILS finds it: the hidden root
-//! resolved, and every other mount of the volume's filesystem (see
-//! [`judge`] for when a run skips it). Its verdict:
+//! The check does not read what a run skips (`PRUNEPATHS` and the options of
+//! the command line): it refuses while anything on the decoy may run
+//! updatedb without a person typing it. That is, while:
 //!
-//! - no updatedb installed: pass;
-//! - every run skips the volume: pass, naming the rule that skips it;
-//! - an updatedb that runs now, or that a timer, a path unit, an enabled
-//!   service or a cron job starts ([`read`]), and that does not skip it:
-//!   fail. No flag lifts this refusal. One NAILS cannot tell is findutils'
-//!   or not, as where it cannot resolve the link of its program, fails
-//!   where the lists plocate and mlocate read do not skip the volume;
-//! - one NAILS cannot tell about (an unreadable or broken configuration file,
-//!   a command or option it does not follow, findutils' updatedb, one it
-//!   cannot tell is findutils' or not whose plocate and mlocate lists skip
-//!   the volume, a unit directory, crontab or cron script it cannot read),
-//!   or one only a person starts that does not skip the volume: warn.
+//! - a unit file or drop-in of the system manager or of a user's, in any
+//!   directory systemd loads units from, names updatedb (`updatedb` or
+//!   `locatedb` in its name or its text, in any case), and the unit is not
+//!   masked. A mask stops every way the unit starts: its timer, a `.wants`
+//!   entry, another unit, a socket, a package's own `systemctl start` or
+//!   `restart` in its maintainer scripts. A drop-in of a unit that cannot be
+//!   masked (`service.d`, `plocate-.service.d`), and a unit in a user's own
+//!   directories, refuse until the file is removed;
+//! - a unit the system manager has loaded names updatedb, by its names or
+//!   its commands, and is active or not masked (`systemctl show`): this sees
+//!   a timer masked but still running and a unit whose file is gone since it
+//!   was loaded;
+//! - a crontab, an anacrontab, a cron script or an `at` job names updatedb;
+//! - a process whose name names updatedb runs now;
+//! - NAILS cannot tell one of these: a directory, file or process it cannot
+//!   read, a system manager it cannot ask, an automount point it does not
+//!   mount.
 //!
-//! Nothing is written. The decoy's files are read under a root, so that a
-//! scan of an offline image can read them as well, with `O_NOATIME` and
-//! never where a link leads onto the hidden volume ([`files`]). The running
-//! system is read through the automount guard
+//! No flag lifts the refusal. An updatedb program that nothing schedules
+//! warns: a run by hand while the volume is mounted lists it as well.
+//!
+//! Nothing is written. The decoy's files are read under a root with
+//! `O_NOATIME` and never where a link leads onto the hidden volume
+//! ([`files`]). The running system is read through the automount guard
 //! ([`crate::filesystem::automount`]): a lookup that would mount an
 //! automount point that nothing is mounted on yet is not made, and the check
-//! warns that it cannot tell, naming the point, as for a file it cannot
-//! read. Without a readable mount table it looks up nothing, and warns.
+//! refuses, naming the point. Without a readable mount table it looks up
+//! nothing, and refuses.
 
 pub(in crate::preflight::checks) mod aliases;
-pub mod conf;
-pub mod cron;
 pub mod exec;
 pub mod files;
-pub mod judge;
-pub mod options;
-pub mod read;
-pub mod shell;
 // The decoy-persistence check reads the decoy's units, and what their
-// triggers start, the same way.
+// triggers start.
+mod scan;
 pub(in crate::preflight::checks) mod targets;
 pub(in crate::preflight::checks) mod unit;
-// The decoy-persistence check reads the triggers of the decoy's units the
-// same way.
-pub(in crate::preflight::checks) mod units;
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, settle};
-use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
-use crate::hidden_root::mount_holding;
+use crate::filesystem::mountinfo::top_mount_at;
 use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use crate::{Filesystem, Result};
-use judge::{Cover, Judged, Location, Start, Verdict};
-use std::collections::BTreeSet;
+use files::DecoyFiles;
 use std::path::{Path, PathBuf};
 
 /// Where the docs explain the check.
 const DOC: &str = "docs/decoy-requirements.md#the-locate-database";
 
-/// Pre-flight check that refuses an updatedb that would list the hidden
-/// volume in the decoy's locate database.
+/// The commands of a unit `systemctl show` gives, with its names and state.
+const SHOWN: &str = "Id,Names,LoadState,ActiveState,ExecCondition,ExecStartPre,ExecStart,\
+                     ExecStartPost,ExecReload,ExecStop,ExecStopPost";
+
+/// Pre-flight check that refuses a decoy that may run updatedb.
 #[derive(Debug)]
 pub struct LocateDatabaseCheck {
     /// The hidden root as configured.
     hidden_root: PathBuf,
     /// Whether the host carries a NixOS config layer, which picks the fix.
     is_nixos: bool,
-    /// Root of the system tree whose configuration is read; `/` outside
-    /// tests.
+    /// Root of the system tree read; `/` outside tests.
     root: PathBuf,
-    /// The timer and path units the system manager runs, as tests give
-    /// them; asked of the system manager when `None`.
-    started: Option<std::result::Result<BTreeSet<String>, String>>,
+    /// What `systemctl show` gives, as tests give it; asked of the system
+    /// manager when `None`.
+    shown: Option<std::result::Result<String, String>>,
 }
 
 impl LocateDatabaseCheck {
     /// The check for the hidden root at `hidden_root`; `is_nixos` gives the
-    /// NixOS fix instead of the one for `/etc/updatedb.conf`.
+    /// NixOS fix.
     pub fn new(hidden_root: PathBuf, is_nixos: bool) -> Self {
         Self {
             hidden_root,
             is_nixos,
             root: PathBuf::from("/"),
-            started: None,
+            shown: None,
         }
     }
 
@@ -106,57 +103,42 @@ impl LocateDatabaseCheck {
         self
     }
 
-    /// Take `started` as the timer and path units the system manager runs
-    /// (tests).
+    /// Take `shown` as what `systemctl show` gives (tests).
     #[cfg(test)]
-    pub(crate) fn with_started(
-        mut self,
-        started: std::result::Result<BTreeSet<String>, String>,
-    ) -> Self {
-        self.started = Some(started);
+    pub(crate) fn with_shown(mut self, shown: std::result::Result<String, String>) -> Self {
+        self.shown = Some(shown);
         self
     }
 
-    /// The timer and path units the system manager runs, or why NAILS
-    /// cannot tell: only the running system's manager can say, not that of
-    /// an image read under another root.
-    fn started(&self) -> std::result::Result<BTreeSet<String>, String> {
-        if let Some(started) = &self.started {
-            return started.clone();
+    /// What the system manager shows of the units it has loaded, or why
+    /// NAILS cannot tell: only the running system's manager can say.
+    fn shown(&self) -> std::result::Result<String, String> {
+        if let Some(shown) = &self.shown {
+            return shown.clone();
         }
         if self.root != Path::new("/") {
             return Err(format!("the decoy is read under {}", self.root.display()));
         }
-        started_triggers(&RealProcessRunner)
+        loaded_units(&RealProcessRunner)
     }
 }
 
-/// The timer and path units the system manager runs now, as
-/// `systemctl list-units` lists them, a timer started by hand among them:
-/// systemd leaves no file that says a timer runs.
-pub fn started_triggers(
-    runner: &dyn ProcessRunner,
-) -> std::result::Result<BTreeSet<String>, String> {
-    let list = ProcessCommand::tool("systemctl")
+/// The names, state and commands of every unit the system manager has
+/// loaded, as `systemctl show --all '*'` gives them.
+pub fn loaded_units(runner: &dyn ProcessRunner) -> std::result::Result<String, String> {
+    let show = ProcessCommand::tool("systemctl")
         .args([
-            "list-units",
-            "--type=timer,path",
-            "--state=active",
-            "--plain",
-            "--no-legend",
+            "show",
+            "--all",
             "--no-pager",
-            "--full",
+            &format!("--property={SHOWN}"),
+            "*",
         ])
         .deadline(crate::process::run::SYSTEMCTL_PROBE_BUDGET);
-    match runner.run_text(&list) {
-        Ok((true, out, _)) => Ok(out
-            .lines()
-            .filter_map(|line| line.split_whitespace().next())
-            .filter(|unit| unit.ends_with(".timer") || unit.ends_with(".path"))
-            .map(str::to_string)
-            .collect()),
+    match runner.run_text(&show) {
+        Ok((true, out, _)) => Ok(out),
         Ok((false, _, err)) => Err(format!(
-            "`systemctl list-units` failed ({})",
+            "`systemctl show` failed ({})",
             err.lines().next().unwrap_or("no message")
         )),
         Err(e) => Err(format!("NAILS cannot run systemctl ({e})")),
@@ -165,19 +147,15 @@ pub fn started_triggers(
 
 /// Where the hidden volume shows on the running system: the hidden root,
 /// resolved as the attach gate resolves it, and every other mount of the
-/// filesystem mounted there. Without a mount table only the root is known,
-/// and no filesystem type can be compared with `PRUNEFS`.
-pub fn hidden_locations<F: Filesystem>(fs: &F, hidden_root: &Path) -> Vec<Location> {
+/// filesystem mounted there. Without a mount table only the root is known.
+pub fn hidden_locations<F: Filesystem>(fs: &F, hidden_root: &Path) -> Vec<PathBuf> {
     let resolved = fs
         .canonicalize(hidden_root)
         .unwrap_or_else(|_| hidden_root.components().collect());
-    let Ok(table) = fs.mount_table() else {
-        return vec![Location {
-            path: resolved,
-            crossings: Vec::new(),
-        }];
-    };
     let mut paths = vec![resolved.clone()];
+    let Ok(table) = fs.mount_table() else {
+        return paths;
+    };
     if let Some(volume) = top_mount_at(&table, &resolved) {
         for other in table
             .iter()
@@ -189,207 +167,6 @@ pub fn hidden_locations<F: Filesystem>(fs: &F, hidden_root: &Path) -> Vec<Locati
         }
     }
     paths
-        .into_iter()
-        .map(|path| Location {
-            crossings: crossings(&table, &path),
-            path,
-        })
-        .collect()
-}
-
-/// The directories from `/` down to `path` at which the device changes from
-/// the parent's, each with the type of the first mount the table lists there,
-/// which is what updatedb compares with `PRUNEFS`.
-fn crossings(table: &[MountEntry], path: &Path) -> Vec<(PathBuf, String)> {
-    let device = |at: &Path| mount_holding(table, at).map(|entry| entry.dev.clone());
-    let mut out = Vec::new();
-    let mut at = PathBuf::from("/");
-    for component in path.components().skip(1) {
-        let parent = at.clone();
-        at.push(component);
-        if device(&at) == device(&parent) {
-            continue;
-        }
-        if let Some(first) = table.iter().find(|entry| entry.mount_point == at) {
-            out.push((at.clone(), first.fstype.clone()));
-        }
-    }
-    out
-}
-
-/// The directories to prune so that updatedb skips `locations`: the
-/// topmost of their parents that lie off the hidden volume, so that the line
-/// names no mount point of it. `None` when a location's parent is `/`, or
-/// lies on the volume with no parent off it above, where no such line exists.
-fn prune_dirs(locations: &[Location]) -> Option<Vec<PathBuf>> {
-    let on_volume = |dir: &Path| {
-        locations
-            .iter()
-            .any(|location| dir.starts_with(&location.path))
-    };
-    let mut dirs: Vec<PathBuf> = Vec::new();
-    for location in locations {
-        let parent = location.path.parent()?;
-        if parent == Path::new("/") {
-            return None;
-        }
-        if !on_volume(parent) && !dirs.iter().any(|dir| dir == parent) {
-            dirs.push(parent.to_path_buf());
-        }
-    }
-    // Keep the topmost: a directory below another one listed is pruned with
-    // it.
-    let topmost: Vec<PathBuf> = dirs
-        .iter()
-        .filter(|dir| {
-            !dirs
-                .iter()
-                .any(|other| other != *dir && dir.starts_with(other))
-        })
-        .cloned()
-        .collect();
-    locations
-        .iter()
-        .all(|location| topmost.iter().any(|dir| location.path.starts_with(dir)))
-        .then_some(topmost)
-}
-
-/// NixOS's default `services.locate.prunePaths`.
-const NIXOS_DEFAULT_PRUNEPATHS: &[&str] = &[
-    "/tmp",
-    "/var/tmp",
-    "/var/cache",
-    "/var/lock",
-    "/var/run",
-    "/var/spool",
-    "/nix/store",
-    "/nix/var/log/nix",
-];
-
-/// The fix for the decoy's updatedb: prune the directories the hidden volume
-/// is mounted in, the NixOS way or in `/etc/updatedb.conf`, or stop what
-/// starts it (`remedies`). `nixos_prunepaths` is what the `ExecStart=` of
-/// NixOS's own service prunes, which tells whether the configuration sets
-/// `services.locate.prunePaths`.
-fn fix(
-    locations: &[Location],
-    is_nixos: bool,
-    remedies: &[String],
-    nixos_prunepaths: Option<&[Vec<u8>]>,
-) -> String {
-    let dirs = prune_dirs(locations);
-    let stop = if remedies.is_empty() {
-        "remove the locate package".to_string()
-    } else {
-        remedies.join(", or ")
-    };
-    let Some(dirs) = dirs else {
-        if is_nixos {
-            return "disable services.locate in the decoy's configuration and rebuild it: a \
-                    prunePaths entry that skips the volume here would name its mount point in \
-                    /etc/nixos"
-                .to_string();
-        }
-        return format!(
-            "{stop}; adding the mount point to PRUNEPATHS in /etc/updatedb.conf would name it \
-             there"
-        );
-    };
-    let shown: Vec<String> = dirs.iter().map(|dir| dir.display().to_string()).collect();
-    if is_nixos {
-        let quoted: Vec<String> = shown.iter().map(|dir| format!("\"{dir}\"")).collect();
-        let quoted = quoted.join(" ");
-        // lib.mkOptionDefault joins the option's default, and only while no
-        // definition of the configuration sets the list: then a plain list
-        // joins that definition instead.
-        let default_list = nixos_prunepaths.is_none_or(|paths| {
-            let mut paths: Vec<&[u8]> = paths.iter().map(Vec::as_slice).collect();
-            let mut default: Vec<&[u8]> = NIXOS_DEFAULT_PRUNEPATHS
-                .iter()
-                .map(|path| path.as_bytes())
-                .collect();
-            paths.sort_unstable();
-            paths.dedup();
-            default.sort_unstable();
-            paths == default
-        });
-        if !default_list {
-            // Another definition of the option joins that one only at the
-            // same priority: add to the list where it is set.
-            return format!(
-                "make updatedb skip {}: the decoy's configuration sets its own \
-                 services.locate.prunePaths, so add {quoted} to that list and rebuild the decoy, \
-                 or disable services.locate",
-                shown.join(" and ")
-            );
-        }
-        return format!(
-            "make updatedb skip {}: add `services.locate.prunePaths = lib.mkOptionDefault [ \
-             {quoted} ];` to the decoy's configuration and rebuild it (lib.mkOptionDefault \
-             joins the default list, which a plain list would replace), or disable \
-             services.locate",
-            shown.join(" and ")
-        );
-    }
-    format!(
-        "make updatedb skip {}: add {} to PRUNEPATHS in /etc/updatedb.conf, or {stop}",
-        shown.join(" and "),
-        shown.join(" ")
-    )
-}
-
-/// What a run writes into, for a message.
-fn database(judged: &Judged) -> String {
-    judged
-        .run
-        .database
-        .clone()
-        .unwrap_or_else(|| "the locate database".to_string())
-}
-
-/// One finding of a run that indexes the volume or that NAILS cannot tell
-/// about.
-fn finding(judged: &Judged) -> String {
-    let what = match &judged.run.start {
-        Start::Now(what) => format!("an updatedb runs now ({what})"),
-        Start::Timer(timer) => format!("{timer} schedules updatedb"),
-        Start::Enabled(service) => {
-            format!("{service} is enabled and runs updatedb whenever its manager starts")
-        }
-        Start::Cron(job) => format!("the cron job at {job} runs updatedb"),
-        Start::Unread(what) => {
-            let why = match &judged.cover {
-                Cover::Unknown(why) => why.as_str(),
-                _ => "NAILS cannot read it",
-            };
-            return format!("{what} may start updatedb, which NAILS cannot tell: {why}");
-        }
-        Start::ByHand(what) => format!("updatedb can be started by hand ({what})"),
-    };
-    match &judged.cover {
-        Cover::Not(at) => format!(
-            "{what}, and it does not skip the hidden volume at {}: a run while the volume is \
-             mounted writes the name of every file on it into {} on the decoy disk",
-            at.display(),
-            database(judged)
-        ),
-        Cover::Unknown(why) => {
-            format!("{what}, and NAILS cannot tell whether it skips the hidden volume: {why}")
-        }
-        Cover::Covered(rule) => format!("{what}, and it skips the hidden volume: {rule}"),
-    }
-}
-
-/// The findings of `runs`, each once.
-fn findings(runs: &[Judged]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for judged in runs {
-        let finding = finding(judged);
-        if !out.contains(&finding) {
-            out.push(finding);
-        }
-    }
-    out
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for LocateDatabaseCheck {
@@ -398,7 +175,8 @@ impl<F: Filesystem> PreFlightCheck<F> for LocateDatabaseCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Validates updatedb never writes the hidden volume's file names into the decoy's locate database"
+        "Validates nothing on the decoy schedules or runs updatedb, which would write the hidden \
+         volume's file names into the decoy's locate database"
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
@@ -406,97 +184,95 @@ impl<F: Filesystem> PreFlightCheck<F> for LocateDatabaseCheck {
         // is made.
         let snapshot = Snapshot::read(fs, &self.root);
         if let Some(error) = snapshot.unreadable() {
-            return Ok(CheckResult::Warn(format!(
-                "the decoy's locate database may list the hidden volume: NAILS cannot read the \
-                 mount table ({error}), which shows where a lookup would mount an automount \
-                 point, so it looks up nothing. See {DOC}."
-            )));
+            return Ok(CheckResult::fail_with(
+                format!(
+                    "NAILS cannot tell whether the decoy runs updatedb, which would write the \
+                     name of every file on the hidden volume into the decoy's locate database: \
+                     it cannot read the mount table ({error}), which shows where a lookup would \
+                     mount an automount point, so it looks up nothing."
+                ),
+                format!("Run the check where /proc/self/mountinfo can be read. See {DOC}."),
+            ));
         }
         let guarded = Guarded::new(fs.clone(), &snapshot);
         let result = self.judge(&guarded);
-        Ok(settle(result, &guarded.skipped(), OnSkip::Warn))
+        Ok(settle(result, &guarded.skipped(), OnSkip::Refuse(None)))
     }
 }
 
 impl LocateDatabaseCheck {
+    /// The general fix: remove the locate package, or disable NixOS's
+    /// service.
+    fn general_fix(&self) -> &'static str {
+        if self.is_nixos {
+            "set `services.locate.enable = false;` in the decoy's configuration, take out any \
+             unit or cron job of its own that runs updatedb, and rebuild it"
+        } else {
+            "remove the locate package with its configuration: `sudo apt purge plocate` on \
+             Debian and Ubuntu (mlocate or locate where that is the one installed), `sudo dnf \
+             remove plocate` on Fedora, `sudo pacman -Rns plocate` on Arch Linux"
+        }
+    }
+
     /// The verdict on what the decoy holds of updatedb, read through `fs`.
     fn judge<F: Filesystem>(&self, fs: &F) -> CheckResult {
-        let locations = hidden_locations(fs, &self.hidden_root);
-        let hidden: Vec<PathBuf> = locations
-            .iter()
-            .map(|location| location.path.clone())
-            .collect();
-        let found = read::read_decoy(fs, &self.root, &hidden, &self.started());
-        let remedy = || {
-            fix(
-                &locations,
-                self.is_nixos,
-                &found.remedies,
-                found.nixos_prunepaths.as_deref(),
-            )
-        };
-        match judge::verdict(found.installed, &found.runs, &locations) {
-            Verdict::NotInstalled => CheckResult::Pass(
-                "no updatedb (plocate, mlocate or findutils' locate) is installed on the decoy"
-                    .to_string(),
-            ),
-            Verdict::Pass(rules) if rules.is_empty() => {
-                CheckResult::Pass(if found.notes.is_empty() {
-                    "nothing runs updatedb".to_string()
-                } else {
-                    format!("nothing runs updatedb: {}", found.notes.join("; "))
-                })
-            }
-            Verdict::Pass(rules) => CheckResult::Pass(format!(
-                "updatedb skips the hidden volume: {}",
-                rules.join("; ")
-            )),
-            Verdict::Fail(runs) => {
-                let running = runs
-                    .iter()
-                    .any(|judged| matches!(judged.run.start, Start::Now(_)));
-                let mounted: Vec<String> = hidden
-                    .iter()
-                    .map(|path| path.display().to_string())
-                    .collect();
-                let mut remediation = format!(
-                    "Lock the hidden volume now: unmount {} and close it. Then, long before \
-                         you use it again, {}.",
-                    mounted.join(" and "),
-                    remedy()
-                );
-                if running {
-                    remediation.push_str(
-                        " A database written while the volume was mounted lists its files \
-                             until updatedb runs again with the volume locked.",
-                    );
+        let hidden = hidden_locations(fs, &self.hidden_root);
+        let files = DecoyFiles::new(fs, &self.root, &hidden);
+        let found = scan::scan(fs, &files, self.shown());
+
+        if !found.runs.is_empty() {
+            let what: Vec<&str> = found.runs.iter().map(|f| f.what.as_str()).collect();
+            let mut fixes: Vec<&str> = Vec::new();
+            for fix in found.runs.iter().filter_map(|f| f.fix.as_deref()) {
+                if !fixes.contains(&fix) {
+                    fixes.push(fix);
                 }
-                remediation.push_str(&format!(" See {DOC}."));
-                CheckResult::fail_with(
-                    format!(
-                        "the decoy's locate database would list the hidden volume: {}.",
-                        findings(&runs).join("; ")
-                    ),
-                    remediation,
-                )
             }
-            Verdict::Warn(runs) => CheckResult::warn_with(
+            let mounted: Vec<String> = hidden.iter().map(|p| p.display().to_string()).collect();
+            let named = if fixes.is_empty() || self.is_nixos {
+                String::new()
+            } else {
+                format!(" Or stop each one: {}.", fixes.join("; "))
+            };
+            return CheckResult::fail_with(
                 format!(
-                    "the decoy's locate database may list the hidden volume: {}.",
-                    findings(&runs).join("; ")
+                    "the decoy may run updatedb, which writes the name of every file on the \
+                     hidden volume into the locate database on the decoy disk while the volume \
+                     is mounted: {}.",
+                    what.join("; ")
                 ),
                 format!(
-                    "Long before you use the volume again, {}. See {DOC}.",
-                    remedy()
+                    "Lock the hidden volume now: unmount {} and close it. Then, long before you \
+                     use it again, {}.{named} A database written while the volume was mounted \
+                     lists its files until updatedb runs again with the volume locked. A \
+                     PRUNEPATHS or prunePaths that skips the volume does not lift this refusal. \
+                     See {DOC}.",
+                    mounted.join(" and "),
+                    self.general_fix()
                 ),
-            ),
+            );
         }
+        if !found.by_hand.is_empty() {
+            return CheckResult::warn_with(
+                format!(
+                    "updatedb is installed on the decoy ({}). Nothing schedules it, but a run by \
+                     hand while the hidden volume is mounted writes the name of every file on it \
+                     into the locate database on the decoy disk.",
+                    found.by_hand.join(", ")
+                ),
+                format!(
+                    "Never run updatedb while the volume is mounted, or {}. See {DOC}.",
+                    self.general_fix()
+                ),
+            );
+        }
+        CheckResult::Pass(
+            "nothing on the decoy schedules or runs updatedb: no unit, cron or at job names it, \
+             none runs now and no updatedb is installed"
+                .to_string(),
+        )
     }
 }
 
-#[cfg(test)]
-mod lookup_tests;
-#[cfg(test)]
-mod sources_tests;
 #[cfg(test)]
 mod tests;

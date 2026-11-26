@@ -81,13 +81,9 @@ fn a_specifier_the_host_fills_in_fits_every_name_the_rest_fits() {
     };
     assert!(target.fits("gpg-agent-1@2.service"));
     assert!(!target.fits("auditd.service"));
-    assert!(target.fits_template("gpg-agent-x@.service"));
-    assert!(!target.fits_template("auditd@.service"));
     // A plain name fits itself alone.
     assert!(Target::named("a.service".to_string()).fits("a.service"));
     assert!(!Target::named("a.service".to_string()).fits("b.service"));
-    assert!(Target::named("a@b.service".to_string()).fits_template("a@.service"));
-    assert!(!Target::named("a.service".to_string()).fits_template("a@.service"));
 }
 
 /// The `[Socket]` sections of the gnupg units of Arch's gnupg-2.4.9-4,
@@ -205,39 +201,4 @@ fn a_timer_starts_its_first_unit_systemd_takes_or_the_service_of_its_own_name() 
         "t.timer",
     );
     assert_eq!(names(&targets), [None, Some("b.service")]);
-}
-
-#[test]
-fn a_timer_whose_unit_the_host_names_may_start_an_updatedb_that_fits_it() {
-    use super::super::tests::{NIXOS_PRUNEPATHS, message, nixos};
-    let mut pruned = NIXOS_PRUNEPATHS.to_vec();
-    pruned.push("/mnt");
-    let decoy = nixos(&pruned, &[]);
-    decoy
-        .file(
-            "/etc/systemd/system/update-all.service",
-            "[Service]\nExecStart=/run/current-system/sw/bin/updatedb\n",
-        )
-        .file(
-            "/etc/systemd/system/odd.timer",
-            "[Timer]\nOnCalendar=daily\nUnit=update-%H.service\n",
-        )
-        .enable("/etc/systemd/system", "odd.timer");
-    let result = decoy.check(true);
-    assert!(result.is_warn(), "{result:?}");
-    assert!(
-        message(&result).contains(
-            "odd.timer may start updatedb, which NAILS cannot tell: odd.timer starts \
-             update-%H.service or odd.service, which of them systemd decides by the host it runs \
-             on"
-        ),
-        "{result:?}"
-    );
-    // One the name of no unit on the disk fits starts none of them.
-    decoy.fs.mock_set_file_content(
-        "/etc/systemd/system/odd.timer",
-        "[Timer]\nOnCalendar=daily\nUnit=backup-%H.service\n",
-    );
-    let result = decoy.check(true);
-    assert!(result.is_pass(), "{result:?}");
 }

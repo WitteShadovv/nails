@@ -1,0 +1,1 @@
+"/nix/store/x-plocate-1.1.25/bin/updatedb" "--output" "/var/cache/locatedb" "--prune-bind-mounts" "no" "--prunefs" "afs tmpfs NFS" "--prunenames" ".bzr .cache .git" "--prunepaths" "/tmp /var/cache /nix/store /mnt" "--add-prunepaths=/srv/100%%" "-e" "/a$$b"

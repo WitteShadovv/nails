@@ -103,13 +103,12 @@ of this changelog for that version becomes the release notes word for word, and
   tell whether the namespace persists, and a namespace a unit names with a specifier by naming it
   without one. Fedora's admission gate installs all three on the Fedora 44 and 45 Cloud images and
   checks the refusal, the warnings and their fixes; the unit tests read the units Fedora 44's
-  packages install. The unit reader that `locate-database` uses reads the drop-ins of a
+  packages install. The check's unit reader reads the drop-ins of a
   unit's aliases, and those systemd builds with an instance's prefixes, too. As systemd does, it
   reads the drop-ins of the unit file's own name first, so on NixOS
   `dbus-broker.service.d/overrides.conf` shadows the one of its alias `dbus.service`, and a drop-in
   name that two aliases hold counts as one NAILS cannot tell about only where their files give the
-  section differently. A timer's or path's `Unit=`, which both checks read, and a socket's
-  `Service=`, which `decoy-persistence` reads, are read with the specifiers systemd takes from the
+  section differently. A timer's or path's `Unit=` and a socket's `Service=` are read with the specifiers systemd takes from the
   trigger's own name (`%n`, `%N`, `%p`, `%i`, `%j`) expanded from the name of its unit file, as
   systemd expands them for a trigger loaded by that name, so Arch's gnupg sockets for the pacman
   keyring start `gpg-agent@etc-pacman.d-gnupg.service`; one systemd fills in from the host, such as
@@ -370,39 +369,29 @@ of this changelog for that version becomes the release notes word for word, and
   emergency only after it has started that return, whose switch can end the window and NAILS first.
   A return logind already holds may still come first. Once it fired, the page says how the session
   ends and that the computer powers off where it does not end so.
-- `nails check` and activation refuse an updatedb that would list the hidden volume in the
-  decoy's locate database (the `locate-database` check). updatedb (plocate, mlocate, NixOS's
-  `services.locate`) writes the name of every file it finds into a database on the decoy disk,
-  and a run while the volume is mounted on the decoy writes every name on the volume there. The
-  check refuses while one runs now (a service the system manager shows active, or a process, one
-  started by hand included) or is scheduled, and does not skip the volume; no flag lifts the
-  refusal. Scheduled are a service that runs updatedb and that a timer or path unit starts that is
-  enabled, that the system manager runs (`systemctl list-units`, a timer started by hand
-  included) or that is transient (`systemd-run --on-calendar`), or that is enabled itself (as
-  `systemctl add-wants` makes it, which also runs it at the soft-reboot back to the decoy), for
-  the system manager and for users' managers, read from every directory systemd loads units from,
-  and a cron job: `/etc/crontab`, `/etc/cron.d`, root's and the users' crontabs (cronie's
-  unlogged `-` jobs and the input cron feeds a job after `%` included), `/etc/anacrontab` and the
-  `/etc/cron.{hourly,daily,weekly,monthly}` scripts, each command read as the shell splits it. It
-  reads `/etc/updatedb.conf`, or the file `--config-file` names, as plocate and mlocate read it,
-  with the options of each run's command line on top as updatedb reads them (`--prunepaths`
-  replaces the file's list, `--add-prunepaths` adds to it, `--database-root` starts the scan
-  elsewhere, a relative path resolved where updatedb runs), a service's commands from its unit file
-  and drop-ins as systemd reads them. It judges the hidden root where its links lead and every
-  other mount of its filesystem: updatedb skips it for a `PRUNEPATHS` entry that is exactly a
-  directory on the way to it, a `PRUNENAMES` entry that names one, or a `PRUNEFS` entry that is the
-  type of a filesystem mounted on the way. The check passes naming the rule that skips the volume,
-  and warns where it cannot tell (an `/etc/updatedb.conf` it cannot read or that updatedb refuses,
-  a command or option it does not follow, findutils' updatedb, a unit directory, crontab, cron
-  script, `/etc/passwd` or process it cannot read, a timer it cannot ask the system manager about)
-  and where only a person starts an updatedb that does not skip it. What it does not read, such as
-  a script a cron job runs by its name or an `at` job, docs/decoy-requirements.md lists. The fix it
-  prints names the directory the volume is mounted in, never a mount point of the volume: on NixOS
-  `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];`, or adding it to the list the
-  configuration sets, which the check of the decoy's `/etc/nixos` does not refuse, and elsewhere
-  `PRUNEPATHS`, or masking and stopping the timer or service, stopping a transient timer, or
-  removing the cron job it found. Fedora installs and enables plocate by default, and the default
-  `PRUNEPATHS` of Debian 13, Ubuntu 26.04, Fedora 44 and NixOS do not skip `/mnt`.
+- `nails check` and activation refuse while anything on the decoy may run updatedb (the
+  `locate-database` check). updatedb (plocate, mlocate, findutils, NixOS's `services.locate`)
+  writes the name of every file it finds into a database on the decoy disk, and a run while the
+  hidden volume is mounted on the decoy writes every name on the volume there. The check refuses,
+  and no flag lifts it, while a unit file or drop-in of the system manager or of a user's, in any
+  directory systemd loads units from, names updatedb (`updatedb` or `locatedb` in its name or
+  text) and the unit is not masked; while the system manager has such a unit loaded and it is
+  active, or not masked (`systemctl show`); while a crontab, the anacrontab, a cron script or an
+  `at` job names updatedb; while an updatedb runs now; and where it cannot tell (a directory, file
+  or process it cannot read, a system manager it cannot ask, an automount point it does not mount,
+  no mount table). A mask stops every way a unit starts, the package's own scripts among them:
+  Debian's and Ubuntu's plocate restarts its service at every upgrade, so the service needs a mask
+  of its own, not only the timer. An updatedb program nothing schedules warns, as a run by hand
+  indexes the volume too. The check does not read what a run skips: a `PRUNEPATHS` or
+  `services.locate.prunePaths` that skips the volume does not lift the refusal. The fix it prints
+  is to purge the locate package (`sudo apt purge plocate`, `sudo dnf remove plocate`,
+  `sudo pacman -Rns plocate`) or set `services.locate.enable = false;` on NixOS, or to mask and
+  stop each unit and remove each job it names. Fedora installs and enables plocate by default.
+  Earlier in this cycle the check read the prune lists and options of each run as updatedb reads
+  them and passed a run that skipped the volume; that reader (about 8,500 lines with its tests and
+  fuzz model) still had limits it could only warn of, and was replaced by this stricter rule. The
+  `locate_database` fuzz target became `exec_command`, which keeps fuzzing the `ExecStart=`
+  splitter `decoy-persistence` reads.
 - `nails check` and activation warn when a decoy that is not NixOS holds what a Nix install
   leaves behind (the `decoy-nix-trace` check). There Nix belongs inside the hidden session, where
   everything it writes lands on the hidden volume, while a Nix installed on the decoy writes what it
@@ -2737,7 +2726,7 @@ of this changelog for that version becomes the release notes word for word, and
   `/sys/fs/pstore`, the mount table's options for `/`, or a sudoers file or include directory. A
   command line or a sudoers file that holds bytes that are no UTF-8 is read. The same reads of the
   invocation markers and `cgroup.events` make `unattended-upgrade-run` refuse, with a fix that says
-  what to let NAILS read, and `locate-database` warn. `backend-detect` refuses as for discards
+  what to let NAILS read. `backend-detect` refuses as for discards
   (`--allow-discards` lifts it) where it cannot read the mount table, which passed as "Backend
   detection skipped", the device the hidden root is mounted from, or an attribute of the stack below
   it that decides whether discards reach the hidden volume, and warns where it cannot read whether a
@@ -2752,11 +2741,7 @@ of this changelog for that version becomes the release notes word for word, and
   fails it as file swap. `suspicious-nails-reference` refuses where its walk of `/etc/nixos` cannot
   look up a place, or it cannot read the mount table or a place that gives a name of the hidden
   volume's storage, and says what to make readable. It reads a `.nix` file that holds bytes that are
-  no UTF-8, as Nix does, where it refused it as one it could not read. `locate-database` no longer
-  takes an updatedb link it cannot resolve for plocate's: where the lists plocate and mlocate read
-  skip the volume it warns that it cannot tell whether the run is findutils' updatedb, which reads
-  none of them, and where they do not, as with Debian 13's stock `/etc/updatedb.conf`, it refuses
-  as before. `binary-location` warns where it cannot resolve a link in a `PATH` directory,
+  no UTF-8, as Nix does, where it refused it as one it could not read. `binary-location` warns where it cannot resolve a link in a `PATH` directory,
   `dma-protection` where it cannot read what lets it pass, and `hidden-volume` where it cannot read
   the names of the volume's source. `backend-entries` refuses, and `backend-encryption` warns that
   it cannot confirm, where a device link a line of fstab or crypttab or the mount table names cannot

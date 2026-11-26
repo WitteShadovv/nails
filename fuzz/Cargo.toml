@@ -5,7 +5,7 @@
 # read text and data NAILS does not control: the kernel's and libmount's mount
 # tables, the kernel's compressed config, a decoy's fstab, crypttab, os-release,
 # package databases, the rows of its Nix store database the forensic oracle
-# reads, systemd units and configuration, display-manager, updatedb and NixOS
+# reads, systemd units and configuration, display-manager and NixOS
 # configuration, apt's configuration, udev's records, raw disks, the
 # requests a window sends the engine's root helper, and the time zone files and
 # timestamps NAILS reads.
@@ -225,8 +225,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "locate_database"
-path = "fuzz_targets/locate_database.rs"
+name = "exec_command"
+path = "fuzz_targets/exec_command.rs"
 test = false
 doc = false
 bench = false

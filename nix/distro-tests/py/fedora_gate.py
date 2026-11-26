@@ -2183,7 +2183,7 @@ class Gate:
             return
         self.facts["locate"] = plocate
         self.check(
-            "locate-database refuses an updatedb that does not skip the volume",
+            "locate-database refuses while plocate's timer may run updatedb",
             row.get("status") == "fail",
             row,
         )

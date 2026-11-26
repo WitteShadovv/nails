@@ -1,0 +1,1 @@
+/usr/bin/updatedb -U /home --database-root=/srv -o db -l yes -b 8 -D --debug-pruning -h

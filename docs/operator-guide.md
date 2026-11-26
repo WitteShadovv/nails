@@ -1444,11 +1444,9 @@ hardware configuration in `root/upper/etc/nixos/`, where they are missing.
   mounted yet, `decoy-persistence` and `fstab-policy` refuse until it is
   mounted, since journald's drop-ins and systemd's units below it may hold
   what they look for, and so does `upper-fs-capability` where the overlay
-  module is not loaded yet, and `sleep-policy` warns. `locate-database`
-  warns about what it cannot look up behind the point and names each home
-  that is not mounted yet, but refuses a run whose `updatedb` may lie behind
-  the point, as a bare `updatedb` may in `/usr/local/bin`, where the lists
-  plocate and mlocate read do not skip the volume.
+  module is not loaded yet, `locate-database` refuses too, naming each home
+  that is not mounted yet, since units and cron jobs that run updatedb may
+  lie behind a point, and `sleep-policy` warns.
 - **A path that cannot be looked up is not a missing one.** Where a check
   asks whether something is at a path, or whether it is a directory, a
   regular file or a link, and the lookup fails for another reason than that

@@ -202,7 +202,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "/var/cache/locatedb",
         ]),
         platforms: Platforms::ALL,
-        risk: "An updatedb run (plocate, mlocate, NixOS's update-locatedb) while the hidden volume is mounted on the decoy, before activation or after the way back, writes the name of every file on the volume into the locate database on the decoy disk. plocate's and NixOS's timers run daily with Persistent=true, which catches a missed run up right after boot, when the volume is unlocked for a session.",
+        risk: "An updatedb run (plocate, mlocate, findutils, NixOS's update-locatedb) while the hidden volume is mounted on the decoy, before activation or after the way back, writes the name of every file on the volume into the locate database on the decoy disk. plocate's and NixOS's timers run daily with Persistent=true, which catches a missed run up right after boot, when the volume is unlocked for a session, and Debian's and Ubuntu's plocate restarts its service at every upgrade.",
         preflight: Probe::Check("locate-database"),
         preflight_blocks: true,
         verify: Probe::Paths {
@@ -213,7 +213,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             ],
             severity: ProbeSeverity::Info,
         },
-        mitigation: "Make updatedb skip the directory the volume is mounted in (PRUNEPATHS in /etc/updatedb.conf, services.locate.prunePaths on NixOS), or stop what schedules it, long before the volume is next used. Activation refuses while an updatedb that runs now, or that a timer, path unit, enabled service or cron job the check reads starts, does not skip it; the docs name what the check does not read.",
+        mitigation: "Purge the locate package, or set services.locate.enable = false on NixOS, or mask and stop each of its units, long before the volume is next used. Activation refuses while an updatedb runs now, or a unit that names updatedb and is not masked, a cron job or an at job may start one, whatever it prunes: reading what each run skips was replaced by this stricter rule. The docs name what the check does not read.",
         doc_anchor: "decoy-requirements.md#the-locate-database",
         e2e: E2e::Test("locate-database"),
         residual: false,

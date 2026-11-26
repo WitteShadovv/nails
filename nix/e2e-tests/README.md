@@ -507,8 +507,8 @@ promise of `check` as a whole:
   and as carol (`SUDO_USER`) leaves the mount table outside `/run` as it was
   and the mount units inactive, neither systemd nor the automounter logs a
   request, and the overlay module stays unloaded. decoy-persistence (a
-  warning with the override), fstab-policy and upper-fs-capability refuse,
-  sleep-policy and locate-database warn, and as carol
+  warning with the override), fstab-policy, upper-fs-capability and
+  locate-database refuse, sleep-policy warns, and as carol
   inherited-autostart and incremental-history-flush warn, each naming the
   automount point and giving the line that says to mount it; locate-database
   names all three points, `inherited.not_read` lists carol's autostart

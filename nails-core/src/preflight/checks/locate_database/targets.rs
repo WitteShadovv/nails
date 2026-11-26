@@ -119,20 +119,6 @@ impl Target {
             &tokens(&[Piece::Text(name.to_string())]),
         )
     }
-
-    /// Whether some text in place of the host's parts gives an instance of
-    /// the template `template` (`foo@.service`), or `template` itself.
-    pub(in crate::preflight::checks) fn fits_template(&self, template: &str) -> bool {
-        let Some((prefix, kind)) = template.split_once("@.") else {
-            return self.fits(template);
-        };
-        let instances = [
-            Piece::Text(format!("{prefix}@")),
-            Piece::Any,
-            Piece::Text(format!(".{kind}")),
-        ];
-        meets(&tokens(&self.pieces), &tokens(&instances))
-    }
 }
 
 /// A character of a pattern, or any text.

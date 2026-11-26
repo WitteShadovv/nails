@@ -469,38 +469,6 @@ fn strip_prefixes(first: &[u8]) -> (&[u8], bool, bool) {
     (&first[at..], argv0, keep_dollars)
 }
 
-/// Whether `program` is an updatedb: a plain path, of letters, digits and
-/// `/ . _ - + @ : , =` alone, whose file name is `updatedb`, or `updatedb.`
-/// and a suffix of letters, digits, `_`, `-` and `.`, as Debian's
-/// `updatedb.plocate` and `updatedb.mlocate`. The kernel cuts a process's
-/// `comm` to 15 bytes, so a cut name counts too. A word with a blank, a
-/// quote, `;`, `|`, `&`, `$`, a parenthesis or another character no plain
-/// path holds is a script, such as the whole of `sh -c '…'`, and no
-/// updatedb, however it ends.
-pub fn is_updatedb(program: &[u8]) -> bool {
-    let plain = !program.is_empty()
-        && program
-            .iter()
-            .all(|&byte| byte.is_ascii_alphanumeric() || b"/._-+@:,=".contains(&byte));
-    let name = program
-        .rsplit(|&byte| byte == b'/')
-        .next()
-        .unwrap_or(program);
-    plain
-        && (name == b"updatedb"
-            || name.strip_prefix(b"updatedb.").is_some_and(|suffix| {
-                !suffix.is_empty()
-                    && suffix
-                        .iter()
-                        .all(|&byte| byte.is_ascii_alphanumeric() || b"_-.".contains(&byte))
-            }))
-}
-
-/// Whether `text` names updatedb anywhere.
-pub fn mentions_updatedb(text: &[u8]) -> bool {
-    text.windows(8).any(|window| window == b"updatedb")
-}
-
 #[cfg(test)]
 #[path = "exec_tests.rs"]
 mod tests;

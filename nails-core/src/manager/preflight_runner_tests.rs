@@ -1651,10 +1651,10 @@ fn the_decoy_nix_trace_row_passes_nixos_and_warns_elsewhere() {
 /// `check` or activation turns its refusal into a warning.
 #[test]
 fn no_flag_lifts_the_locate_database_refusal() {
-    // A decoy whose plocate timer is enabled and whose updatedb.conf does not
-    // skip the hidden root's parent.
+    // A decoy whose plocate timer is enabled, whatever its updatedb.conf
+    // skips.
     let fs = MockFilesystem::new();
-    fs.mock_set_file_content("/etc/updatedb.conf", "PRUNEPATHS=\"/tmp\"\n");
+    fs.mock_set_file_content("/etc/updatedb.conf", "PRUNEPATHS=\"/mnt /tmp\"\n");
     fs.mock_set_file_content(
         "/usr/lib/systemd/system/plocate-updatedb.service",
         "[Service]\nExecStart=/usr/bin/updatedb\n",
@@ -1669,6 +1669,10 @@ fn no_flag_lifts_the_locate_database_refusal() {
         vec![wants.to_path_buf()],
     );
     fs.mock_set_directory_contents(wants, vec![wants.join("plocate-updatedb.timer")]);
+    fs.mock_set_path_type(
+        "/etc/systemd/system/timers.target.wants",
+        crate::PathKind::Dir,
+    );
     fs.create_symlink(
         std::path::Path::new("../plocate-updatedb.timer"),
         &wants.join("plocate-updatedb.timer"),
@@ -1695,7 +1699,7 @@ fn no_flag_lifts_the_locate_database_refusal() {
     assert!(
         locate
             .message()
-            .contains("does not skip the hidden volume at /mnt/hidden"),
+            .contains("/etc/systemd/system/timers.target.wants/plocate-updatedb.timer"),
         "{locate:?}"
     );
 }

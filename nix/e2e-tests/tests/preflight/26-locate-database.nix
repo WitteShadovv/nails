@@ -2,62 +2,30 @@
 #
 # updatedb writes the name of every file it finds into the locate database on
 # the decoy disk, so a run while the hidden volume is mounted lists the
-# volume's files there. Two NixOS decoys run services.locate, whose timer is
-# enabled:
+# volume's files there. The check refuses while anything on the decoy may run
+# updatedb, whatever the run prunes:
 #
-#   1. unpruned, with NixOS's default prunePaths, which do not skip /mnt:
-#      `check` refuses (exit 4) on the locate-database row, and a real run of
-#      update-locatedb.service with the volume mounted lists the volume's
-#      files in /var/cache/locatedb on the decoy disk;
-#   2. pruned, with the fix the check prints,
-#      `services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];`, which
-#      its /etc/nixos holds too: `check` passes, the locate-database row names
-#      the rule, the check of the decoy's /etc/nixos passes that line, and
-#      the same run lists nothing below /mnt. A timer of its own that is not
-#      enabled, whose updatedb prunes /tmp alone, refuses once
-#      `systemctl start` runs it, and so does a transient one
-#      `systemd-run --on-calendar` makes: systemd leaves no file that says a
-#      timer runs, so the check asks `systemctl list-units`. Once they stop,
-#      `check` passes again, whether or not systemd has collected the
-#      transient unit's file yet.
+#   1. indexed, a NixOS decoy that runs services.locate, whose timer is
+#      enabled, with /mnt in prunePaths: `check` refuses (exit 4) on the
+#      locate-database row, naming update-locatedb's units and the fix
+#      `services.locate.enable = false;`. A real run of
+#      update-locatedb.service with the volume mounted shows what is at
+#      stake: with NixOS's default prunePaths, which do not skip /mnt, it
+#      lists the volume's files in /var/cache/locatedb on the decoy disk.
+#   2. bare, with services.locate off and plocate installed: `check` warns
+#      of a run by hand and passes the rest. A timer `systemd-run
+#      --on-calendar` makes refuses, by its transient unit's file and by what
+#      `systemctl show` gives of the unit the system manager has loaded. Once
+#      it stops and systemd has collected it, the warning is back.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
-
-  # The fix, as the check prints it, for the decoy's configuration and for
-  # its /etc/nixos.
-  fixText = ''
-    { lib, ... }:
-    {
-      services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];
-    }
-  '';
-  fix =
-    { lib, ... }:
-    {
-      services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];
-    };
 
   decoy =
     { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
-      services.locate.enable = true;
-    };
-
-  # A timer of the decoy's own, not enabled, whose updatedb prunes /tmp alone.
-  reindex =
-    { lib, ... }:
-    {
-      systemd.services.reindex = {
-        description = "Index the decoy again";
-        serviceConfig.ExecStart = "${pkgs.plocate}/bin/updatedb --prunepaths /tmp --output /var/cache/reindex.db";
-      };
-      systemd.timers.reindex = {
-        wantedBy = lib.mkForce [ ];
-        timerConfig.OnCalendar = "hourly";
-      };
     };
 in
 {
@@ -68,19 +36,24 @@ in
   ];
 
   nodes = {
-    unpruned = decoy;
-    pruned =
+    indexed =
       { ... }:
       {
-        imports = [
-          decoy
-          fix
-          reindex
-        ];
-        environment.etc."nixos/locate.nix" = {
-          mode = "0644";
-          text = fixText;
-        };
+        imports = [ decoy ];
+        services.locate.enable = true;
+      };
+    pruned =
+      { lib, ... }:
+      {
+        imports = [ decoy ];
+        services.locate.enable = true;
+        services.locate.prunePaths = lib.mkOptionDefault [ "/mnt" ];
+      };
+    bare =
+      { ... }:
+      {
+        imports = [ decoy ];
+        environment.systemPackages = [ pkgs.plocate ];
       };
   };
 
@@ -94,15 +67,12 @@ in
 
     def prepare(node):
         node.wait_for_unit("multi-user.target")
-        node.succeed("systemctl is-enabled update-locatedb.timer")
         node.succeed("""${hiddenVolume.setupHiddenVolume}""")
         node.succeed(
             "mkdir -p /mnt/data/notes && echo kept > /mnt/data/notes/plan.txt && "
             + "printf 'hidden_volume_root = \"/mnt/data\"\\nminimum_space_mb = 100\\n' > "
             + CONFIG
         )
-        print(node.succeed("cat /etc/updatedb.conf"))
-        print(node.succeed("systemctl cat update-locatedb.service"))
 
 
     def check(node):
@@ -137,75 +107,72 @@ in
 
     start_all()
 
-    with subtest("without /mnt pruned, check refuses and a run lists the volume"):
-        prepare(unpruned)
-        rc, rows = check(unpruned)
+    with subtest("services.locate refuses, and a run lists the volume"):
+        prepare(indexed)
+        indexed.succeed("systemctl is-enabled update-locatedb.timer")
+        rc, rows = check(indexed)
         row = rows["locate-database"]
         assert rc == 4, (rc, row)
         assert row["status"] == "fail", row
         for part in [
-            "update-locatedb.timer schedules updatedb",
-            "does not skip the hidden volume at /mnt/data",
-            "into /var/cache/locatedb on the decoy disk",
+            "/etc/systemd/system/update-locatedb.timer names updatedb",
+            "/etc/systemd/system/update-locatedb.service names updatedb",
         ]:
             assert part in row["message"], (part, row)
-        assert "services.locate.prunePaths = lib.mkOptionDefault [ \"/mnt\" ];" in row[
-            "remediation"
-        ], row
-        assert "unmount /mnt/data" in row["remediation"], row
-        status, listed = index(unpruned)
+        for part in [
+            "services.locate.enable = false;",
+            "unmount /mnt/data",
+            "does not lift this refusal",
+        ]:
+            assert part in row["remediation"], (part, row)
+        status, listed = index(indexed)
         assert status == 0, (status, listed)
-        for name in ["/mnt/data/notes/plan.txt", "/mnt/data/root/work", "/mnt/data/config/nixos"]:
+        for name in ["/mnt/data/notes/plan.txt", "/mnt/data/config/nixos"]:
             assert name in listed.splitlines(), (name, listed)
 
-    with subtest("with the printed fix, check passes and a run lists nothing below /mnt"):
+    with subtest("a prunePaths that skips the volume still refuses"):
         prepare(pruned)
-        pruned.succeed("grep -q 'lib.mkOptionDefault \\[ \"/mnt\" \\]' /etc/nixos/locate.nix")
         rc, rows = check(pruned)
         row = rows["locate-database"]
-        assert row["status"] == "pass", row
-        assert "lists /mnt" in row["message"], row
-        assert rows["suspicious-nails-reference"]["status"] == "pass", rows[
-            "suspicious-nails-reference"
-        ]
+        assert rc == 4, (rc, row)
+        assert row["status"] == "fail", row
+        assert "update-locatedb.service names updatedb" in row["message"], row
+
+    with subtest("plocate alone warns of a run by hand"):
+        prepare(bare)
+        rc, rows = check(bare)
+        row = rows["locate-database"]
+        assert row["status"] == "warn", row
+        assert "/run/current-system/sw/bin/updatedb" in row["message"], row
         failed = [name for name, check_row in rows.items() if check_row["status"] == "fail"]
-        assert rc == 0 and not failed, (rc, failed, rows)
-        status, listed = index(pruned)
-        assert status == 1 and listed == "", (status, listed)
+        assert rc != 4 and not failed, (rc, failed, rows)
 
-    with subtest("a timer started by hand or by systemd-run schedules a run"):
-        def locate_row():
-            _, rows = check(pruned)
-            return rows["locate-database"]
-
-        # Nothing starts it at boot.
-        pruned.fail("systemctl is-active reindex.timer")
-        pruned.succeed("systemctl start reindex.timer")
-        row = locate_row()
-        assert row["status"] == "fail", row
-        assert "reindex.timer schedules updatedb" in row["message"], row
-        pruned.succeed("systemctl stop reindex.timer")
-        row = locate_row()
-        assert row["status"] == "pass", row
-
+    with subtest("a timer systemd-run makes refuses until systemd collects it"):
         probe = "nails-locate-probe"
-        # systemd-run returns once the timer runs.
-        pruned.succeed(
-          f"systemd-run --unit={probe} --on-calendar=hourly "
-          + "/run/current-system/sw/bin/updatedb --prunepaths /tmp --output /var/cache/probe.db"
+        bare.succeed(
+            f"systemd-run --unit={probe} --on-calendar=hourly "
+            + "/run/current-system/sw/bin/updatedb --output /var/cache/probe.db"
         )
-        pruned.succeed(f"systemctl is-active {probe}.timer")
-        print(pruned.succeed(f"cat /run/systemd/transient/{probe}.timer /run/systemd/transient/{probe}.service"))
-        row = locate_row()
+        bare.succeed(f"systemctl is-active {probe}.timer")
+        _, rows = check(bare)
+        row = rows["locate-database"]
         assert row["status"] == "fail", row
-        assert f"{probe}.timer schedules updatedb" in row["message"], row
-        # systemctl stop returns once the timer has stopped. Its transient
-        # file may stay until systemd collects the unit, which takes no set
-        # time: the check goes by what systemctl list-units shows.
-        pruned.succeed(f"systemctl stop {probe}.timer")
-        pruned.fail(f"systemctl is-active {probe}.timer")
-        print(pruned.execute(f"ls -l /run/systemd/transient/{probe}.timer")[1])
-        row = locate_row()
-        assert row["status"] == "pass", row
+        for part in [
+            f"/run/systemd/transient/{probe}.service names updatedb",
+            f"the system manager has {probe}.service loaded",
+        ]:
+            assert part in row["message"], (part, row)
+        # systemctl stop returns once the timer has stopped; systemd removes
+        # the transient files when it collects the units, which takes no set
+        # time. A `systemctl show` of the unit by name would load it again.
+        bare.succeed(f"systemctl stop {probe}.timer")
+        bare.wait_until_succeeds(
+            f"! test -e /run/systemd/transient/{probe}.timer "
+            + f"&& ! test -e /run/systemd/transient/{probe}.service",
+            timeout=120,
+        )
+        _, rows = check(bare)
+        row = rows["locate-database"]
+        assert row["status"] == "warn", row
   '';
 }

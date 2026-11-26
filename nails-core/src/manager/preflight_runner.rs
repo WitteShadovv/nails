@@ -435,12 +435,12 @@ pub fn build_registry<F: Filesystem>(
             .with_hidden_root(hidden_root.clone()),
     ));
 
-    // Refuses an updatedb (plocate, mlocate, NixOS's update-locatedb) that
-    // runs now, or that a timer or cron job schedules, and that does not skip
-    // the hidden volume: a run while the volume is mounted on the decoy writes
-    // the name of every file on it into the locate database on the decoy
-    // disk. No flag lifts this refusal. One NAILS cannot read the prune lists
-    // of, or one only a person starts, warns. Read-only.
+    // Refuses while anything on the decoy may run updatedb (plocate, mlocate,
+    // findutils, NixOS's update-locatedb) without a person typing it: a unit
+    // that names it and is not masked, a cron or at job, a run now, or what
+    // NAILS cannot read. A run while the volume is mounted on the decoy
+    // writes the name of every file on it into the locate database on the
+    // decoy disk. No flag lifts this refusal. Read-only.
     registry.add_check(Box::new(LocateDatabaseCheck::new(
         hidden_root.clone(),
         layered,

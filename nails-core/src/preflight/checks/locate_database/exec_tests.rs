@@ -192,42 +192,6 @@ fn a_lone_semicolon_separates_commands() {
 }
 
 #[test]
-fn the_program_is_an_updatedb_by_its_file_name() {
-    for program in [
-        "updatedb",
-        "/usr/bin/updatedb",
-        "/usr/sbin/updatedb.plocate",
-        "updatedb.plocat",
-        "updatedb.find-utils_2.x",
-        "/nix/store/x-plocate-1.1.25/bin/updatedb",
-        "/opt/a+b@c:d,e=f/updatedb",
-    ] {
-        assert!(is_updatedb(program.as_bytes()), "{program}");
-    }
-    for program in [
-        "/usr/bin/plocate",
-        "/bin/sh",
-        "updatedbx",
-        "/updatedb/x",
-        "",
-        "updatedb.",
-        // The whole script of `sh -c`, which is no program's name, however
-        // it ends.
-        "updatedb.plocate --prunepaths tmp",
-        "updatedb.plocate\t-e x",
-        "updatedb.plocate;true",
-        "updatedb --prunepaths \"\" ; ls /usr/bin/updatedb",
-        "updatedb -e x|/usr/bin/updatedb",
-        "true&&/usr/bin/updatedb",
-        "$(echo)/usr/bin/updatedb",
-        "'/usr/bin/updatedb'",
-        "/usr/bin/updatedb\n",
-    ] {
-        assert!(!is_updatedb(program.as_bytes()), "{program}");
-    }
-}
-
-#[test]
 fn errors_read_as_their_reason() {
     assert_eq!(ExecError::Refused("x".to_string()).to_string(), "x");
     assert_eq!(ExecError::Unknown("y".to_string()).to_string(), "y");

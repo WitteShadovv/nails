@@ -30,7 +30,6 @@ use crate::preflight::{
     ResidueCatalogCheck, SleepPolicyCheck, UpperFsCapabilityCheck,
 };
 use crate::{Config, SystemState, TargetUser};
-use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 /// The direct automount points of the decoy, as systemd makes one for
@@ -124,7 +123,7 @@ fn none_reached(fs: &MockFilesystem, points: &[&str]) {
 /// The checks of the registry for bob on a decoy that is no NixOS, beside
 /// the ones whose registry form skips the host in tests, built with their
 /// test inputs: binary-location with /usr/local/bin on its PATH, and
-/// locate-database with the units the system manager runs.
+/// locate-database with what the system manager shows of its units.
 fn checks(fs: &MockFilesystem) -> Vec<(String, CheckResult)> {
     let inputs = RegistryInputs {
         options: PreflightOptions::default(),
@@ -157,7 +156,7 @@ fn checks(fs: &MockFilesystem) -> Vec<(String, CheckResult)> {
         "locate-database (test inputs)".to_string(),
         PreFlightCheck::run(
             &LocateDatabaseCheck::new(PathBuf::from(HIDDEN), false)
-                .with_started(Ok(BTreeSet::new())),
+                .with_shown(Ok("Id=init.scope\n".to_string())),
             fs,
         )
         .unwrap(),
@@ -229,12 +228,15 @@ fn no_check_looks_up_a_path_behind_an_automount_point() {
     // /usr/local unmounted, that is what the refusal names.
     let persistence = names(&results, "decoy-persistence", &["/usr/local"]);
     assert!(persistence.is_fail(), "{persistence:?}");
+    // locate-database fails closed on what it cannot look up.
+    let locate = names(
+        &results,
+        "locate-database (test inputs)",
+        &["/usr/local", "/home/bob"],
+    );
+    assert!(locate.is_fail(), "{locate:?}");
     for (name, points) in [
         ("sleep-policy", &["/usr/local"][..]),
-        (
-            "locate-database (test inputs)",
-            &["/usr/local", "/home/bob"][..],
-        ),
         ("decoy-nix-trace", &["/usr/local", "/home/bob"][..]),
         ("binary-location (test inputs)", &["/usr/local"][..]),
         ("inherited-autostart", &["/home/bob"][..]),
@@ -332,7 +334,8 @@ fn guarded() -> Vec<(&'static str, Box<dyn PreFlightCheck<MockFilesystem>>)> {
         (
             "locate-database",
             Box::new(
-                LocateDatabaseCheck::new(hidden.clone(), false).with_started(Ok(BTreeSet::new())),
+                LocateDatabaseCheck::new(hidden.clone(), false)
+                    .with_shown(Ok("Id=init.scope\n".to_string())),
             ),
         ),
         (

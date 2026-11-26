@@ -29,9 +29,10 @@
 # request reaches systemd or the automounter, and the overlay module stays
 # unloaded. Without --overlay-only, check would also look for the NixOS
 # build target and run the NixOS checks: this test leaves them to the mock
-# tests. decoy-persistence, fstab-policy and upper-fs-capability refuse (the
-# override turns the first into a warning), sleep-policy and locate-database
-# warn, and as carol inherited-autostart and incremental-history-flush warn,
+# tests. decoy-persistence, fstab-policy, upper-fs-capability and
+# locate-database refuse (the override turns the first into a warning),
+# sleep-policy warns, and as carol inherited-autostart and
+# incremental-history-flush warn,
 # each naming the automount point with the line that says to mount it, and
 # inherited.not_read lists carol's autostart directory; no row names
 # /srv/archive. A listing of /auto, the indirect map's directory, mounts
@@ -384,7 +385,7 @@ in
         names(rows, "fstab-policy", ["/usr/local"], "fail")
         names(rows, "upper-fs-capability", ["/usr/local"], "fail")
         names(rows, "sleep-policy", ["/usr/local"], "warn")
-        names(rows, "locate-database", READ, "warn")
+        names(rows, "locate-database", READ, "fail")
         no_row_names(rows, [ARCHIVE])
 
     with subtest("--allow-persistent-decoy turns the refusal into a warning"):
@@ -451,7 +452,8 @@ in
             assert rows[name]["status"] != "fail", rows[name]
         assert overlay_loaded(), "the trial did not load the overlay module"
         locate = rows["locate-database"]
-        assert "updatedb can be started by hand (/usr/local/bin/updatedb)" in locate["message"], locate
+        assert locate["status"] == "warn", locate
+        assert "updatedb is installed on the decoy (/usr/local/bin/updatedb)" in locate["message"], locate
         inherited = data["inherited"]
         print(json.dumps(inherited, indent=2))
         assert inherited["not_read"] == [], inherited

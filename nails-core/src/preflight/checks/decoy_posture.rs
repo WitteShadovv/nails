@@ -288,12 +288,7 @@ impl DecoyPersistenceCheck {
     fn hidden<F: Filesystem>(&self, fs: &F) -> Vec<PathBuf> {
         self.hidden_root
             .as_deref()
-            .map(|hidden_root| {
-                hidden_locations(fs, hidden_root)
-                    .into_iter()
-                    .map(|location| location.path)
-                    .collect()
-            })
+            .map(|hidden_root| hidden_locations(fs, hidden_root))
             .unwrap_or_default()
     }
 

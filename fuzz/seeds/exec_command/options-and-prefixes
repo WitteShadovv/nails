@@ -1,0 +1,1 @@
+-@:/usr/bin/updatedb updatedb -ve/mnt --prunefs=EXT4 --add-single-prunepath "/a b" ; /bin/true \; '\x41\s' %%n $$PATH
