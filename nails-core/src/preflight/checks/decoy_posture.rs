@@ -123,7 +123,7 @@ mod sssd;
 mod sudo_logging;
 mod sysctl;
 mod triggers;
-// The locate-database check reads the decoy's units the same way.
+// The unattended-upgrade-run check asks whether a unit runs the same way.
 pub(in crate::preflight::checks) use loggers::{Activity, unit_active};
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
