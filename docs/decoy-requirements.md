@@ -945,11 +945,11 @@ logind.
   carriage return is code, where Nix reads a carriage return as a blank.
   `''` in a name or a URI (`a''`, also right after an operator as in
   `2 +a''`, or after a number Nix reads as an integer and a `.`, as in
-  `0.e5''`, and `http://example.org/a''`) starts no string, as in Nix,
-  while right after a path with no interpolation in it (`./a''`) it does.
-  So a
-  `luks.devices` block after such a place names its mapping as it does
-  anywhere else. What a reading by quotes alone finds there counts as
+  `0.e5''`, or right after a block comment as in `/* x */a''`, and
+  `http://example.org/a''`) starts no string, as in Nix, while right after
+  a path it does, also after the rest of one that follows an interpolation
+  in it (`./a''`, `./a${x}b''`). So a `luks.devices` block after such a
+  place names its mapping as it does anywhere else. What a reading by quotes alone finds there counts as
   well, as before: one that takes such a quote for the start of a string
   and reads the escapes of that string.
 
@@ -984,7 +984,10 @@ logind.
   yourself; an entry defined in one of these ways still counts by its device
   when that is written in one of the forms above. Run
   `nixos-generate-config` only while the hidden volume is closed: it writes
-  an entry for every mounted filesystem.
+  an entry for every mounted filesystem. The check reads each line in time
+  linear in its length, but for sets nested inside each other: a file that
+  nests thousands of them deep takes time that grows with the square of the
+  depth.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
   (notes, scripts, a README) free of these names too, and, where
