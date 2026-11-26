@@ -60,20 +60,31 @@ of this changelog for that version becomes the release notes word for word, and
 
 - `[session_mounts] write_tripwire` (opt-in): the session watcher compares the kernel's write
   counters of every disk that holds a decoy filesystem with the ones the last step before the
-  switch took after a `sync`, and powers the machine off at the first sector written or discarded
-  outside the hidden volume's own partition or disk, a partition table and the gaps between
-  partitions included. It counts what reached the disk, whatever program wrote it. Activation
-  refuses a hidden volume the counters cannot tell apart from the decoy: one that shares a
-  partition with it (a logical volume beside the decoy's, a folder or subvolume accepted with
-  `--allow-decoy-storage`), a container file on a disk, a hidden root without a block device, a
-  disk whose I/O the kernel does not count (`queue/iostats` 0), and a decoy on no disk it can
-  watch. It watches every device of every decoy filesystem, runs wherever the session plan
-  records it, and alerts where the settings ask for it and it cannot run. A watcher that crashes
-  does not start again.
+  switch took after a `sync` (and a freeze and thaw of each XFS filesystem on them, which writes
+  what XFS would write 20 to 80 seconds later), and powers the machine off at the first sector
+  written or discarded outside the hidden volume's own partition or disk, a partition table and
+  the gaps between partitions included. It counts what reached the disk, whatever program wrote
+  it. Activation refuses a hidden volume the counters cannot tell apart from the decoy: one that
+  shares a partition with it (a logical volume beside the decoy's, a folder or subvolume accepted
+  with `--allow-decoy-storage`), a container file on a disk, a hidden root without a block
+  device, a disk whose I/O the kernel does not count (`queue/iostats` 0), and a decoy on no disk
+  it can watch. It also refuses decoy storage that writes on its own or that the counters cannot
+  follow to a disk: an md array, a ZFS dataset, nbd, ublk and rbd devices. It watches every
+  device of every decoy filesystem, an XFS log or realtime device and an ext4 journal on a
+  device of its own included, runs wherever the session plan records it, and alerts where the
+  settings ask for it and no plan records it. Without the switch's counters it powers off at the
+  watcher's first poll. With the tripwire on, a watcher that crashes, is killed or cannot start
+  powers the machine off through the emergency (`OnFailure=`); one killed because it did not stop
+  in time at the way back powers off instead of returning.
   It is a tripwire, not a fence: the write is on the disk when the watcher sees it, up to one poll
-  later, and the power-off is a clean shutdown. It does not see SCSI or NVMe passthrough, what a
-  device writes on its own, EFI variables or a TPM, nor a disk that holds no decoy filesystem at
-  activation (see [Disks mounted during the session](docs/configuration.md#disks-mounted-during-the-session)).
+  later, and the power-off is a clean shutdown. It does not see SCSI or NVMe passthrough, zone
+  resets, DAX, a second path to a disk without multipath, what a device writes on its own, EFI
+  variables or a TPM, nor a disk that holds no decoy filesystem at activation. Not refused and
+  not measured, and so a power-off of a session that wrote nothing: dm-cache, dm-writecache,
+  bcache, dm-integrity, f2fs, a just-made ext4 filesystem whose lazy init still runs, btrfs with
+  `discard=async`, and Arch's btrfs root. A hanging hidden volume holds the backend probe, and
+  with it the tripwire's polls (see
+  [Disks mounted during the session](docs/configuration.md#disks-mounted-during-the-session)).
 - The NixOS VM tests and the distribution smoke, records, apt-shutdown and Nix tests count the
   writes to the decoy disk from the host, through QEMU dirty bitmaps the guest cannot reach, from
   the trigger of the switch into the hidden root until the session ends at the way back (cut by

@@ -371,3 +371,107 @@ fn a_decoy_on_no_watchable_disk_is_refused() {
         Err(Imprecise::NothingToWatch)
     );
 }
+
+#[test]
+fn a_decoy_on_an_md_array_is_refused_as_writing_on_its_own() {
+    let fake = Fake::new();
+    fake.dm("dm-0", "253:0", &["8:17"]);
+    // md0 (9:0), mirrored on vda2 and vda3, holds the decoy root.
+    fake.dm("md0", "9:0", &["252:2", "252:3"]);
+    let md = std::fs::canonicalize(fake.root().join("dev/block/9:0")).unwrap();
+    std::fs::create_dir_all(md.join("md")).unwrap();
+    assert_eq!(
+        layout_with(&[dev("253:0")], &[dev("9:0")], &fake.sys, &no_file),
+        Err(Imprecise::WritesOnItsOwn("md0".into()))
+    );
+    // The hidden volume's own md array writes only to what it owns.
+    let fake = Fake::new();
+    fake.dm("md1", "9:1", &["8:17"]);
+    let hidden_md = std::fs::canonicalize(fake.root().join("dev/block/9:1")).unwrap();
+    std::fs::create_dir_all(hidden_md.join("md")).unwrap();
+    assert!(layout_with(&[dev("9:1")], &[dev("252:2")], &fake.sys, &no_file).is_ok());
+}
+
+#[test]
+fn a_decoy_device_the_counters_cannot_follow_to_a_disk_is_refused() {
+    // nbd0 (43:0): no hardware, no loop file, nothing below it.
+    let fake = Fake::new();
+    fake.dm("dm-0", "253:0", &["8:17"]);
+    fake.disk("virtual/block/nbd0", "43:0", false);
+    assert_eq!(
+        layout_with(
+            &[dev("253:0")],
+            &[dev("252:2"), dev("43:0")],
+            &fake.sys,
+            &no_file
+        ),
+        Err(Imprecise::Unwatchable("nbd0".into()))
+    );
+    // A device sysfs does not list at all.
+    assert_eq!(
+        layout_with(
+            &[dev("253:0")],
+            &[dev("252:2"), dev("44:4")],
+            &fake.sys,
+            &no_file
+        ),
+        Err(Imprecise::Unwatchable("44:4".into()))
+    );
+    // A zram device and a RAM disk hold nothing of a disk.
+    let fake = Fake::new();
+    fake.dm("dm-0", "253:0", &["8:17"]);
+    fake.disk("virtual/block/zram0", "251:0", false);
+    fake.disk("virtual/block/ram1", "1:1", false);
+    let layout = layout_with(
+        &[dev("253:0")],
+        &[dev("252:2"), dev("251:0"), dev("1:1")],
+        &fake.sys,
+        &no_file,
+    )
+    .unwrap();
+    assert_eq!(layout.disks.len(), 1);
+    assert!(in_ram("zram0") && in_ram("ram1") && !in_ram("ramx") && !in_ram("zram"));
+    assert!(
+        Imprecise::WritesOnItsOwn("md0".into())
+            .to_string()
+            .contains("md0")
+    );
+    assert!(
+        Imprecise::Unwatchable("nbd0".into())
+            .to_string()
+            .contains("nbd0")
+    );
+}
+
+#[test]
+fn a_device_on_a_watched_disk_is_told_from_one_elsewhere() {
+    let (fake, layout, _) = watched();
+    fake.dm("dm-1", "253:1", &["252:2"]);
+    assert!(on_watched_disk(&layout, &fake.sys, dev("252:2")));
+    assert!(on_watched_disk(&layout, &fake.sys, dev("253:1")));
+    assert!(on_watched_disk(&layout, &fake.sys, dev("252:0")));
+    assert!(!on_watched_disk(&layout, &fake.sys, dev("8:17")));
+}
+
+#[test]
+fn a_baseline_and_a_check_read_settled_counters() {
+    let (fake, layout, base) = watched();
+    assert_eq!(base.sectors.get("252:0"), Some(&1000));
+    assert_eq!(base.sectors.len(), 4);
+    let (read, agreed) = stable_read(&watched_devices(&layout), &fake.sys);
+    assert!(agreed);
+    assert_eq!(read.get("252:2"), Some(&Some(900)));
+}
+
+#[test]
+fn a_file_lies_on_the_device_its_filesystem_shows() {
+    // A kernel filesystem has no block device.
+    assert_eq!(file_device(Path::new("/proc/self/stat")), None);
+    assert_eq!(file_device(Path::new("/nonexistent/file")), None);
+    // The test binary lies on a disk, unless the build keeps it in RAM.
+    let exe = std::env::current_exe().unwrap();
+    let raw = std::fs::metadata(&exe).unwrap().dev();
+    let shown = DevNum::from_raw(raw);
+    let expected = (shown.major != 0).then_some(shown);
+    assert_eq!(file_device(&exe), expected);
+}

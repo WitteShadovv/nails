@@ -58,13 +58,15 @@ fn the_entry_s_baseline_counts_from_the_switch() {
 }
 
 #[test]
-fn without_one_the_watcher_counts_from_its_own_start() {
+fn without_one_the_tripwire_fails_closed_and_still_names_later_writes() {
     let (dir, sys) = sysfs(100);
     let watch = WriteWatch::start(layout(), &sys, dir.path());
     assert_eq!(watch.since(), Since::WatcherStart);
-    assert!(watch.writes(&sys).is_empty());
+    let missing = "the entry left no write counters from the switch: what was written since \
+                   cannot be told";
+    assert_eq!(watch.writes(&sys), [missing]);
     set(dir.path(), 101);
-    assert_eq!(watch.writes(&sys), ["1 sectors written to vda"]);
+    assert_eq!(watch.writes(&sys), [missing, "1 sectors written to vda"]);
 }
 
 #[test]
@@ -80,6 +82,10 @@ fn a_counter_unreadable_at_the_start_fails_closed() {
 #[test]
 fn the_first_write_powers_off_once_and_a_power_off_that_failed_is_tried_again() {
     let (dir, sys) = sysfs(100);
+    Baseline::take(&layout(), &sys)
+        .unwrap()
+        .save(&dir.path().join(write_counters::BASELINE_NAME))
+        .unwrap();
     let watch = WriteWatch::start(layout(), &sys, dir.path());
     let asked = Cell::new(0);
     let refuse = |_: &[String]| {

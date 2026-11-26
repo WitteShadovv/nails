@@ -840,11 +840,18 @@ writes.
   a block device, a disk whose counters cannot be read or whose I/O the kernel
   does not count (`queue/iostats` 0), a decoy filesystem whose devices cannot
   be read, and a decoy none of whose filesystems lies on a disk the counters
-  can watch. The disks are those of every device of every decoy filesystem, as
-  the pre-flight checks read them (each device of a btrfs filesystem of
-  several). A disk whose I/O counting is turned off during the session powers
-  the machine off as a write does. Keep the hidden
-  volume on a disk or partition of its own, or leave the tripwire off.
+  can watch. It also refuses decoy storage that writes on its own or that the
+  counters cannot follow to a disk: an md array (its superblock's clean mark
+  and its bitmap follow the last write by seconds, which would power off a
+  session that wrote nothing), a ZFS dataset (the mount table does not name
+  its pool's devices), a network or userspace block device (nbd, ublk, rbd),
+  and a device sysfs does not list. The disks are those of every device of
+  every decoy filesystem, as the pre-flight checks and the attach gate read
+  them: each device of a btrfs or bcachefs filesystem of several, an XFS log
+  or realtime device (`logdev=`, `rtdev=`), an ext3 or ext4 journal on a
+  device of its own. A disk whose I/O counting is turned off during the
+  session powers the machine off as a write does. Keep the hidden volume on a
+  disk or partition of its own, or leave the tripwire off.
 - **The way back.** `nails deactivate` unmounts every disk mounted during the
   session before it soft-reboots (a busy one is detached; the soft-reboot ends
   its users), so the decoy can mount it again normally. That includes a disk
@@ -875,23 +882,48 @@ what a device writes on its own (firmware, SMART logs, wear levelling). EFI
 variables, a TPM and other stores outside the disks are not watched at all,
 nor is a disk that holds no decoy filesystem at activation (a second disk the
 decoy does not mount, a USB drive), nor a disk attached later: those are what
-`read_only` is for. Until the watcher starts in the hidden boot nothing powers
-off, though what was written since the switch counts at its first poll. Where
-the last step before the switch could not take the counters, the watcher takes
-its own when it starts, and what was written before that does not count. A root
-user in the hidden session can stop the watcher.
+`read_only` is for. Not counted either: zone resets and finishes (they move no
+sectors), DAX access to persistent memory (it bypasses the block layer), and a
+second path to the same disk that no multipath device joins (it shows as a
+disk of its own, watched only where a decoy filesystem uses it). Until the
+watcher starts in the hidden boot nothing powers off, though what was written
+since the switch counts at its first poll. Where the last step before the
+switch could not take the counters, what was written before the watcher
+started cannot be told: the watcher powers the machine off at its first poll,
+as at a write. A root user in the hidden session can stop the watcher.
+
+The last step before the switch runs a `sync` of every filesystem, then
+freezes and thaws every XFS filesystem on a watched disk (`FIFREEZE`,
+`FITHAW`): after a `sync`, XFS still writes its log's items and covers its log
+20 to 80 seconds later, which would power off a session that wrote nothing,
+and a freeze writes them at once. It then reads every counter until two reads
+in a row agree, so a write that lands while it reads cannot hide behind
+another. Not refused, and not measured: dm-cache, dm-writecache, bcache and
+dm-integrity, which write their own metadata on their own; f2fs, whose
+garbage collection writes on its own; a filesystem made just before the
+session, whose lazy inode-table init (ext4's `lazyinit`) still runs; and a
+btrfs decoy mounted with `discard=async`, which discards freed blocks some
+time after it freed them, so a discard the decoy's own last writes left
+queued can reach the disk after the switch. Any of these can power off a
+session that wrote nothing. The VM tests ran the tripwire on an ext4 decoy
+only; Arch's btrfs root showed writes after the switch that the block-write
+oracle cannot attribute, so expect a power-off there. The `sync` of every
+filesystem means a network filesystem that does not answer holds the switch
+up, until the switch's timeout guard powers the machine off.
 
 The watcher runs the tripwire wherever the session plan records its disks,
 whatever its copy of the settings says, and alerts ("Disk write monitor not
 running") where the settings ask for it and no plan records them. It does not
-start again: a watcher that crashes leaves the session without the tripwire
-for the rest of it, and its output goes nowhere, so nothing says so. The last
-step before the switch runs a `sync` of every filesystem, so a network
-filesystem that does not answer holds the switch up, until the switch's
-timeout guard powers the machine off. A btrfs decoy mounted with
-`discard=async` discards freed blocks some time after it freed them: a discard
-the decoy's own last writes left queued can reach the disk after the switch
-and power the machine off.
+start again, and its output goes nowhere. With the tripwire on, its unit has an
+`OnFailure=` unit that runs the emergency's power-off: a watcher that crashes,
+is killed by anything but its stop at the switch (`SIGTERM`, a clean stop) or
+cannot start powers the machine off, and where that power-off cannot start
+either, PID 1 powers off at once, without stopping or syncing anything. A
+watcher that does not stop within PID 1's stop timeout at the way back is
+killed, which counts as a failure: the machine then powers off instead of
+returning. The watcher polls the counters in the same loop as the backend
+probe, which creates a file on the hidden volume: a hidden volume that hangs
+holds the probe, and with it the tripwire's polls, until it answers.
 
 ## Sleep policy
 

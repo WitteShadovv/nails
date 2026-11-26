@@ -2153,9 +2153,45 @@ fn a_way_back_that_puts_the_network_state_back_returns_without_a_power_off() {
     assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
 }
 
+thread_local! {
+    /// The stat file the fake sync and freeze of the baseline test raise, and
+    /// the mount points the fake freeze was given.
+    static COUNTED: std::cell::RefCell<(Option<PathBuf>, Vec<PathBuf>)> =
+        const { std::cell::RefCell::new((None, Vec::new())) };
+}
+
+/// Raise the fake disk's written sectors by `by`.
+fn raise_counter(by: u64) {
+    COUNTED.with(|c| {
+        if let Some(stat) = &c.borrow().0 {
+            let text = fs::read_to_string(stat).unwrap();
+            let mut fields: Vec<u64> = text
+                .split_whitespace()
+                .map(|f| f.parse().unwrap())
+                .collect();
+            fields[6] += by;
+            let line: Vec<String> = fields.iter().map(u64::to_string).collect();
+            fs::write(stat, line.join(" ") + "\n").unwrap();
+        }
+    });
+}
+
+/// A sync that writes 500 sectors of the decoy's pages.
+fn fake_sync() {
+    raise_counter(500);
+}
+
+/// A freeze and thaw that writes 200 sectors, as XFS's log items and cover.
+fn fake_freeze_thaw(mount_point: &Path) -> std::io::Result<()> {
+    COUNTED.with(|c| c.borrow_mut().1.push(mount_point.to_path_buf()));
+    raise_counter(200);
+    Ok(())
+}
+
 /// Where the plan records the write tripwire's disks, the entry takes their
-/// counters last, into the runtime directory; without the disks, or without a
-/// sysfs to read, it takes none.
+/// counters last, into the runtime directory, after a sync and after a freeze
+/// and thaw of each XFS filesystem on a watched disk, so what both write is in
+/// the baseline; without the disks, or without a sysfs to read, it takes none.
 #[test]
 fn the_entry_takes_the_write_tripwire_s_baseline_last() {
     use crate::whole_root::write_counters::{BASELINE_NAME, Baseline, Layout, WatchedDisk};
@@ -2166,9 +2202,13 @@ fn the_entry_takes_the_write_tripwire_s_baseline_last() {
     fs::write(disk.join("dev"), "252:0\n").unwrap();
     fs::create_dir_all(disk.join("queue")).unwrap();
     fs::write(disk.join("queue/iostats"), "1\n").unwrap();
-    fs::write(disk.join("stat"), "1 0 8 0 1 0 77 0 0 0 0 0 0 3 0 0 0\n").unwrap();
     fs::create_dir_all(sysfs_root.join("dev/block")).unwrap();
     std::os::unix::fs::symlink(&disk, sysfs_root.join("dev/block/252:0")).unwrap();
+    let other = sysfs_root.join("devices/pci0/vdb");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("dev"), "252:16\n").unwrap();
+    std::os::unix::fs::symlink(&other, sysfs_root.join("dev/block/252:16")).unwrap();
+    COUNTED.with(|c| *c.borrow_mut() = (Some(disk.join("stat")), Vec::new()));
     let layout = Layout {
         disks: vec![WatchedDisk {
             name: "vda".into(),
@@ -2178,6 +2218,23 @@ fn the_entry_takes_the_write_tripwire_s_baseline_last() {
         }],
     };
     let baseline = world.runtime().join(BASELINE_NAME);
+    let counters = super::WriteCounters {
+        sys: crate::whole_root::disk_guard::Sysfs {
+            root: sysfs_root.clone(),
+        },
+        sync: fake_sync,
+        freeze_thaw: fake_freeze_thaw,
+    };
+    // The decoy root is XFS on the watched disk, an XFS filesystem on another
+    // disk is not watched, and an ext4 one needs no freeze.
+    let table = format!(
+        "40 1 0:40 / {} rw - overlay overlay rw\n\
+         41 1 252:0 / / rw - xfs /dev/vda rw\n\
+         42 41 252:0 / /var rw - xfs /dev/vda rw\n\
+         43 41 252:16 / /srv rw - xfs /dev/vdb rw\n\
+         44 41 252:0 / /home rw - ext4 /dev/vda rw\n",
+        world.nextroot().display()
+    );
 
     for (recorded, sysfs, taken) in [
         (Some(layout.clone()), true, true),
@@ -2185,21 +2242,27 @@ fn the_entry_takes_the_write_tripwire_s_baseline_last() {
         (None, true, false),
     ] {
         let _ = fs::remove_file(&baseline);
+        fs::write(disk.join("stat"), "1 0 8 0 1 0 77 0 0 0 0 0 0 3 0 0 0\n").unwrap();
+        COUNTED.with(|c| c.borrow_mut().1.clear());
         let mut plan = armed(Direction::Enter);
         plan.write_tripwire = recorded;
         world.init_in_nextroot(&plan.hidden.init);
         world.write_plan(&plan);
         let env = Env {
-            write_counters: sysfs.then(|| crate::whole_root::disk_guard::Sysfs {
-                root: sysfs_root.clone(),
-            }),
+            write_counters: sysfs.then(|| counters.clone()),
+            mounts: parse_mountinfo(&table),
             ..world.env(true, 1_000)
         };
         assert_eq!(run(&env), Outcome::Entered);
         let read = Baseline::load(&baseline);
         assert_eq!(read.is_some(), taken, "{sysfs} {taken}");
+        let frozen = COUNTED.with(|c| c.borrow().1.clone());
         if let Some(read) = read {
-            assert_eq!(read.sectors.get("252:0"), Some(&80));
+            // 80 before, the sync's 500 and the freeze's 200.
+            assert_eq!(read.sectors.get("252:0"), Some(&780));
+            assert_eq!(frozen, [PathBuf::from("/")], "one freeze per filesystem");
+        } else {
+            assert!(frozen.is_empty());
         }
     }
 }

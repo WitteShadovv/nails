@@ -319,7 +319,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         preflight: Probe::None("the disk is mounted after activation"),
         preflight_blocks: false,
         verify: Probe::None("verify cannot tell what a session wrote to another disk"),
-        mitigation: "The session watcher alerts on every read-write disk mount that is not the session's own storage, which it tells by device (and by path below `<root>/root`, where NAILS keeps its layers), so a disk mounted elsewhere below the hidden root alerts too; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again.",
+        mitigation: "The session watcher alerts on every read-write disk mount that is not the session's own storage, which it tells by device (and by path below `<root>/root`, where NAILS keeps its layers), so a disk mounted elsewhere below the hidden root alerts too; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. `[session_mounts] write_tripwire` (opt-in) powers the machine off at the first sector the kernel counts as written or discarded on a disk that holds a decoy filesystem, outside the hidden volume's own partition or disk, after the write: it measures, it does not prevent.",
         doc_anchor: "configuration.md#disks-mounted-during-the-session",
         e2e: E2e::Test("session-disk-mounts"),
         residual: true,

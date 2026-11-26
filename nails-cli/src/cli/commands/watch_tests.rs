@@ -677,6 +677,19 @@ fn the_write_tripwire_powers_off_at_the_first_write_to_a_watched_disk() {
     let (watch, _) = write_watch(true, Some(&with_layout), &sysfs, dir.path());
     let watch = watch.unwrap();
     assert_eq!(watch.since(), watcher::Since::WatcherStart);
+    assert!(
+        !watch.writes(&sysfs).is_empty(),
+        "without the switch's counters it fails closed"
+    );
+
+    use nails_teardown::whole_root::write_counters::{BASELINE_NAME, Baseline};
+    Baseline::take(with_layout.write_tripwire.as_ref().unwrap(), &sysfs)
+        .unwrap()
+        .save(&dir.path().join(BASELINE_NAME))
+        .unwrap();
+    let (watch, _) = write_watch(true, Some(&with_layout), &sysfs, dir.path());
+    let watch = watch.unwrap();
+    assert_eq!(watch.since(), watcher::Since::Switch);
 
     let mut finishes = Vec::new();
     let mut run = |finish| {
@@ -718,4 +731,56 @@ fn alert_only_says_it_keeps_the_plan_s_tripwire() {
             .body
             .contains("turns the computer off")
     );
+}
+
+/// The rounds watch what the settings or the plan ask for: nothing at all
+/// ends the watcher, a tripwire the plan records keeps it, and one the
+/// settings ask for that no plan records is an alert each round tries until
+/// it is delivered, after the start's own.
+#[test]
+fn the_rounds_take_the_tripwire_from_the_plan_and_its_alert_from_the_settings() {
+    let dir = tempfile::tempdir().unwrap();
+    let sysfs = disk_guard::Sysfs {
+        root: dir.path().to_path_buf(),
+    };
+    let mut quiet = Config::test_default();
+    quiet.backend_watch.enabled = false;
+    quiet.session_mounts.alert = false;
+    quiet.session_mounts.read_only = false;
+    quiet.session_mounts.write_tripwire = false;
+    assert!(rounds_for(&quiet, Some(&plan()), None, &sysfs, dir.path()).is_none());
+    assert!(rounds_for(&quiet, None, None, &sysfs, dir.path()).is_none());
+
+    let mut with_layout = plan();
+    with_layout.write_tripwire = Some(decoy_disk(dir.path(), 5));
+    let rounds = rounds_for(&quiet, Some(&with_layout), None, &sysfs, dir.path())
+        .expect("the plan's tripwire keeps the watcher");
+    assert!(rounds.write_watch.is_some());
+    assert!(rounds.notices.is_empty());
+
+    let mut asked = quiet.clone();
+    asked.session_mounts.write_tripwire = true;
+    let start = Once::new(alert_only_notice(false));
+    let rounds = rounds_for(&asked, Some(&plan()), Some(start), &sysfs, dir.path())
+        .expect("the asked-for tripwire keeps the watcher");
+    assert!(rounds.write_watch.is_none());
+    let titles: Vec<&str> = rounds
+        .notices
+        .iter()
+        .map(|n| n.alert.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            alert_only_notice(false).title.as_str(),
+            tripwire_missing_notice().title.as_str()
+        ]
+    );
+
+    let mut backend = quiet.clone();
+    backend.backend_watch.enabled = true;
+    assert!(rounds_for(&backend, None, None, &sysfs, dir.path()).is_some());
+    let mut alert = quiet;
+    alert.session_mounts.alert = true;
+    assert!(rounds_for(&alert, None, None, &sysfs, dir.path()).is_some());
 }

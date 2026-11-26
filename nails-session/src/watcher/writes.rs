@@ -5,12 +5,13 @@
 //! of the decoy disks' write counters.
 //!
 //! The entry's last step took the counters of the disks the plan records
-//! ([`nails_teardown::whole_root::write_counters`]) after a `sync`, once every
-//! decoy unit had stopped. At every poll the watcher reads them again: the
-//! first write they show, outside the hidden volume's own partition or disk,
-//! powers the machine off. Where the entry left no baseline, the watcher takes
-//! its own when it starts, and what was written between the switch and that
-//! start does not count.
+//! ([`nails_teardown::whole_root::write_counters`]) after a `sync` and a
+//! freeze and thaw of each XFS filesystem on them, once every decoy unit had
+//! stopped. At every poll the watcher reads them again: the first write they
+//! show, outside the hidden volume's own partition or disk, powers the
+//! machine off. Where the entry left no baseline, what was written between
+//! the switch and the watcher's start cannot be told: the tripwire fails
+//! closed and powers off at its first round, as at a write.
 
 use nails_teardown::whole_root::disk_guard::Sysfs;
 use nails_teardown::whole_root::write_counters::{self, Baseline, Layout};
@@ -61,9 +62,19 @@ impl WriteWatch {
         self.since
     }
 
-    /// Every write the counters show since the baseline, one line each.
+    /// Every write the counters show since the baseline, one line each;
+    /// without the entry's baseline, a line that says so first.
     pub fn writes(&self, sys: &Sysfs) -> Vec<String> {
-        write_counters::check(&self.layout, &self.baseline, sys)
+        let mut found = Vec::new();
+        if self.since == Since::WatcherStart {
+            found.push(
+                "the entry left no write counters from the switch: what was written \
+                 since cannot be told"
+                    .to_string(),
+            );
+        }
+        found.extend(write_counters::check(&self.layout, &self.baseline, sys));
+        found
     }
 }
 

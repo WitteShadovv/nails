@@ -25,13 +25,30 @@
 //! its inode and the journal. [`layout`] refuses those.
 //!
 //! What the counters do not see: requests that bypass the block layer's
-//! accounting (SCSI and NVMe passthrough), what a device writes on its own
-//! (its firmware, SMART logs, wear levelling), and other persistent stores
-//! (EFI variables, a TPM).
+//! accounting (SCSI and NVMe passthrough), zone resets and finishes, which
+//! move no sectors, DAX access to persistent memory, which bypasses the
+//! block layer, a second path to the same disk that no multipath device
+//! joins (it shows as another disk, unwatched where no decoy mount uses it),
+//! what a device writes on its own (its firmware, SMART logs, wear
+//! levelling), and other persistent stores (EFI variables, a TPM).
+//!
+//! A decoy layer that writes on its own after the last write would power off
+//! a session that wrote nothing. [`layout`] refuses an md array (its
+//! superblock's clean mark and its bitmap follow the last write by seconds)
+//! and a device whose writes the counters cannot follow to a disk (nbd,
+//! ublk, rbd, or one sysfs does not list). XFS pushes its log's items and
+//! covers its log some 20 to 80 seconds after a `sync`; the entry's last step
+//! freezes and thaws every XFS filesystem on a watched disk before the
+//! baseline, which writes them first. Not refused, and not measured:
+//! dm-cache, dm-writecache, bcache and dm-integrity, which write their own
+//! metadata, f2fs's garbage collection, ext4's lazy inode-table init on a new
+//! filesystem, and btrfs's asynchronous discard.
 //!
 //! [`layout`] runs at activation, on the decoy; the last step before the
 //! switch takes the [`Baseline`] after a `sync`, once every decoy unit has
-//! stopped; the session watcher [`check`]s the counters against it.
+//! stopped; the session watcher [`check`]s the counters against it. Both
+//! read every counter until two reads in a row agree, so a write that lands
+//! while they read cannot split a disk from its partitions.
 
 use crate::whole_root::disk_guard::{DevNum, Sysfs, block_device};
 use serde::{Deserialize, Serialize};
@@ -91,6 +108,10 @@ pub enum Imprecise {
     NotCounted(String),
     /// No decoy filesystem lies on a disk the counters can watch.
     NothingToWatch,
+    /// A decoy device writes on its own after the last write (an md array).
+    WritesOnItsOwn(String),
+    /// A decoy device whose writes the counters cannot follow to a disk.
+    Unwatchable(String),
 }
 
 impl std::fmt::Display for Imprecise {
@@ -118,6 +139,17 @@ impl std::fmt::Display for Imprecise {
             Imprecise::NothingToWatch => write!(
                 f,
                 "no decoy filesystem lies on a disk whose write counters can be watched"
+            ),
+            Imprecise::WritesOnItsOwn(name) => write!(
+                f,
+                "the decoy uses the md array {name}, which writes its superblock and bitmap \
+                 on its own after the last write: the tripwire would power off a session \
+                 that wrote nothing"
+            ),
+            Imprecise::Unwatchable(name) => write!(
+                f,
+                "the decoy uses {name}, whose writes the counters cannot follow to a disk \
+                 (a network or userspace block device, or one sysfs does not list)"
             ),
         }
     }
@@ -157,6 +189,72 @@ fn holders(sys: &Sysfs, dev: DevNum) -> Vec<DevNum> {
 fn loop_file(sys: &Sysfs, dev: DevNum) -> Option<PathBuf> {
     let text = std::fs::read_to_string(sys.dir(dev)?.join("loop/backing_file")).ok()?;
     Some(PathBuf::from(text.trim_end_matches('\n')))
+}
+
+/// Whether the kernel name `name` is a block device in RAM.
+fn in_ram(name: &str) -> bool {
+    let digits = |rest: &str| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit());
+    name.strip_prefix("zram").is_some_and(digits) || name.strip_prefix("ram").is_some_and(digits)
+}
+
+/// Refuse a decoy device the counters cannot watch: one that writes on its
+/// own after the last write, and one whose writes reach no disk the
+/// counters see. `used` are the decoy's devices and everything below them,
+/// `stack` the hidden volume's.
+fn refuse_restless(
+    used: &BTreeSet<DevNum>,
+    stack: &BTreeSet<DevNum>,
+    names: &BTreeMap<DevNum, String>,
+    sys: &Sysfs,
+) -> Result<(), Imprecise> {
+    for &dev in used.difference(stack) {
+        let name = names.get(&dev).cloned().unwrap_or_else(|| dev.text());
+        let Some(dir) = sys.dir(dev) else {
+            return Err(Imprecise::Unwatchable(name));
+        };
+        if dir.join("md").is_dir() {
+            return Err(Imprecise::WritesOnItsOwn(name));
+        }
+        let leaf = sys.slaves(dev).is_empty() && sys.parent(dev).is_none();
+        if leaf && !sys.is_hardware(dev) && loop_file(sys, dev).is_none() && !in_ram(&name) {
+            return Err(Imprecise::Unwatchable(name));
+        }
+    }
+    Ok(())
+}
+
+/// Whether the device `dev` lies on a disk of `layout`: the disk, one of
+/// its partitions, or a device stacked on them.
+pub fn on_watched_disk(layout: &Layout, sys: &Sysfs, dev: DevNum) -> bool {
+    closure(&[dev], sys, true)
+        .iter()
+        .any(|d| layout.disks.iter().any(|disk| disk.dev == d.text()))
+}
+
+/// Freeze and thaw the filesystem mounted at `mount_point` (`FIFREEZE`,
+/// `FITHAW`). A freeze writes everything the filesystem keeps for later: XFS
+/// pushes its log's items to their places and covers its log, which after a
+/// plain `sync` it does 20 to 80 seconds on. Measured on Linux 6.8: an XFS
+/// filesystem written to and synced wrote 302 more sectors over 110 seconds,
+/// and none once frozen and thawed. The thaw is tried again where it fails,
+/// as a filesystem left frozen stops every writer.
+#[allow(unsafe_code)]
+pub fn freeze_and_thaw(mount_point: &Path) -> io::Result<()> {
+    use rustix::ioctl::{NoArg, ioctl, opcode};
+    const FIFREEZE: rustix::ioctl::Opcode = opcode::read_write::<libc::c_int>(b'X', 119);
+    const FITHAW: rustix::ioctl::Opcode = opcode::read_write::<libc::c_int>(b'X', 120);
+    let dir = std::fs::File::open(mount_point)?;
+    // SAFETY: FIFREEZE takes no argument the kernel reads.
+    unsafe { ioctl(&dir, NoArg::<FIFREEZE>::new()) }.map_err(io::Error::from)?;
+    let mut thawed = Ok(());
+    for _ in 0..3 {
+        // SAFETY: FITHAW takes no argument the kernel reads.
+        thawed = unsafe { ioctl(&dir, NoArg::<FITHAW>::new()) }.map_err(io::Error::from);
+        if thawed.is_ok() {
+            break;
+        }
+    }
+    thawed
 }
 
 /// The device a file lies on, when that is a block device (not a tmpfs).
@@ -208,6 +306,8 @@ fn layout_with(
         owned.insert(dev);
     }
     let all = sys.all();
+    let names: BTreeMap<DevNum, String> = all.iter().cloned().collect();
+    refuse_restless(&used, &stack, &names, sys)?;
     let mut disks = Vec::new();
     for (dev, name) in &all {
         let whole = sys.parent(*dev).is_none() && sys.is_hardware(*dev);
@@ -293,6 +393,39 @@ pub fn sectors(sys: &Sysfs, dev: &str) -> Option<u64> {
     Some(written + discarded)
 }
 
+/// How many times a read of every counter is repeated, at most, to find two
+/// in a row that agree.
+const STABLE_TRIES: usize = 20;
+
+/// The counters of `devs`, read until two reads in a row agree (or the last
+/// of [`STABLE_TRIES`] reads, with whether they agreed); `None` for one that
+/// cannot be read.
+fn stable_read(devs: &[&String], sys: &Sysfs) -> (BTreeMap<String, Option<u64>>, bool) {
+    let read = || -> BTreeMap<String, Option<u64>> {
+        devs.iter()
+            .map(|dev| ((*dev).clone(), sectors(sys, dev)))
+            .collect()
+    };
+    let mut last = read();
+    for _ in 0..STABLE_TRIES {
+        let now = read();
+        if now == last {
+            return (now, true);
+        }
+        last = now;
+    }
+    (last, false)
+}
+
+/// Every device `layout` watches: each disk and its partitions.
+fn watched_devices(layout: &Layout) -> Vec<&String> {
+    layout
+        .disks
+        .iter()
+        .flat_map(|disk| std::iter::once(&disk.dev).chain(disk.partitions.iter().map(|p| &p.dev)))
+        .collect()
+}
+
 /// The counters of every watched device.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Baseline {
@@ -301,24 +434,17 @@ pub struct Baseline {
 }
 
 impl Baseline {
-    /// The counters of every device of `layout`; `Err` names one that
-    /// cannot be read.
+    /// The counters of every device of `layout`, read until two reads in a
+    /// row agree; `Err` names one that cannot be read, or says that they
+    /// did not stop changing.
     pub fn take(layout: &Layout, sys: &Sysfs) -> Result<Self, String> {
+        let (read, agreed) = stable_read(&watched_devices(layout), sys);
         let mut sectors_by_dev = BTreeMap::new();
-        // Each disk's partitions before the disk, the reverse of [`check`]:
-        // a write to a partition that completes between the two reads can
-        // then only raise the disk's baseline, never leave a residual that
-        // is not there.
-        for disk in &layout.disks {
-            for dev in disk
-                .partitions
-                .iter()
-                .map(|p| &p.dev)
-                .chain(std::iter::once(&disk.dev))
-            {
-                let count = sectors(sys, dev).ok_or_else(|| dev.clone())?;
-                sectors_by_dev.insert(dev.clone(), count);
-            }
+        for (dev, count) in read {
+            sectors_by_dev.insert(dev.clone(), count.ok_or(dev)?);
+        }
+        if !agreed {
+            return Err("the write counters did not stop changing".to_string());
         }
         Ok(Self {
             sectors: sectors_by_dev,
@@ -342,19 +468,20 @@ impl Baseline {
 /// counter that went down and a partition that appeared or went are lines too:
 /// the counters can no longer tell.
 ///
-/// Each disk's own counter is read before its partitions'. The counters only
-/// grow, so a write to a partition that lands between the two reads can only
-/// make the residual smaller, never show one that is not there.
+/// Every counter is read until two reads in a row agree, so a write that
+/// lands while they are read cannot split a disk from its partitions; where
+/// they never agree, the last read counts.
 pub fn check(layout: &Layout, base: &Baseline, sys: &Sysfs) -> Vec<String> {
     let mut found = Vec::new();
     let current: Vec<(DevNum, String)> = sys.all();
+    let (now_sectors, _) = stable_read(&watched_devices(layout), sys);
     for disk in &layout.disks {
         let growth = |dev: &str, name: &str, found: &mut Vec<String>| -> Option<u64> {
             let Some(&was) = base.sectors.get(dev) else {
                 found.push(format!("{name} ({dev}) has no baseline"));
                 return None;
             };
-            let Some(now) = sectors(sys, dev) else {
+            let Some(now) = now_sectors.get(dev).copied().flatten() else {
                 found.push(format!(
                     "the write counters of {name} ({dev}) cannot be read"
                 ));

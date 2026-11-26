@@ -1855,3 +1855,42 @@ fn activation_stops_before_anything_is_prepared_where_it_cannot_read_the_hidden_
         assert_eq!(host.reloads.get(), 0, "{place}");
     }
 }
+
+/// The write tripwire the settings ask for reaches the entry: a hidden root
+/// on a tmpfs, which the counters cannot tell from the decoy, refuses the
+/// activation before the switch is armed.
+#[test]
+fn the_write_tripwire_setting_reaches_the_entry() {
+    let _ = Rerun::new(crate::test_path!(
+        the_write_tripwire_setting_reaches_the_entry
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.config.session_mounts.write_tripwire = true;
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+        let error = m
+            .enter_session_no_preflight_on(&machine, &options, &host)
+            .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("write tripwire"), "{text}");
+        assert!(text.contains("no block device"), "{text}");
+        assert!(!machine.paths.runtime().exists());
+        assert_eq!(host.reloads.get(), 0, "refused before the drop-in");
+    });
+}

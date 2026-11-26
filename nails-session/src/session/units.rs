@@ -21,16 +21,37 @@ use std::path::Path;
 /// The watcher's unit name.
 pub const WATCH_UNIT: &str = "overlay-runtime-monitor.service";
 
-fn unit(name: String, description: &str, argument: &str) -> RuntimeUnit {
+/// The unit that powers off through the emergency's hot path where the
+/// watcher fails while it guards the write tripwire.
+pub const WATCH_FAILURE_UNIT: &str = "overlay-runtime-monitor-failed.service";
+
+fn unit(name: String, description: &str, argument: &str, unit_lines: &str) -> RuntimeUnit {
     let binary = Path::new(RUNTIME_DIR).join(BINARY_NAME);
     RuntimeUnit {
         name,
         content: format!(
-            "[Unit]\nDescription={description}\n\n[Service]\nExecStart={} {argument}\n\
-             Restart=no\nStandardOutput=null\nStandardError=null\nLimitCORE=0\n",
+            "[Unit]\nDescription={description}\n{unit_lines}\n[Service]\nExecStart={} \
+             {argument}\nRestart=no\nStandardOutput=null\nStandardError=null\nLimitCORE=0\n",
             binary.display()
         ),
         wanted_by: vec!["multi-user.target".to_string()],
+    }
+}
+
+/// The unit [`WATCH_FAILURE_UNIT`]: the emergency with a power-off, started
+/// by nothing but the watcher's failure. Where it fails itself, PID 1 powers
+/// off at once, without stopping or syncing anything.
+fn failure_unit() -> RuntimeUnit {
+    let binary = Path::new(RUNTIME_DIR).join(BINARY_NAME);
+    RuntimeUnit {
+        name: WATCH_FAILURE_UNIT.to_string(),
+        content: format!(
+            "[Unit]\nDescription=Overlay runtime monitor fallback\nDefaultDependencies=no\n\
+             FailureAction=poweroff-immediate\n\n[Service]\nType=oneshot\nExecStart={} \
+             emergency --poweroff\nStandardOutput=null\nStandardError=null\nLimitCORE=0\n",
+            binary.display()
+        ),
+        wanted_by: Vec::new(),
     }
 }
 
@@ -39,17 +60,31 @@ pub fn session_units(config: &Config) -> Vec<RuntimeUnit> {
     let mut units = Vec::new();
     // The watcher also alerts on, and guards, disks mounted during the session.
     if config.backend_watch.enabled || config.session_mounts.needs_watcher() {
+        // A watcher that crashes, is killed or never starts leaves the write
+        // tripwire off: its failure powers off instead. Its stop at the
+        // switch, by SIGTERM, is no failure.
+        let tripwire = config.session_mounts.write_tripwire;
+        let on_failure = if tripwire {
+            format!("OnFailure={WATCH_FAILURE_UNIT}\n")
+        } else {
+            String::new()
+        };
         units.push(unit(
             WATCH_UNIT.to_string(),
             "Overlay runtime monitor",
             "watch",
+            &on_failure,
         ));
+        if tripwire {
+            units.push(failure_unit());
+        }
     }
     if config.sleep_policy.mode.runs_guard() {
         units.push(unit(
             format!("{}.service", crate::sleep_guard::SLEEP_GUARD_UNIT_NAME),
             "Overlay runtime power policy",
             "sleep-guard",
+            "",
         ));
     }
     units
@@ -91,5 +126,39 @@ mod tests {
         assert!(session_units(&config).is_empty());
         config.session_mounts.read_only = true;
         assert_eq!(session_units(&config)[0].name, WATCH_UNIT);
+        assert!(!session_units(&config)[0].content.contains("OnFailure="));
+    }
+
+    #[test]
+    fn a_watcher_that_guards_the_write_tripwire_powers_off_where_it_fails() {
+        let mut config = Config::test_default();
+        config.session_mounts.write_tripwire = true;
+        let units = session_units(&config);
+        let names: Vec<&str> = units.iter().map(|u| u.name.as_str()).collect();
+        assert_eq!(names, [WATCH_UNIT, WATCH_FAILURE_UNIT]);
+        assert!(
+            units[0]
+                .content
+                .contains(&format!("OnFailure={WATCH_FAILURE_UNIT}\n"))
+        );
+        let fallback = &units[1];
+        assert!(
+            fallback
+                .content
+                .contains("ExecStart=/run/overlay-runtime/control emergency --poweroff\n"),
+            "{}",
+            fallback.content
+        );
+        assert!(
+            fallback
+                .content
+                .contains("FailureAction=poweroff-immediate\n")
+        );
+        assert!(fallback.content.contains("DefaultDependencies=no\n"));
+        assert!(
+            fallback.wanted_by.is_empty(),
+            "started by the failure alone"
+        );
+        assert!(!fallback.content.to_lowercase().contains("nails"));
     }
 }

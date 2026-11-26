@@ -21,6 +21,11 @@
 exclude_re = [
     # --- Equivalent ---
 
+    # write_watch logs a warning where the tripwire counts from the watcher's
+    # start, a watch whose writes() already lead with that line (it fails
+    # closed); `!=` only logs it for the other watches. Nothing reads the log.
+    'nails-cli/src/cli/commands/watch\.rs:\d+:\d+: replace == with != in write_watch$',
+
     # CryptsetupVersion::at_least compares the majors, and then the minors,
     # with `>` only after `!=` has found them different, where `>=` answers
     # the same.

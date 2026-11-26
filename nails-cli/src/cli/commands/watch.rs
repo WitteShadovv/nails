@@ -281,11 +281,23 @@ pub fn execute(
 
     let watch_config = config.backend_watch.clone();
     let mounts_config = config.session_mounts.clone();
-    let tripwire_recorded = plan.as_ref().is_some_and(|p| p.write_tripwire.is_some());
-    if !watch_config.enabled && !mounts_config.needs_watcher() && !tripwire_recorded {
+    let sysfs = disk_guard::Sysfs::system();
+    // The write tripwire: the decoy disks' write counters against the
+    // baseline the entry's last step took.
+    let Some(Rounds {
+        write_watch,
+        notices,
+    }) = rounds_for(
+        &config,
+        plan.as_deref(),
+        notice,
+        &sysfs,
+        Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
+    )
+    else {
         tracing::debug!("Nothing to watch in config; watcher exiting");
         return ExitStatus::Ok;
-    }
+    };
 
     tracing::info!(
         poll_interval_secs = watch_config.poll_interval_secs,
@@ -301,16 +313,6 @@ pub fn execute(
         .as_deref()
         .filter(|plan| mounts_config.read_only && plan.read_only_disks)
         .cloned();
-    let sysfs = disk_guard::Sysfs::system();
-    // The write tripwire: the decoy disks' write counters against the
-    // baseline the entry's last step took.
-    let (write_watch, tripwire_notice) = write_watch(
-        mounts_config.write_tripwire,
-        plan.as_deref(),
-        &sysfs,
-        Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
-    );
-    let tripwire_notice = tripwire_notice.map(Once::new);
     let mut tripped = false;
     // The mount table names the root with its symlinks resolved.
     let hidden_root = watcher::resolved_root(&filesystem, &manifest);
@@ -342,11 +344,7 @@ pub fn execute(
                 tripped =
                     trip_on_writes(watch, &sysfs, tripped, super::emergency::run_hot_path_with);
             }
-            if let Some(notice) = &notice {
-                let env = env.clone();
-                notice.try_deliver(move |alert| send_immediate(alert, &env));
-            }
-            if let Some(notice) = &tripwire_notice {
+            for notice in &notices {
                 let env = env.clone();
                 notice.try_deliver(move |alert| send_immediate(alert, &env));
             }
@@ -404,6 +402,47 @@ fn auto_emergency(finish: Finish, mut run: impl FnMut(Finish) -> HotReport) -> b
         "The automatic emergency ended; the watcher watches on where it did not act"
     );
     acted
+}
+
+/// What the watcher's rounds work with besides the settings ([`rounds_for`]).
+#[derive(Debug)]
+struct Rounds {
+    /// The write tripwire's watch, where the plan records it.
+    write_watch: Option<watcher::WriteWatch>,
+    /// The alerts each round tries to deliver until they are, once each.
+    notices: Vec<Once>,
+}
+
+/// What the watcher's rounds work with, for `config` and the session `plan`:
+/// `None` where there is nothing to watch, else the write tripwire's watch
+/// ([`write_watch`]) and the alerts to deliver once, `notice` (the start's)
+/// first, then the tripwire's that cannot run.
+fn rounds_for(
+    config: &Config,
+    plan: Option<&Plan>,
+    notice: Option<Once>,
+    sysfs: &disk_guard::Sysfs,
+    runtime_dir: &Path,
+) -> Option<Rounds> {
+    let tripwire_recorded = plan.is_some_and(|p| p.write_tripwire.is_some());
+    if !config.backend_watch.enabled && !config.session_mounts.needs_watcher() && !tripwire_recorded
+    {
+        return None;
+    }
+    let (write_watch, tripwire_notice) = write_watch(
+        config.session_mounts.write_tripwire,
+        plan,
+        sysfs,
+        runtime_dir,
+    );
+    let notices = notice
+        .into_iter()
+        .chain(tripwire_notice.map(Once::new))
+        .collect();
+    Some(Rounds {
+        write_watch,
+        notices,
+    })
 }
 
 /// The write tripwire's watch, wherever the session `plan` records the disks

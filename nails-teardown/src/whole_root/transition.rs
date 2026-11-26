@@ -408,9 +408,34 @@ pub struct Env {
     /// How this step was started: by PID 1 from the drop-in, as itself again,
     /// or by hand ([`Started::by_hand`]), which checks no domain.
     pub start: Started,
-    /// Where the entry reads the decoy disks' write counters for the write
-    /// tripwire's baseline ([`write_counters`]); `None` takes none.
-    pub write_counters: Option<disk_guard::Sysfs>,
+    /// Where and how the entry takes the write tripwire's baseline
+    /// ([`write_counters`]); `None` takes none.
+    pub write_counters: Option<WriteCounters>,
+}
+
+/// Where the entry reads the decoy disks' write counters, and how it brings
+/// the decoy's filesystems to rest before it does ([`take_write_baseline`]).
+#[derive(Debug, Clone)]
+pub struct WriteCounters {
+    /// The sysfs the counters are read from.
+    pub sys: disk_guard::Sysfs,
+    /// Writes every filesystem's dirty pages: `sync(2)`, or a test's
+    /// stand-in.
+    pub sync: fn(),
+    /// Freezes and thaws the filesystem mounted at a path
+    /// ([`write_counters::freeze_and_thaw`]), or a test's stand-in.
+    pub freeze_thaw: fn(&Path) -> io::Result<()>,
+}
+
+impl WriteCounters {
+    /// The running kernel's.
+    pub fn system() -> Self {
+        Self {
+            sys: disk_guard::Sysfs::system(),
+            sync: rustix::fs::sync,
+            freeze_thaw: write_counters::freeze_and_thaw,
+        }
+    }
 }
 
 /// How the way back powers off instead of returning ([`PowerOff::system`]).
@@ -454,7 +479,7 @@ impl Env {
             tail: Some(tail::Places::system()),
             selinux: &selinux::KERNEL,
             start,
-            write_counters: Some(disk_guard::Sysfs::system()),
+            write_counters: Some(WriteCounters::system()),
         }
     }
 
@@ -679,16 +704,27 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
 }
 
 /// The write tripwire's baseline, taken last: every decoy unit has stopped,
-/// and a `sync` has written what the decoy left in the page cache, so what the
-/// counters show from here on was written after the switch began
-/// ([`write_counters`]). Best effort: without it, the session watcher takes
-/// its own when it starts.
+/// a `sync` has written what the decoy left in the page cache, and each XFS
+/// filesystem on a watched disk has been frozen and thawed, which writes the
+/// log items and the log cover a `sync` leaves for later (20 to 80 seconds
+/// on). So what the counters show from here on was written after the switch
+/// began ([`write_counters`]). Best effort: without it, the session watcher
+/// powers off at its first round ([`write_counters::BASELINE_NAME`]).
 fn take_write_baseline(env: &Env, plan: &Plan) {
-    let (Some(layout), Some(sys)) = (&plan.write_tripwire, &env.write_counters) else {
+    let (Some(layout), Some(counters)) = (&plan.write_tripwire, &env.write_counters) else {
         return;
     };
-    rustix::fs::sync();
-    if let Ok(baseline) = write_counters::Baseline::take(layout, sys) {
+    (counters.sync)();
+    let mut rested = std::collections::BTreeSet::new();
+    for mount in env.mounts.iter().filter(|m| m.fstype == "xfs") {
+        let Some(dev) = disk_guard::DevNum::parse(&mount.dev) else {
+            continue;
+        };
+        if rested.insert(dev) && write_counters::on_watched_disk(layout, &counters.sys, dev) {
+            let _ = (counters.freeze_thaw)(&mount.mount_point);
+        }
+    }
+    if let Ok(baseline) = write_counters::Baseline::take(layout, &counters.sys) {
         let _ = baseline.save(&env.runtime_dir.join(write_counters::BASELINE_NAME));
     }
 }
