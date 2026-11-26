@@ -214,7 +214,7 @@ in
         # session: a read-write mount of it is refused (a read-only one reuses
         # the live superblock), and the next boot shows the decoy without the
         # session's files.
-        machine.fail(f"mkdir -p {PEEK} && mount -t ext4 -o rw {decoy_dev} {PEEK}")
+        machine.fail(f"mkdir -p {PEEK} && mount -w -t ext4 -o rw {decoy_dev} {PEEK}")
 
     with subtest("after deactivate's power-off the decoy home is byte-for-byte unchanged"):
         canonical_deactivate(CONFIG, "deactivate")

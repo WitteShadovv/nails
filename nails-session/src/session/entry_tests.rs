@@ -1067,14 +1067,46 @@ fn pid_1_holding_a_deleted_library_or_cache_is_found() {
          7f04-7f05 rw-s 00000000 00:01 14 /memfd:x (deleted)\n",
     )
     .unwrap();
-    assert!(!pid1_holds_deleted(pid));
+    assert!(!holds_deleted(pid));
     std::fs::write(
         pid.join("maps"),
         "7f00-7f01 r--p 00000000 00:21 12 /etc/ld.so.cache (deleted)\n",
     )
     .unwrap();
-    assert!(pid1_holds_deleted(pid));
+    assert!(holds_deleted(pid));
     std::fs::write(pid.join("maps"), "").unwrap();
     std::os::unix::fs::symlink("/var/lib/x (deleted)", pid.join("fd/3")).unwrap();
-    assert!(pid1_holds_deleted(pid));
+    assert!(holds_deleted(pid));
+}
+
+#[test]
+fn only_a_pid_1_or_udevd_holding_a_deleted_file_is_released_before_the_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let proc = dir.path();
+    let process = |pid: u32, cgroup: &str, maps: &str| {
+        let at = proc.join(pid.to_string());
+        std::fs::create_dir_all(at.join("fd")).unwrap();
+        std::fs::write(at.join("cgroup"), format!("0::{cgroup}\n")).unwrap();
+        std::fs::write(at.join("maps"), maps).unwrap();
+    };
+    let kept = "7f00-7f01 r--p 00000000 00:21 12 /usr/lib/libc.so.6\n";
+    let deleted = "7f00-7f01 r--p 00000000 00:21 12 /etc/ld.so.cache (deleted)\n";
+    process(1, "/init.scope", kept);
+    process(40, "/system.slice/systemd-udevd.service/udev", kept);
+    process(41, "/system.slice/cron.service", deleted);
+    // Nothing of PID 1 or udevd: no call, so neither reads its unit files.
+    assert!(deleted_file_releases(proc).is_empty());
+    process(40, "/system.slice/systemd-udevd.service/udev", deleted);
+    assert_eq!(
+        deleted_file_releases(proc),
+        [&["restart", "systemd-udevd.service"][..]]
+    );
+    process(1, "/init.scope", deleted);
+    assert_eq!(
+        deleted_file_releases(proc),
+        [
+            &["daemon-reexec"][..],
+            &["restart", "systemd-udevd.service"][..]
+        ]
+    );
 }

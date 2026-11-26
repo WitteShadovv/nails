@@ -512,7 +512,7 @@ in
         # The write fence keeps the decoy's filesystem read-only for the
         # session: a read-write mount of it is refused; the next boot shows
         # it without the file.
-        machine.fail("mkdir -p /run/peek && mount -t ext4 -o rw /dev/disk/by-id/virtio-extra /run/peek")
+        machine.fail("mkdir -p /run/peek && mount -w -t ext4 -o rw /dev/disk/by-id/virtio-extra /run/peek")
 
     with subtest("a noauto disk a unit it names pulls in is kept off"):
         state = machine.succeed(f"systemctl show -p LoadState --value '{LATER_UNIT}'").strip()
@@ -576,7 +576,7 @@ in
         # The write fence keeps the decoy's filesystem read-only for the
         # session: a read-write mount of it is refused; the next boot shows
         # it without the file.
-        machine.fail("mkdir -p /run/peek && mount -t ext4 -o rw /dev/disk/by-id/virtio-native /run/peek")
+        machine.fail("mkdir -p /run/peek && mount -w -t ext4 -o rw /dev/disk/by-id/virtio-native /run/peek")
 
     with subtest("the Nix store of the VM is overlaid too"):
         assert machine.succeed("findmnt -no FSTYPE /nix/store").strip() == "overlay"

@@ -623,10 +623,16 @@ distroVm.buildVmTest {
         print(f"the helper's log on the decoy disk:\n{tail(helper_log)}")
         print(f"the runs' log on the decoy disk:\n{tail(run_log)}")
         assert count(helper_log, SHUTDOWN_MODE) > mode_before, tail(helper_log)
-        # Without python3-gi, the helper the decoy's cold boot started wrote
-        # its two lines.
+        # Without python3-gi, the helper the decoy's cold boot started writes
+        # its two lines, a moment after the boot reached the backdoor.
         if vm.execute(f"test -e {gi_module}")[0] != 0:
-            assert count(helper_log, POLLING) > polling_before, tail(helper_log)
+            try:
+                vm.wait_until_succeeds(
+                    f"test $(grep -c -F {shlex.quote(POLLING)} {helper_log}) -gt {polling_before}",
+                    timeout=60,
+                )
+            except Exception:
+                raise AssertionError(tail(helper_log))
 
     with subtest("a helper stopped but enabled only warns, and the session's end adds no shutdown-mode line"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")

@@ -193,24 +193,12 @@ pub const LEFT_TO_THE_SWITCH: [&str; 1] = ["systemd-udevd.service"];
 /// The processes [`end_leftovers`] ends, under the procfs at `proc`: those of
 /// [`leftovers`] that run in none of the services of [`LEFT_TO_THE_SWITCH`].
 pub fn to_end(proc: &Path, own: u32) -> Vec<u32> {
-    to_end_but(proc, own, &LEFT_TO_THE_SWITCH)
-}
-
-/// [`leftovers`] under the procfs at `proc` that run in none of the
-/// services `kept`.
-fn to_end_but(proc: &Path, own: u32, kept: &[&str]) -> Vec<u32> {
     leftovers(proc, own)
         .into_iter()
-        .filter(|&pid| service_of(proc, pid).is_none_or(|unit| !kept.contains(&unit.as_str())))
+        .filter(|&pid| {
+            service_of(proc, pid).is_none_or(|unit| !LEFT_TO_THE_SWITCH.contains(&unit.as_str()))
+        })
         .collect()
-}
-
-/// The processes [`end_leftovers_at_entry`] ends: every one of
-/// [`leftovers`], udevd's included. Nothing hands udevd events before the
-/// entry's switch, and a udevd that maps a file a package update deleted
-/// keeps the decoy's root from going read-only for the write fence.
-pub fn to_end_at_entry(proc: &Path, own: u32) -> Vec<u32> {
-    to_end_but(proc, own, &[])
 }
 
 /// End every process [`to_end`] lists on the real system (`places.proc`
@@ -225,32 +213,13 @@ pub fn to_end_at_entry(proc: &Path, own: u32) -> Vec<u32> {
 /// before the cursor), and waits for every job but `own_jobs` and for any
 /// restart still due. Returns the pids killed.
 pub fn end_leftovers(places: &Places, systemctl: Option<&Path>, own_jobs: &[&str]) -> Vec<u32> {
-    end_listed(places, systemctl, own_jobs, to_end)
-}
-
-/// [`end_leftovers`] for the entry, before the write fence: every process
-/// [`to_end_at_entry`] lists, udevd's included.
-pub fn end_leftovers_at_entry(
-    places: &Places,
-    systemctl: Option<&Path>,
-    own_jobs: &[&str],
-) -> Vec<u32> {
-    end_listed(places, systemctl, own_jobs, to_end_at_entry)
-}
-
-fn end_listed(
-    places: &Places,
-    systemctl: Option<&Path>,
-    own_jobs: &[&str],
-    list: fn(&Path, u32) -> Vec<u32>,
-) -> Vec<u32> {
     let own = std::process::id();
     let mut killed = Vec::new();
     if let Some(systemctl) = systemctl {
         let _ = tools::wait_for_other_jobs(systemctl, own_jobs, JOBS_BUDGET);
     }
     for _ in 0..KILL_ROUNDS {
-        let pids = list(&places.proc, own);
+        let pids = to_end(&places.proc, own);
         if pids.is_empty() {
             break;
         }

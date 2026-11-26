@@ -187,13 +187,15 @@ in
             assert off == "0", f"discard on {shared}: {off}"
 
     with subtest("every way to the decoy devices is closed"):
+        # `mount -w`: without it, mount answers the kernel's refusal of a
+        # read-write mount by mounting read-only and exiting 0.
         refusals = {
             "write the disk": f"dd if=/dev/zero of=/dev/{shared} bs=512 seek={LBA} count=1 conv=notrunc",
             "write the root disk": f"dd if=/dev/zero of=/dev/{root_disk} bs=512 seek=8 count=1 conv=notrunc",
             "write a partition": f"dd if=/dev/zero of=/dev/{shared}1 bs=512 count=1 conv=notrunc",
             "read the disk": f"dd if=/dev/{shared} of=/dev/null bs=512 count=1",
             "clear the flag": f"blockdev --setrw /dev/{shared}",
-            "mount a partition read-write": f"mkdir -p /run/try && mount -t ext4 -o rw /dev/{shared}1 /run/try",
+            "mount a partition read-write": f"mkdir -p /run/try && mount -w -t ext4 -o rw /dev/{shared}1 /run/try",
             "make a node": f"mknod /run/again b $(stat -c '%t %T' /dev/{shared} | "
             "while read a b; do echo $((16#$a)) $((16#$b)); done) && "
             "dd if=/run/again of=/dev/null count=1",

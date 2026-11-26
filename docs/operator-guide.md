@@ -1339,7 +1339,9 @@ f2fs recover their logs, all onto the disk, read-only mount or not.
 - **In a hidden session, a filesystem the decoy mounted at entry**: the
   decoy root and each filesystem the session carries. The
   [write fence](threat-model.md#the-write-fence) keeps it read-only at its
-  superblock and keeps its device closed, so a read-write mount is refused.
+  superblock and keeps its device closed, so a read-write mount is refused
+  (`mount` without `-w` then mounts it read-only with the warning "source
+  write-protected, mounted read-only").
   Mount it read-only and name its type: the kernel then finds the live
   read-only filesystem by its device number without opening the device, and
   nothing is replayed onto the disk. A mount without `-t` fails, since

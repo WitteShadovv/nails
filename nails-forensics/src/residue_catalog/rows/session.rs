@@ -38,7 +38,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "journald records of `sudo nails activate` and the decoy shutdown before the soft-reboot into the hidden session",
         ),
         platforms: Platforms::ALL,
-        risk: "The decoy journal logs the sudo command line, the hidden build's progress, PID 1 executing itself again where it held a deleted file (the write fence needs that), and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID.",
+        risk: "The decoy journal logs the sudo command line, the hidden build's progress, PID 1 executing itself again and udevd restarting where either held a deleted file (the write fence needs that), and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
         verify: Probe::Check("journal-scan"),

@@ -178,10 +178,11 @@ pub trait EntryHost: GuardHost {
     fn fence_spec(&self, _: &[MountEntry], _: &Path, _: &Path) -> Result<Option<FenceSpec>> {
         Ok(None)
     }
-    /// Have PID 1 execute itself again when it still maps or holds a deleted
-    /// file (an `ld.so.cache` or library a package update replaced): a
-    /// filesystem with a deleted file in use cannot go read-only for the
-    /// write fence at the switch, and PID 1 outlives every other process.
+    /// Have PID 1 execute itself again, and udevd start again, where it
+    /// still maps or holds a deleted file (an `ld.so.cache` or library a
+    /// package update replaced; [`deleted_file_releases`]): a filesystem with
+    /// a deleted file in use cannot go read-only for the write fence at the
+    /// switch, and PID 1 and udevd outlive every other process there.
     fn release_deleted_files(&self) {}
 }
 
@@ -224,32 +225,6 @@ impl GuardHost for RealEntryHost {
     }
 }
 
-/// Whether the process at `proc_pid` maps or holds open a deleted file that
-/// lies on a filesystem (no memfd, device or RAM file).
-pub fn pid1_holds_deleted(proc_pid: &Path) -> bool {
-    let on_disk = |path: &str| {
-        path.starts_with('/')
-            && !path.starts_with("/memfd:")
-            && !path.starts_with("/dev/")
-            && !path.starts_with("/run/")
-            && !path.starts_with("/tmp/")
-    };
-    let maps = std::fs::read_to_string(proc_pid.join("maps")).unwrap_or_default();
-    let mapped = maps.lines().any(|line| {
-        line.strip_suffix(" (deleted)")
-            .and_then(|l| l.split_whitespace().nth(5))
-            .is_some_and(on_disk)
-    });
-    mapped
-        || std::fs::read_dir(proc_pid.join("fd"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|fd| std::fs::read_link(fd.path()).ok())
-            .filter_map(|t| t.to_str().map(str::to_string))
-            .any(|t| t.strip_suffix(" (deleted)").is_some_and(on_disk))
-}
-
 /// `property` of `unit`, or of PID 1 itself, through the system's `systemctl`
 /// ([`super::guards::show_property`]).
 fn show(unit: Option<&str>, property: &str) -> Result<String> {
@@ -259,14 +234,18 @@ fn show(unit: Option<&str>, property: &str) -> Result<String> {
 
 impl EntryHost for RealEntryHost {
     fn release_deleted_files(&self) {
-        if pid1_holds_deleted(Path::new("/proc/1"))
-            && let Some(systemctl) = nails_teardown::whole_root::tools::find(None, "systemctl")
-        {
-            let _ = nails_teardown::whole_root::tools::run_bounded(
-                &systemctl,
-                &["daemon-reexec"],
-                std::time::Duration::from_secs(90),
-            );
+        let calls = deleted_file_releases(Path::new("/proc"));
+        if calls.is_empty() {
+            return;
+        }
+        if let Some(systemctl) = nails_teardown::whole_root::tools::find(None, "systemctl") {
+            for args in calls {
+                let _ = nails_teardown::whole_root::tools::run_bounded(
+                    &systemctl,
+                    args,
+                    std::time::Duration::from_secs(90),
+                );
+            }
         }
     }
 
@@ -1190,11 +1169,13 @@ fn apply_mounts(
 }
 
 mod decoy_root;
+mod deleted_files;
 mod hidden_build;
 mod hidden_fstab;
 mod quiet;
 
 pub use decoy_root::decoy_root_of;
+pub use deleted_files::{deleted_file_releases, holds_deleted};
 
 #[cfg(test)]
 #[path = "entry_tests.rs"]

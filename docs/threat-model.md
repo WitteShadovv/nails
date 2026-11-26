@@ -638,9 +638,10 @@ does not load the device program for the devices it would deny. Before
 anything is written, where PID 1 still maps or holds a deleted file (an
 `ld.so.cache` or library a package update replaced, which it keeps until it
 executes itself again) the activation has it do so (`systemctl
-daemon-reexec`), a step the decoy's journal records in the window around the
-switch. At the switch the transition first ends the decoy's leftover
-processes, udevd's included, which PID 1 would kill a moment later, and a
+daemon-reexec`), and where udevd does, it restarts udevd, steps the decoy's
+journal records in the window around the switch. At the switch the
+transition first ends the decoy's leftover processes but udevd, which PID 1
+kills a moment later as at a plain soft-reboot, and a
 step of the fence that fails then ends the session in a power-off, with what
 is up of the fence: a swap area active on a decoy disk, or a filesystem that
 cannot go read-only, because a process still holds a file of it open for
@@ -702,7 +703,7 @@ has the whole catalog.
 <!-- residue-catalog:begin residual -->
 | Channel | Why it survives the overlay | Bounded by | Detected by |
 |---|---|---|---|
-| [Journal window around each soft-reboot](decoy-requirements.md#what-the-decoy-journal-keeps) | The decoy journal logs the sudo command line, the hidden build's progress, PID 1 executing itself again where it held a deleted file (the write fence needs that), and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID. | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `journal-scan` |
+| [Journal window around each soft-reboot](decoy-requirements.md#what-the-decoy-journal-keeps) | The decoy journal logs the sudo command line, the hidden build's progress, PID 1 executing itself again and udevd restarting where either held a deleted file (the write fence needs that), and the decoy's own shutdown before the switch. A persistent journal keeps them on the decoy disk, ending in a soft-reboot. A volatile journal holds them in RAM until the power-off that ends the session. The decoy's next boot starts a new journal under a new boot ID. | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `journal-scan` |
 | [Decoy journal reset by the old way back](decoy-requirements.md#what-the-decoy-journal-keeps) | No session opens this channel now: every session ends in a power-off, so the decoy never starts again on the kernel that ran the hidden session. The runtime journal ends with RAM at the power-off, and the decoy's next boot starts a fresh one from the kernel's boot records. | Power off after the session. | none: RAM only, gone at power-off |
 | [sudo log file](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `Defaults logfile=` writes every sudo command line, including the activation command and binary path, to a file on the decoy disk. | Remove `Defaults logfile=` from sudoers and sudoers.d. | path probe (warn) |
 | [sudo I/O logging](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk. | Remove every I/O logging option and tag from sudoers and sudoers.d. | path probe (warn) |

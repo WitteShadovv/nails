@@ -1303,14 +1303,7 @@ distroVm.buildVmTest {
         )
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
-        try:
-            session.assert_hidden_root(vm)
-        except AssertionError:
-            # A switch the last step refused keeps its reason on the hidden
-            # volume: open it again and let status say why.
-            vm.execute("""${hiddenRoot.reopenHiddenRoot}""")
-            print(vm.execute(f"{nails_cmd} status --json 2>&1")[1])
-            raise
+        session.assert_hidden_root(vm)
         check_failed_units("in the first hidden session", "hiddenSession")
         assert_uu_ended_on_logind("the first entry")
         if blk_availability:

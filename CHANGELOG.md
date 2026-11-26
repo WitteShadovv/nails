@@ -2789,7 +2789,7 @@ of this changelog for that version becomes the release notes word for word, and
 - The decoy's disks are read-only in the kernel for the whole hidden session (the write fence),
   so a program that writes to them around the overlays gets an error instead of leaving a trace.
   The fence stays up until the power-off that ends every session. The entry transition, after the
-  decoy's shutdown and before the switch, ends the decoy's leftover processes (udevd's included),
+  decoy's shutdown and before the switch, ends the decoy's leftover processes (but udevd's),
   makes every decoy filesystem still mounted read-only at the superblock (after a `sync`; ext4 and
   btrfs commit and mark themselves clean once, at entry), turns pstore's EFI backend off (it
   writes a kernel crash log into an EFI variable itself, past efivarfs, which `systemd-pstore`
@@ -2810,9 +2810,9 @@ of this changelog for that version becomes the release notes word for word, and
   a decoy filesystem, or a container file on one, which the session would have to keep writable),
   when a crash-log backend keeps records past a power-off and cannot be turned off (ACPI ERST,
   mtd, a block device, a built-in EFI backend before Linux 6.12), and when the kernel does not
-  load the device program; before anything is written it has PID 1 execute itself again where it
-  still maps a deleted file (an `ld.so.cache` a package update replaced). A step of the fence that
-  fails at the switch (a swap area active on a decoy disk, a filesystem still busy, whose holders
+  load the device program; before anything is written it has PID 1 execute itself again and
+  restarts udevd where either still maps a deleted file (an `ld.so.cache` a package update
+  replaced). A step of the fence that fails at the switch (a swap area active on a decoy disk, a filesystem still busy, whose holders
   the reason names) ends the session in a power-off. Not covered: a root user of the session who
   undoes it (detaches the program, clears the flag, remounts; loads a table into the hidden
   volume's mapping naming a decoy device it holds; sends SCSI commands through a hidden mapping

@@ -404,10 +404,13 @@ pub struct FencePlaces {
     pub leftovers: fn(Option<&Path>) -> Vec<u32>,
 }
 
-/// End every process of the decoy that PID 1 would kill at the switch,
-/// udevd's included ([`tail::end_leftovers_at_entry`]).
+/// End every process of the decoy that PID 1 would kill at the switch but
+/// udevd's, which PID 1 kills there as at a plain soft-reboot
+/// ([`tail::end_leftovers`]). The activation restarted a udevd that held a
+/// deleted file, so udevd keeps no filesystem of the decoy from going
+/// read-only.
 pub fn end_entry_leftovers(systemctl: Option<&Path>) -> Vec<u32> {
-    tail::end_leftovers_at_entry(&tail::Places::system(), systemctl, &OWN_JOBS)
+    tail::end_leftovers(&tail::Places::system(), systemctl, &OWN_JOBS)
 }
 
 impl FencePlaces {

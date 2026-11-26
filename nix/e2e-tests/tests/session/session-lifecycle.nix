@@ -202,7 +202,7 @@ in
         # session: a read-write mount of it is refused (a read-only one reuses
         # the live superblock), and the next boot shows the decoy without the
         # session's files.
-        machine.fail(f"mkdir -p {PEEK} && mount -t ext4 -o rw {decoy_dev} {PEEK}")
+        machine.fail(f"mkdir -p {PEEK} && mount -w -t ext4 -o rw {decoy_dev} {PEEK}")
         machine.succeed("mountpoint -q /mnt/data")
 
     with subtest("the hidden session logs into the runtime journal the decoy wrote"):
