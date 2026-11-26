@@ -786,6 +786,21 @@ class Evidence(unittest.TestCase):
         )
 
 
+class BackdoorFirst(unittest.TestCase):
+    def test_a_switch_reads_on_past_the_backdoor_for_the_hold_line_a_while(
+        self,
+    ) -> None:
+        machine, oracle = installed()
+        now = time.monotonic()
+        self.assertFalse(blockwrites.hold_pending(machine, None, now), "no window")
+        blockwrites.before_switch(machine, "activate")
+        self.assertTrue(blockwrites.hold_pending(machine, None, now))
+        self.assertFalse(blockwrites.hold_pending(machine, 7, now), "cut already")
+        self.assertFalse(
+            blockwrites.hold_pending(machine, None, now - blockwrites.HOLD_GRACE - 1)
+        )
+
+
 class Threads(unittest.TestCase):
     def test_the_watch_thread_finishes_a_paused_power_off(self) -> None:
         machine = FakeMachine()

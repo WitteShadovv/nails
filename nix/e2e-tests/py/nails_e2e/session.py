@@ -225,6 +225,7 @@ def follow_soft_reboot(
         machine, label, control=blockwrites.is_control(trigger)
     )
     cut_at: int | None = None
+    marker_at: float | None = None
     console_index = len(machine.full_console_log)
     if start is None:
         _start_trigger(machine, trigger)
@@ -268,7 +269,10 @@ def follow_soft_reboot(
                 f"{label}: the trigger failed ({failed}) and never soft-rebooted"
             )
         if any(BACKDOOR_MARKER in line for line in lines):
-            break
+            # The mark unit's hold line can come after it (nails_e2e.blockwrites).
+            marker_at = time.monotonic() if marker_at is None else marker_at
+            if not blockwrites.hold_pending(machine, cut_at, marker_at):
+                break
         # A power-off, a full reboot or a kernel panic instead of the switch
         # ends QEMU (the suite starts every machine with the driver's
         # -no-reboot): no backdoor will come, and the stall report needs a

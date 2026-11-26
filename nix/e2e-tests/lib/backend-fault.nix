@@ -34,6 +34,7 @@
         # The way back to the decoy ends the block-write oracle's window at
         # the decoy's hold line, as session.follow_soft_reboot does.
         cut_at = None
+        marker_at = None
         while True:
             lines = machine.full_console_log[console_index:]
             if cut_at is None and blockwrites.watching(machine):
@@ -47,7 +48,10 @@
                 machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
                 raise AssertionError(f"{label}: the next userspace is stuck: {stuck[0]}")
             if any(session.BACKDOOR_MARKER in line for line in lines):
-                break
+                # The mark unit's hold line can come after it.
+                marker_at = time.monotonic() if marker_at is None else marker_at
+                if not blockwrites.hold_pending(machine, cut_at, marker_at):
+                    break
             if machine.process is not None and machine.process.poll() is not None:
                 machine.log(f"{label}: the machine powered off")
                 machine.process.wait(timeout=30)

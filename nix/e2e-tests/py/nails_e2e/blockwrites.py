@@ -1163,6 +1163,23 @@ def before_switch(machine: Any, label: str, control: bool = False) -> bool:
     return opened
 
 
+#: How long the host reads on for the mark unit's hold line once the new
+#: userspace's backdoor announced itself: the test backdoor does not wait for
+#: the unit, and in a start such as a forced soft-reboot its line comes first.
+HOLD_GRACE = 20.0
+
+
+def hold_pending(machine: Any, cut_at: int | None, marker_at: float) -> bool:
+    """Whether a switch's wait should read the console on past the backdoor's
+    line, seen at ``marker_at`` (``time.monotonic()``): while a window is
+    open and not cut, for :data:`HOLD_GRACE` at most."""
+    return (
+        cut_at is None
+        and watching(machine)
+        and time.monotonic() - marker_at < HOLD_GRACE
+    )
+
+
 #: The console lines an oracle error about a cut shows from its switch.
 EVIDENCE = re.compile(
     r"blkstat|soft-reboot|oft-reboot|Boot marker|systemd-journald|Journal Service"

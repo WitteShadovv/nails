@@ -372,6 +372,12 @@ defines without an id, does not, so its discards are not counted).
   what the decoy had there before the entry), and a cold boot starts without
   it, so no boot is held. The report's `boot:` line names how long the unit
   ran at the boot the test started with, and when journald started. The
+  test backdoor does not wait for the unit, so its `connecting to host` can
+  come first (the forced way back of `session-switch-timeout` does so on CI):
+  while a window is open and uncut, a switch's wait reads on for the hold
+  line up to 20 s past the backdoor's line. An oracle error about a cut comes
+  with the console lines of its switch that name the mark unit, the
+  soft-reboot and journald, in the report. The
   host cuts the bitmaps at the first hold line it reads and then types
   `blkstat-go` on the serial console (`send_console`): the driver's console
   reader can fall seconds behind the guest in the burst of lines a switch
@@ -441,9 +447,6 @@ there.
   the guest made after its hold and before the host's cut. A hidden start
   without a hold line (a hidden NixOS system built without the mark unit) is an
   oracle error: its switch and session phases are one.
-- Seen once in CI and not reproduced locally: the forced way back of
-  `session-switch-timeout` (its job timed out, PID 1 soft-reboots by force)
-  came without a hold line, and its window took in the decoy's own start.
 - A switch that is refused and restarts the decoy drops its window, the
   activation's writes included. A test that ends inside the hidden root has no
   control. A disk the session mounts and writes itself counts as a decoy
