@@ -268,6 +268,11 @@ impl Sysfs {
         found
     }
 
+    /// Whether a device is an md array (`/sys/block/md0/md`).
+    fn is_md(&self, dev: DevNum) -> bool {
+        self.dir(dev).is_some_and(|d| d.join("md").is_dir())
+    }
+
     /// The kernel name of a device (`sda1`, `dm-0`).
     pub(crate) fn name(&self, dev: DevNum) -> Option<String> {
         Some(self.dir(dev)?.file_name()?.to_string_lossy().into_owned())
@@ -709,6 +714,21 @@ pub fn apply(
     Ok(())
 }
 
+/// The md arrays among the devices the fence would set read-only, by kernel
+/// name. md writes its bitmap and its superblock (with the time of the
+/// update) to its members past their read-only flag, which the kernel only
+/// warns about, and keeps doing so seconds after the last write it carried,
+/// so the fence cannot keep a decoy disk under md unwritten.
+fn md_arrays(targets: &Targets, sys: &Sysfs) -> Vec<String> {
+    targets
+        .rules
+        .block
+        .iter()
+        .filter(|&&dev| sys.is_md(dev))
+        .filter_map(|&dev| sys.name(dev))
+        .collect()
+}
+
 /// Put the fence up at the switch from the entry's record. `runtime_dir`
 /// holds the scratch directory.
 pub fn put_up(
@@ -731,12 +751,19 @@ pub fn put_up(
         ));
     }
     let targets = targets(spec, mounts, sys);
+    let md = md_arrays(&targets, sys);
+    if !md.is_empty() {
+        return Err(fail(
+            "md arrays",
+            format!("md writes to the decoy disk under {}", md.join(", ")),
+        ));
+    }
     apply(&targets, kernel, &runtime_dir.join(SCRATCH_NAME))
 }
 
 /// The entry's check, at activation, that the fence can go up at the switch:
 /// a decoy disk was found, the hidden root shares no filesystem with the
-/// decoy, no crash-log backend keeps records past a power-off that cannot be
+/// decoy, no md array lies on a decoy disk ([`md_arrays`]), no crash-log backend keeps records past a power-off that cannot be
 /// turned off, and the kernel loads the device program for the devices it
 /// would deny (a cgroup2 hierarchy, `CONFIG_CGROUP_BPF`, no policy that
 /// denies it). What only the switch can find (a filesystem still busy) the
@@ -763,19 +790,27 @@ pub fn check(
             spec.shared_superblocks.join(", ")
         ));
     }
+    let targets = targets(&spec, mounts, sys);
+    let md = md_arrays(&targets, sys);
+    if !md.is_empty() {
+        return Err(format!(
+            "the decoy disk cannot be made read-only for the session: the md array {} \
+             lies on it, and md writes its bitmap and superblock to its members past a \
+             read-only flag",
+            md.join(", ")
+        ));
+    }
     if let Some(why) = crash_log_refusal(kernel) {
         return Err(format!(
             "the decoy disk cannot be made read-only for the session: {why}"
         ));
     }
-    kernel
-        .probe(&targets(&spec, mounts, sys).rules)
-        .map_err(|e| {
-            format!(
-                "the decoy disk cannot be made read-only for the session: the kernel does not \
+    kernel.probe(&targets.rules).map_err(|e| {
+        format!(
+            "the decoy disk cannot be made read-only for the session: the kernel does not \
                  load the device program that keeps its devices closed ({e})"
-            )
-        })?;
+        )
+    })?;
     Ok(spec)
 }
 

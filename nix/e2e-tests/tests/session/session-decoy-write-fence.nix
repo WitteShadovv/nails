@@ -29,9 +29,17 @@
 #        grows, while the counters of the decoy root's disk and of the /srv
 #        partition do not move, and the shared disk's grows by exactly what
 #        the hidden partition's does.
+#      - a decoy XFS on a disk of its own ("xfsdecoy", at /var/lib/xfsdecoy),
+#        whose metadata the test dirtied and synced right before the
+#        activation, so its log items were still due when the fence went up:
+#        its superblock is read-only, its disk's write counter does not move
+#        over 90 seconds, and the kernel logs no write to it and no XFS error
+#        (a plain `sync` leaves XFS's log covering for tens of seconds later;
+#        its read-only reconfigure does it at once);
 #   3. `nails deactivate` ends the session in a power-off with the fence up;
-#      the cold-booted decoy has neither of the session's files, and the
-#      block of step 1 still holds what step 1 wrote.
+#      the cold-booted decoy has neither of the session's files, the block of
+#      step 1 still holds what step 1 wrote, and the XFS mounts without log
+#      recovery.
 { self, ... }:
 let
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -56,11 +64,20 @@ in
             size = 1536;
             driveConfig.deviceExtraOpts.serial = "shared";
           }
+          {
+            size = 512;
+            driveConfig.deviceExtraOpts.serial = "xfsdecoy";
+          }
         ];
         fileSystems = {
           "/srv" = {
             device = "/dev/disk/by-label/srvdecoy";
             fsType = "ext4";
+            options = [ "nofail" ];
+          };
+          "/var/lib/xfsdecoy" = {
+            device = "/dev/disk/by-label/xfsdecoy";
+            fsType = "xfs";
             options = [ "nofail" ];
           };
           "/opt" = {
@@ -73,11 +90,15 @@ in
           };
         };
       };
-      boot.supportedFilesystems = [ "btrfs" ];
+      boot.supportedFilesystems = [
+        "btrfs"
+        "xfs"
+      ];
       environment.systemPackages = [
         self.packages.${pkgs.stdenv.hostPlatform.system}.nails
         pkgs.sg3_utils
         pkgs.btrfs-progs
+        pkgs.xfsprogs
       ];
     };
 
@@ -119,6 +140,7 @@ in
     root_disk = machine.succeed("lsblk -no PKNAME,NAME $(findmnt -no SOURCE /) | head -1").split()
     root_disk = root_disk[0] if len(root_disk) > 1 and root_disk[0] else root_disk[-1]
     shared = disk("shared")
+    xfs_disk = disk("xfsdecoy")
     data_disk = disk("data")
     machine.log(f"decoy root on {root_disk}, shared disk {shared}, unused disk {data_disk}")
 
@@ -148,6 +170,9 @@ in
             "mkdir -p /mnt/data && mount /dev/mapper/data /mnt/data",
             "mkdir -p /mnt/data/root/work /mnt/data/config/nixos",
         )
+        machine.succeed(f"mkfs.xfs -q -L xfsdecoy /dev/{xfs_disk}", "udevadm settle")
+        machine.succeed("systemctl daemon-reload && systemctl start var-lib-xfsdecoy.mount")
+        machine.succeed("mountpoint -q /var/lib/xfsdecoy && echo decoy > /var/lib/xfsdecoy/decoy-file")
         machine.succeed("nails init /mnt/data")
         write_headless_config(CONFIG)
 
@@ -162,6 +187,12 @@ in
         )
         discard_before = machine.succeed(f"cat /sys/block/{shared}/queue/discard_max_bytes").strip()
 
+    # Dirty XFS metadata right before the entry: after this `sync` its log
+    # items wait for the log worker, tens of seconds later.
+    machine.succeed(
+        "mkdir -p /var/lib/xfsdecoy/many && for i in $(seq 1 300); do "
+        ": > /var/lib/xfsdecoy/many/f$i; done && rm -f /var/lib/xfsdecoy/many/f1* && sync"
+    )
     canonical_activate(CONFIG, "--overlay-only", "activate")
 
     with subtest("in the session every decoy device and filesystem is read-only"):
@@ -268,6 +299,27 @@ in
             status, out = machine.execute(f"mount -o remount,rw {carried} 2>&1")
             machine.log(f"remount,rw of the carried btrfs: {status} {out.strip()}")
 
+    with subtest("XFS covered its log at the fence and writes nothing after it"):
+        carried = "/mnt/data/root/decoy/var/lib/xfsdecoy"
+        if machine.execute(f"mountpoint -q {carried}")[0] == 0:
+            fs_options = machine.succeed(f"findmnt -no FS-OPTIONS {carried}").strip()
+            assert fs_options.split(",")[0] == "ro", f"the decoy XFS is read-write: {fs_options}"
+        assert machine.succeed(f"cat /sys/block/{xfs_disk}/ro").strip() == "1"
+        xfs_before = write_sectors(f"/sys/block/{xfs_disk}")
+        machine.sleep(90)
+        xfs_after = write_sectors(f"/sys/block/{xfs_disk}")
+        kernel_log = machine.succeed("dmesg")
+        assert f"read-only block-device {xfs_disk}" not in kernel_log, (
+            "the kernel let a write to the read-only XFS disk through"
+        )
+        for line in kernel_log.splitlines():
+            if f"XFS ({xfs_disk})" in line:
+                machine.log(line)
+                assert "error" not in line.lower() and "shutdown" not in line.lower(), line
+        assert xfs_after == xfs_before, (
+            f"the decoy XFS wrote {xfs_after - xfs_before} sectors in the session"
+        )
+
     with subtest("a read-only mount reuses the read-only superblock and stays read-only"):
         machine.succeed(f"mkdir -p /run/peek && mount -t ext4 -o ro /dev/{shared}1 /run/peek")
         machine.succeed("grep -qx decoy /run/peek/decoy-file")
@@ -285,5 +337,10 @@ in
             "| od -An -tx1 -v | tr -d ' \\n'"
         ).strip()
         assert after == pattern, "the control block changed"
+        machine.succeed("mountpoint -q /var/lib/xfsdecoy && grep -qx decoy /var/lib/xfsdecoy/decoy-file")
+        boot_log = machine.succeed(f"journalctl -k -b --no-pager | grep -F 'XFS ({xfs_disk})' || true")
+        machine.log(boot_log)
+        assert "Ending clean mount" in boot_log, "the decoy XFS did not mount clean"
+        assert "recovery" not in boot_log.lower(), "the decoy XFS replayed its log"
   '';
 }

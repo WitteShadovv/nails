@@ -2791,7 +2791,8 @@ of this changelog for that version becomes the release notes word for word, and
   The fence stays up until the power-off that ends every session. The entry transition, after the
   decoy's shutdown and before the switch, ends the decoy's leftover processes (but udevd's),
   makes every decoy filesystem still mounted read-only at the superblock (after a `sync`; ext4 and
-  btrfs commit and mark themselves clean once, at entry), turns pstore's EFI backend off (it
+  btrfs commit and mark themselves clean once, at entry, and XFS writes back its log items and
+  covers its log, which a plain `sync` would leave for tens of seconds later), turns pstore's EFI backend off (it
   writes a kernel crash log into an EFI variable itself, past efivarfs, which `systemd-pstore`
   copies onto the decoy disk at the next boot), sets every disk the decoy mounts at entry (with
   the other devices a multi-device btrfs or an external journal or log uses, and its swap), each
@@ -2808,7 +2809,8 @@ of this changelog for that version becomes the release notes word for word, and
   or volume group of the decoy's keeps writing for that reason. Activation refuses when no decoy
   disk is found, when the hidden root shares a filesystem with the decoy (a folder or subvolume of
   a decoy filesystem, or a container file on one, which the session would have to keep writable),
-  when a crash-log backend keeps records past a power-off and cannot be turned off (ACPI ERST,
+  when an md array lies on a decoy disk (md writes its bitmap and superblock to its members past
+  their read-only flag), when a crash-log backend keeps records past a power-off and cannot be turned off (ACPI ERST,
   mtd, a block device, a built-in EFI backend before Linux 6.12), and when the kernel does not
   load the device program; before anything is written it has PID 1 execute itself again and
   restarts udevd where either still maps a deleted file (an `ld.so.cache` a package update

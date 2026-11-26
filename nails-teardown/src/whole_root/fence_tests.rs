@@ -909,3 +909,32 @@ fn the_firmware_s_own_nodes_are_denied_where_they_exist() {
         targets.rules.chars
     );
 }
+
+#[test]
+fn an_md_array_on_a_decoy_disk_is_refused_at_activation_and_at_the_switch() {
+    let fake = Fake::new();
+    let mounts = decoy_table("253:1");
+    let at = |p: &str| spec(&mounts, &[], Path::new("/"), Path::new(p), &fake.sys);
+    let spec = at("/mnt/data");
+    assert!(check(spec.clone(), &mounts, &fake.sys, &Mock::default()).is_ok());
+    // md0 (9:0) on the decoy's ESP partition vda1.
+    let root = fake.sys.root.clone();
+    let md0 = root.join("devices/virtual/block/md0");
+    std::fs::create_dir_all(md0.join("md")).unwrap();
+    std::fs::write(md0.join("dev"), "9:0\n").unwrap();
+    std::os::unix::fs::symlink(&md0, root.join("dev/block/9:0")).unwrap();
+    std::os::unix::fs::symlink(&md0, root.join("class/block/md0")).unwrap();
+    let vda1 = root.join("devices/pci0/virtio1/block/vda/vda1");
+    std::fs::create_dir_all(vda1.join("holders")).unwrap();
+    std::os::unix::fs::symlink(&md0, vda1.join("holders/md0")).unwrap();
+    let refused = check(spec.clone(), &mounts, &fake.sys, &Mock::default()).unwrap_err();
+    assert!(refused.contains("md array md0"), "{refused}");
+    let kernel = Mock::default();
+    let run = tempfile::tempdir().unwrap();
+    let at_switch = put_up(&spec, &mounts, &fake.sys, &kernel, run.path()).unwrap_err();
+    assert!(at_switch.to_string().contains("md0"), "{at_switch}");
+    assert!(
+        kernel.state.lock().unwrap().log.is_empty(),
+        "nothing of the fence goes up"
+    );
+}

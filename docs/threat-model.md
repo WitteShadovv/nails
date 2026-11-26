@@ -596,7 +596,11 @@ until the power-off ends it:
   (btrfs writes no read repair on a read-only superblock either). An ext4 or
   btrfs read-only remount commits its journal and marks itself clean, once,
   at entry: that superblock then records the entry time as its last write,
-  where a decoy that ran on would record its power-off;
+  where a decoy that ran on would record its power-off. A plain `sync` would
+  not be enough for XFS, which writes back its metadata log items and covers
+  its log tens of seconds later; its read-only reconfigure pushes them all,
+  waits for them, writes its unmount record and stops its log worker, so
+  nothing of it is left to write once the device is read-only;
 - the devices are set read-only at the block layer (`BLKROSET`): writes
   through a device node, read-write mounts and remounts, and the journal or
   log replay of a new mount are refused. The flag alone would not stop a
@@ -631,7 +635,10 @@ Activation refuses what the fence cannot cover, before the soft-reboot: no
 decoy disk is found; the hidden root shares a filesystem with the decoy (a
 folder or subvolume of a decoy filesystem, which `--allow-decoy-storage`
 accepts for `check`, or a container file on one), which the session would
-have to keep writable; a crash-log backend that keeps records past a
+have to keep writable; an md array on a decoy disk, since md writes its
+bitmap and its superblock (with the time of the update) to its members
+seconds after the last write it carried, whatever their read-only flag says;
+a crash-log backend that keeps records past a
 power-off and cannot be turned off for the session (ACPI ERST, mtd, a block
 device, a built-in EFI backend on a kernel older than 6.12); or the kernel
 does not load the device program for the devices it would deny. Before
@@ -672,9 +679,7 @@ What it does not cover:
 - **Writers that hold their access from before the fence**: a process that
   survives the switch (a unit with `SurviveFinalKillSignal=`) and holds a
   decoy device open or mapped shared, and a loop device the decoy set up over
-  a decoy device before the entry, write through what they hold. md writes
-  its own metadata and resync to the members of a decoy array whatever the
-  flag says.
+  a decoy device before the entry, write through what they hold.
 - **USB passthrough**: a decoy disk on USB is also reachable through its USB
   device node (`/dev/bus/usb`), which the program does not deny, by a program
   that speaks the mass-storage protocol itself.
