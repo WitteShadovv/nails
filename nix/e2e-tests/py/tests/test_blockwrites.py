@@ -597,6 +597,28 @@ class HiddenVolume(unittest.TestCase):
             blockwrites.hidden_volume(machine)
 
 
+class DecoyMounts(unittest.TestCase):
+    def test_a_loop_file_on_a_mount_only_the_decoy_shows_lies_in_ram(self) -> None:
+        machine, oracle = installed()
+        machine.answers = {
+            blockwrites.MOUNT_TYPES: "0:30 ext4\n0:45 tmpfs",
+            "cat /run/overlay-runtime/plan.json": '{"hidden_root": "/mnt/data"}',
+            "--target /mnt/data": "/dev/mapper/data ext4 /mnt/data",
+            "lsblk -nrspo PATH,TYPE,SERIAL /dev/mapper/data": (
+                "/dev/mapper/data crypt \n/dev/loop0 loop "
+            ),
+            "BACK-FILE --raw /dev/loop0": "0:45 /data.img",
+        }
+        blockwrites.before_switch(machine, "activate")
+        self.assertEqual(oracle.mount_types, {"0:30": "ext4", "0:45": "tmpfs"})
+        # The hidden root no longer shows the tmpfs.
+        machine.answers[blockwrites.MOUNT_TYPES] = "0:31 overlay"
+        blockwrites.after_switch(machine, "activate", True, 0, None, hidden=True)
+        self.assertEqual(oracle.errors, [])
+        self.assertEqual(oracle.hidden, set())
+        self.assertIn("lies on no drive", " ".join(machine.logged))
+
+
 class Arming(unittest.TestCase):
     ARM = f"[ -e {blockwrites.ARM} ] || : > {blockwrites.ARM}"
     DISARM = f"rm -f {blockwrites.ARM}"

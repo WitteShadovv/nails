@@ -533,6 +533,10 @@ class Oracle:
         #: Whether the report names how long the mark unit held the boot the
         #: first window opened in (:meth:`_note_boot`).
         self.boot_noted = False
+        #: The decoy's filesystem types by device number, read as each window
+        #: opens: a mount the hidden root does not show (the distribution
+        #: tests' tmpfs at /run/blk) still holds a loop device's file.
+        self.mount_types: dict[str, str] = {}
         self.serial = 0
         #: Held by every step that reads or changes the window, from the test
         #: script's thread and from the watch thread (:func:`install`).
@@ -583,6 +587,10 @@ class Oracle:
         if not self.boot_noted:
             self.boot_noted = True
             self._note_boot()
+        try:
+            self.mount_types.update(mount_types(self.machine))
+        except Exception:  # noqa: BLE001 - the hidden session's table stays
+            pass
         blocks = self._qmp("query-block")
         decoy, other = drives(blocks, self._serials(blocks), self.hidden)
         if not decoy:
@@ -1214,6 +1222,8 @@ class HiddenVolume:
     alone: set[str] = field(default_factory=set)
     #: Those that hold other data beside it, each with what that is.
     shared: dict[str, str] = field(default_factory=dict)
+    #: Filesystem types by device number that the hidden root may not show.
+    known: dict[str, str] = field(default_factory=dict, repr=False)
 
 
 def _row(line: str, width: int) -> list[str]:
@@ -1222,16 +1232,26 @@ def _row(line: str, width: int) -> list[str]:
     return (line.split(" ") + [""] * width)[:width]
 
 
-def hidden_volume(machine: Any) -> HiddenVolume:
+#: The shell that lists every mount's device number and filesystem type.
+MOUNT_TYPES = "findmnt -nro MAJ:MIN,FSTYPE"
+
+
+def mount_types(machine: Any) -> dict[str, str]:
+    """The filesystem type of each mount, by device number."""
+    return dict(_row(line, 2) for line in machine.succeed(MOUNT_TYPES).splitlines())
+
+
+def hidden_volume(machine: Any, known: dict[str, str] | None = None) -> HiddenVolume:
     """The drives the session plan's hidden root lies on, read in the hidden
     session: below its filesystem, through device mapper and LVM, and through
-    a loop device to the drive of its backing file. Raises ``ValueError``
-    naming what it cannot tell."""
+    a loop device to the drive of its backing file. ``known`` names the
+    filesystem types of mounts the hidden root may not show, by device
+    number. Raises ``ValueError`` naming what it cannot tell."""
     plan = json.loads(machine.succeed(f"cat {PLAN}"))
     root = str(plan.get("hidden_root") or "")
     if not root:
         raise ValueError("the session plan names no hidden root")
-    volume = HiddenVolume()
+    volume = HiddenVolume(known=dict(known or {}))
     _place(machine, root, volume, None, 0)
     for serial in volume.shared:
         volume.alone.discard(serial)
@@ -1328,11 +1348,7 @@ def _backing(
         return
     # No block device of its own: a tmpfs, or a filesystem such as btrfs that
     # gives each subvolume an anonymous number.
-    fstypes = dict(
-        _row(line, 2)
-        for line in machine.succeed("findmnt -nro MAJ:MIN,FSTYPE").splitlines()
-    )
-    fstype = fstypes.get(number)
+    fstype = mount_types(machine).get(number) or volume.known.get(number)
     if fstype in _IN_RAM:
         return
     if fstype is None:
@@ -1422,7 +1438,7 @@ def learn(oracle: Oracle, label: str) -> None:
     """In the hidden session: tell the hidden volume's drives, and sort the
     open window's drives by them."""
     try:
-        volume = hidden_volume(oracle.machine)
+        volume = hidden_volume(oracle.machine, oracle.mount_types)
     except Exception as e:  # noqa: BLE001 - fails closed, as an oracle error
         oracle.errors.append(
             f"{label}: the hidden volume's drives cannot be told ({e}); "
