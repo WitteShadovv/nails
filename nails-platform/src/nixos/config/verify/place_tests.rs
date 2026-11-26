@@ -427,6 +427,23 @@ fn the_roots_own_name_written_with_fstab_s_octal_escapes_counts() {
     }
 }
 
+/// A token starts right after a block comment, so `''` in a name there
+/// starts no string, as in Nix, and the label of a `fileSystems` entry after
+/// it counts.
+#[test]
+fn a_label_after_a_name_right_after_a_block_comment_counts() {
+    let sysfs = with_udev(luks_on_a_partition());
+    let found = scan(
+        &sysfs,
+        None,
+        "let a'' = 1; in { y = [ /* x */a'' ]; fileSystems.\"/x\" = { label = \"secrets\"; fsType = \"ext4\"; }; }",
+    );
+    assert_eq!(
+        shown(&found.references),
+        [(1, "secrets", ReferenceKind::Storage)]
+    );
+}
+
 /// A name of the hidden volume written with an escape counts as it does written out, as Nix reads it: its mount point, its
 /// device, a link and a label of its storage, and its mapping's name in a
 /// `luks.devices` entry, in an `inherit` there, as `encrypted.label`, as a

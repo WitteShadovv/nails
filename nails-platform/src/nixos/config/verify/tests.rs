@@ -893,6 +893,126 @@ fn a_mapping_after_a_carriage_return_in_an_attribute_path_or_a_uri_in_a_run_is_r
     }
 }
 
+/// Nix reads `0.e5''` as the integer 0, a `.` and the name `e5''`, so the
+/// mapping counts in the `luks.devices` block after it, here where only that
+/// reading of the number finds it: the reading by quotes opens a string at
+/// the `''`, and the entry follows a carriage return, which only the Nix
+/// reading takes for a blank. Nix 2.36 reads this file as the mapping `data`.
+#[test]
+fn a_mapping_only_the_number_rule_reads_is_refused() {
+    let scan = scan_configuration(
+        "{ y = 0.e5''; boot.initrd.luks.devices = {\rdata = { device = \"/dev/sdc1\"; }; }; }",
+    );
+    assert_eq!(
+        only_reference(&scan),
+        (1, "data", ReferenceKind::MapperName)
+    );
+}
+
+/// A token starts right after a block comment, so `''` in a name or a URI
+/// there starts no string, as in Nix, and the mapping counts in the block
+/// after it.
+#[test]
+fn a_mapping_after_a_name_right_after_a_block_comment_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for before in [
+        "let a'' = 1; in { y = [ /* x */a'' ];",
+        "{ y = true/**/http://x/a'';",
+        "let s = { a'' = 1; }; in { y = s./* x */a'';",
+    ] {
+        let content = format!("{before} {entry} }}");
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// Nix reads the rest of a path after an interpolation in it as path bytes,
+/// which a `'` ends, so `./a${x}b''` is a path and a string, and the string
+/// ends at the `''` after it. The mapping counts in the block after that,
+/// here after a comment whose quote the reading by quotes takes for a
+/// string.
+#[test]
+fn a_mapping_after_the_rest_of_a_path_after_an_interpolation_is_refused() {
+    let entry = "boot.initrd.luks.devices = { data = { device = \"/dev/sdc1\"; }; };";
+    for path in [
+        "./a${x}b",
+        "./a/${x}b",
+        "~/${x}b",
+        "./a${x}-b",
+        "./a${x}1a",
+        "./a${x}b.c",
+        "./a${x}.b",
+        "./a${x}b${x}c",
+        "./a${x}1e5",
+        "./a${x}b/c",
+    ] {
+        let content = format!("let x = \"s\"; p = {path}''; q = ''; /* \" */ in {{ {entry} }}");
+        let scan = scan_configuration(&content);
+        assert_eq!(
+            shown_lines(&scan),
+            [ReferenceKind::MapperName],
+            "{content:?}"
+        );
+    }
+}
+
+/// The scan reads each line in time linear in its length. Each form below
+/// is one that a reading of the scan once read again from each of its
+/// bytes: slashes and `.` parts in a path, dots, words with dots, `+`, a
+/// ruler of dashes in a comment, numbers such as `0.e5`, an ellipsis,
+/// dashes, quotes and indented quotes in code, the escape of `''` in an
+/// indented string, braces, comment lines and block comments. A run four
+/// times as long takes at most about eight times as long. Sets nested
+/// inside each other are not linear and not tested here: each keeps the
+/// path of the sets around it, so a file thousands deep takes time that
+/// grows with the square of the depth.
+#[test]
+fn the_scan_reads_a_line_in_linear_time() {
+    use std::time::{Duration, Instant};
+    let cases: [(&str, &str, &str, &str); 17] = [
+        ("slashes", "{ x = \"", "/", "\"; }"),
+        ("slash dots", "{ x = \"", "/.", "\"; }"),
+        ("dot slashes", "{ x = \"", "./", "\"; }"),
+        ("mount slashes", "{ x = \"/mnt", "/", "x\"; }"),
+        ("dots", "{ x = ", ".", "; }"),
+        ("word dots", "{ x = ", "a.", "a; }"),
+        ("plus", "{ x = ", "+", "; }"),
+        ("ruler", "{ }\n# ", "-", "\n"),
+        ("numbers", "{ x = ", "0.e5", "; }"),
+        ("ellipsis", "{ x = ", "...", "; }"),
+        ("dashes", "{ x = ", "-", "; }"),
+        ("quotes", "{ x = ", "\"", "; }"),
+        ("indented quotes", "{ x = ", "''", "; }"),
+        ("escaped indented quotes", "{ x = ''", "'''", "''; }"),
+        ("braces", "", "{", ""),
+        ("comment lines", "{\n", "# a = 1; b = [ ];\n", "}\n"),
+        ("block comments", "{ ", "/* \" */ ", "}"),
+    ];
+    for (name, prefix, unit, suffix) in cases {
+        let time = |n: usize| {
+            let text = format!("{prefix}{}{suffix}", unit.repeat(n));
+            (0..3)
+                .map(|_| {
+                    let start = Instant::now();
+                    scan_configuration(&text);
+                    start.elapsed()
+                })
+                .min()
+                .unwrap_or_default()
+        };
+        let short = time(2000);
+        let long = time(8000);
+        assert!(
+            long < Duration::from_millis(50) || long < short * 8,
+            "{name}: {short:?} for 2000, {long:?} for 8000"
+        );
+    }
+}
+
 /// The kinds of the references `scan` holds, in order.
 fn shown_lines(scan: &BaseConfigScan) -> Vec<ReferenceKind> {
     scan.references.iter().map(|found| found.kind).collect()

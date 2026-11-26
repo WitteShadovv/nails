@@ -33,8 +33,10 @@
 //! ends at a carriage return as well as at the end of the line, and what
 //! follows the carriage return is code, where a carriage return is a blank.
 //! A `'` continues an identifier (`a''` is a name, not the start of a
-//! string), also one right after an operator (`2 +a''`, `{ } //a''`), but
-//! not a path (`./a''` is a path and a string), and a URI holds every byte
+//! string), also one right after an operator (`2 +a''`, `{ } //a''`) or a
+//! block comment (`/* x */a''`), but not a path (`./a''` is a path and a
+//! string), nor the rest of one after an interpolation in it
+//! (`./a${x}b''`), and a URI holds every byte
 //! Nix allows in one, `'` and `*` among them (`http://example.org/a''`). A
 //! scanner made with [`Reading::Quotes`] reads them by quotes and brackets
 //! alone instead, and the check counts what either reading finds.
@@ -93,6 +95,9 @@ enum Frame {
     },
     /// An interpolation, `${ … }`.
     Interpolation,
+    /// An interpolation in a path (`./a/${x}b`), which the Nix reading
+    /// opens: the path goes on after its `}`.
+    PathInterpolation,
     /// A string: `''…''` when `indented`, else `"…"`.
     Str {
         indented: bool,
@@ -106,7 +111,7 @@ impl Frame {
         match self {
             Frame::Attrs(attrs) => !attrs.path.is_empty(),
             Frame::List { path, .. } => !path.is_empty(),
-            Frame::Interpolation | Frame::Str { .. } => false,
+            Frame::Interpolation | Frame::PathInterpolation | Frame::Str { .. } => false,
         }
     }
 }
@@ -215,6 +220,12 @@ impl Scanner {
         // Where the comment the line is in ends on it.
         let mut close = comment_end(line, 0, in_comment);
         let full = line;
+        // Where a comment ended on the line, and where the Nix reading's last
+        // path ended: a token starts right after a comment, and a `${` right
+        // after a path is an interpolation in it.
+        let mut after_comment = usize::MAX;
+        let mut path_end = usize::MAX;
+        let mut tail_at = usize::MAX;
         let mut i = 0;
         while i < full.len() {
             // A comment ends where Nix's lexer ends it, whatever the copy of
@@ -231,6 +242,7 @@ impl Scanner {
                 if let Some(comment) = &mut self.comment {
                     comment.stack.end_strings(comment.base);
                 }
+                after_comment = i;
                 continue;
             }
             let line = if nix && in_comment {
@@ -308,15 +320,43 @@ impl Scanner {
                     continue;
                 }
             }
-            if is_token_start(line, i, nix) {
+            if nix && i == tail_at {
+                // The rest of a path after an interpolation in it, which a
+                // `'` ends (`./a${x}b''` is a path and a string).
+                let end = path_tail_end(line, i);
+                tail_at = usize::MAX;
+                path_end = end;
+                if end > i {
+                    attribute = false;
+                    i = end;
+                    continue;
+                }
+            }
+            if nix && i == path_end && line[i..].starts_with(b"${") {
+                self.stack(in_comment)
+                    .0
+                    .push((Frame::PathInterpolation, indent));
+                attribute = false;
+                i += 2;
+                continue;
+            }
+            if is_token_start(line, i, nix) || (nix && i == after_comment && is_token_byte(line[i]))
+            {
                 let end = if nix {
-                    token_end(line, i)
+                    let (end, path) = token_end(line, i);
+                    if path {
+                        path_end = end;
+                    }
+                    end
                 } else {
                     i + line[i..].iter().take_while(|&&b| is_token_byte(b)).count()
                 };
                 attribute = self.stack(in_comment).keyword(&line[i..end], indent);
                 i = end;
                 continue;
+            }
+            if nix && line[i] == b'}' && self.stack(in_comment).closes_path_interpolation() {
+                tail_at = i + 1;
             }
             attribute = self.stack(in_comment).punctuation(line, i, indent);
             i += if line[i..].starts_with(b"${") || line[i..].starts_with(b"''") {
@@ -469,7 +509,12 @@ impl Stack {
                 self.0.push((Frame::List { path, elements }, indent));
             }
             b']' => self.close(|frame| matches!(frame, Frame::List { .. })),
-            b'}' => self.close(|frame| matches!(frame, Frame::Attrs(_) | Frame::Interpolation)),
+            b'}' => self.close(|frame| {
+                matches!(
+                    frame,
+                    Frame::Attrs(_) | Frame::Interpolation | Frame::PathInterpolation
+                )
+            }),
             b';' => {
                 if let Some(attrs) = self.attrs_mut() {
                     if attrs.withs > 0 {
@@ -485,6 +530,19 @@ impl Stack {
         false
     }
 
+    /// Whether a `}` here closes an interpolation in a path, as [`Stack::close`]
+    /// finds the frame it closes.
+    fn closes_path_interpolation(&self) -> bool {
+        for (frame, _) in self.0.iter().skip(1).rev() {
+            match frame {
+                Frame::PathInterpolation => return true,
+                Frame::Attrs(_) | Frame::Interpolation | Frame::Str { .. } => return false,
+                Frame::List { .. } => {}
+            }
+        }
+        false
+    }
+
     /// Close the innermost frame `closes` takes, and every frame above it.
     /// Nothing closes when a string, an interpolation or the top level comes
     /// first.
@@ -495,7 +553,10 @@ impl Stack {
                 self.0.truncate(at);
                 return;
             }
-            if matches!(frame, Frame::Str { .. } | Frame::Interpolation) {
+            if matches!(
+                frame,
+                Frame::Str { .. } | Frame::Interpolation | Frame::PathInterpolation
+            ) {
                 return;
             }
         }
@@ -812,18 +873,22 @@ fn is_token_start(line: &[u8], i: usize, nix: bool) -> bool {
 }
 
 /// Where the run of tokens that starts at `i` ends, as Nix's lexer reads
-/// it: each token is the longest of a URI, a path, an identifier, a number
-/// and an operator that starts there. So a URI (`http://example.org/a''`)
-/// takes every byte Nix allows in one, `'` and `*` among them; `'` continues
-/// an identifier (`a''`, also `2 +a''` and `{ } //a''`) but ends a path
-/// (`./a''` and `/a''` are a path and a string); and elsewhere `/*` starts a
-/// comment, also right after a word (`true/* a 5" disk */`).
-fn token_end(line: &[u8], i: usize) -> usize {
+/// it, and whether its last token is a path: each token is the longest of a
+/// URI, a path, an identifier, a number and an operator that starts there.
+/// So a URI (`http://example.org/a''`) takes every byte Nix allows in one,
+/// `'` and `*` among them; `'` continues an identifier (`a''`, also
+/// `2 +a''` and `{ } //a''`) but ends a path (`./a''` and `/a''` are a path
+/// and a string); and elsewhere `/*` starts a comment, also right after a
+/// word (`true/* a 5" disk */`). The runs a path and a URI scheme take are
+/// read once ([`Runs`]), so a long run of tokens is read in linear time.
+fn token_end(line: &[u8], i: usize) -> (usize, bool) {
+    let mut runs = Runs::default();
     let mut at = i;
+    let mut path = false;
     while at < line.len() && !line[at..].starts_with(b"/*") {
+        let as_path = path_len(line, at, &mut runs);
         let len = [
-            uri_end(line, at).map_or(0, |end| end - at),
-            path_len(line, at),
+            uri_end(line, at, &mut runs).map_or(0, |end| end - at),
             identifier_len(line, at),
             number_len(line, at),
             operator_len(line, at),
@@ -831,12 +896,47 @@ fn token_end(line: &[u8], i: usize) -> usize {
         .into_iter()
         .max()
         .unwrap_or(0);
-        if len == 0 {
+        if as_path == 0 && len == 0 {
             break;
         }
-        at += len;
+        path = as_path > len;
+        at += as_path.max(len);
     }
-    at.max(i + 1)
+    (at.max(i + 1), path)
+}
+
+/// The ends of the runs [`token_end`] reads, each kept for the bytes it
+/// covers: every byte of a run of path bytes, or of URI scheme bytes, ends
+/// that run at the same place, and what follows the run is read once.
+#[derive(Debug, Default)]
+struct Runs {
+    /// A run of path bytes: where it was read from and where it ends.
+    path_bytes: Option<(usize, usize)>,
+    /// Where the path whose path bytes end at the first ends, if one does.
+    path_tail: Option<(usize, Option<usize>)>,
+    /// A run of URI scheme bytes: where it was read from and where it ends.
+    scheme: Option<(usize, usize)>,
+    /// Where the URI whose `:` stands at the first ends, if one does.
+    uri: Option<(usize, Option<usize>)>,
+}
+
+/// The end of the run of bytes `takes` that holds `at`, from `run`, the run
+/// read last, or read from `at`, which is kept in `run`.
+fn run_end(
+    line: &[u8],
+    at: usize,
+    run: &mut Option<(usize, usize)>,
+    takes: impl Fn(u8) -> bool,
+) -> usize {
+    if let Some((start, end)) = *run
+        && start <= at
+        && at < end
+    {
+        return end;
+    }
+    let end = at + line[at..].iter().take_while(|&&b| takes(b)).count();
+    *run = Some((at, end));
+    end
 }
 
 /// A byte Nix allows in a path.
@@ -848,13 +948,28 @@ fn is_path_byte(byte: u8) -> bool {
 /// path bytes or `~`, then one or more `/` each followed by path bytes, and
 /// a `/` after them; or the part before an interpolation (`./a/${x}`). 0
 /// where none starts.
-fn path_len(line: &[u8], at: usize) -> usize {
-    let mut end = at;
-    if line[at] == b'~' {
-        end += 1;
+fn path_len(line: &[u8], at: usize, runs: &mut Runs) -> usize {
+    let bytes_end = if line[at] == b'~' {
+        at + 1
     } else {
-        end += line[at..].iter().take_while(|&&b| is_path_byte(b)).count();
-    }
+        run_end(line, at, &mut runs.path_bytes, is_path_byte)
+    };
+    let end = match runs.path_tail {
+        Some((from, end)) if from == bytes_end => end,
+        _ => {
+            let end = path_after(line, bytes_end);
+            runs.path_tail = Some((bytes_end, end));
+            end
+        }
+    };
+    end.map_or(0, |end| end - at)
+}
+
+/// Where a path ends whose first path bytes end at `from`: one or more `/`
+/// each followed by path bytes, and a `/` after them, or a `/` before an
+/// interpolation. `None` where no path does.
+fn path_after(line: &[u8], from: usize) -> Option<usize> {
+    let mut end = from;
     let mut parts = 0;
     while line.get(end) == Some(&b'/') && line.get(end + 1).is_some_and(|&b| is_path_byte(b)) {
         end += 1;
@@ -862,11 +977,24 @@ fn path_len(line: &[u8], at: usize) -> usize {
         parts += 1;
     }
     if line.get(end) == Some(&b'/') && (parts > 0 || line[end + 1..].starts_with(b"${")) {
-        end += 1;
+        Some(end + 1)
     } else if parts == 0 {
-        return 0;
+        None
+    } else {
+        Some(end)
     }
-    end - at
+}
+
+/// Where the rest of a path after an interpolation in it ends, from `at`:
+/// path bytes and `/` parts, and a `/` before another interpolation, as
+/// Nix's lexer reads the rest of such a path. `at` where none follows.
+fn path_tail_end(line: &[u8], at: usize) -> usize {
+    let start = at + line[at..].iter().take_while(|&&b| is_path_byte(b)).count();
+    match path_after(line, start) {
+        Some(end) => end,
+        None if line[start..].starts_with(b"/${") => start + 1,
+        None => start,
+    }
 }
 
 /// The length of the identifier that starts at `at`: a letter or `_`, then
@@ -930,23 +1058,28 @@ fn operator_len(line: &[u8], at: usize) -> usize {
 /// The end of the URI that starts at `i`, if one does, as Nix's lexer reads
 /// one: a scheme (a letter, then letters, digits, `+`, `-` or `.`), a `:`
 /// and at least one byte of the URI's own.
-fn uri_end(line: &[u8], i: usize) -> Option<usize> {
+fn uri_end(line: &[u8], i: usize, runs: &mut Runs) -> Option<usize> {
     if !line.get(i)?.is_ascii_alphabetic() {
         return None;
     }
-    let scheme = line[i..]
-        .iter()
-        .take_while(|&&b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'))
-        .count();
-    let colon = i + scheme;
+    let colon = run_end(line, i, &mut runs.scheme, |b| {
+        b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')
+    });
     if line.get(colon) != Some(&b':') {
         return None;
     }
-    let rest = line[colon + 1..]
-        .iter()
-        .take_while(|&&b| b.is_ascii_alphanumeric() || b"%/?:@&=+$,-_.!~*'".contains(&b))
-        .count();
-    (rest > 0).then_some(colon + 1 + rest)
+    match runs.uri {
+        Some((at, end)) if at == colon => end,
+        _ => {
+            let rest = line[colon + 1..]
+                .iter()
+                .take_while(|&&b| b.is_ascii_alphanumeric() || b"%/?:@&=+$,-_.!~*'".contains(&b))
+                .count();
+            let end = (rest > 0).then_some(colon + 1 + rest);
+            runs.uri = Some((colon, end));
+            end
+        }
+    }
 }
 
 /// A byte of a token: a Nix identifier, or a path, URL or number. A keyword

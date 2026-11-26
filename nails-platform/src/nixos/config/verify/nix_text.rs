@@ -219,7 +219,20 @@ fn mapping_name(
     if instance.is_some() {
         return instance;
     }
-    crypttab_starts(line).find_map(|from| crypttab_line(line, from, name.as_bytes()))
+    // Starts in one run of quotes, blanks and comment markers all lead to the
+    // same name: read it once, so a long run is read in linear time.
+    let mut read: Option<(usize, usize)> = None;
+    crypttab_starts(line).find_map(|from| {
+        if let Some((first, start)) = read
+            && first <= from
+            && from <= start
+        {
+            return None;
+        }
+        let start = crypttab_name_start(line, from);
+        read = Some((from, start));
+        crypttab_line(line, start, name.as_bytes())
+    })
 }
 
 /// A range of `line` the scanner found naming `what`, whose text is `text`.
@@ -262,13 +275,14 @@ fn crypttab_starts(line: &[u8]) -> impl Iterator<Item = usize> + '_ {
     )
 }
 
-/// A crypttab line from `from` that opens `name`: the name first (after any
-/// indentation, comment marker or opening quote), then the device. A device
+/// A crypttab line whose name would start at `start` that opens `name`: the
+/// name first ([`crypttab_name_start`] skips what may stand before it), then
+/// the device. A device
 /// that is neither a `/dev/` path nor a tag counts as an absolute path
 /// followed by a key file field (`none`, `-` or a path), so prose such as
 /// `# data /home is backed up` is no crypttab line. Fields may be separated
 /// by blanks or by `\t`, as a Nix string writes a tab.
-fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> {
+fn crypttab_line(line: &[u8], start: usize, name: &[u8]) -> Option<Range<usize>> {
     const DEVICE: &[&[u8]] = &[
         b"/dev/",
         b"uuid=",
@@ -277,6 +291,17 @@ fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> 
         b"partlabel=",
         b"id=",
     ];
+    let rest = line[start..].strip_prefix(name)?;
+    let gap = field_gap(rest);
+    let device = &rest[gap..];
+    let opens =
+        gap > 0 && (DEVICE.iter().any(|tag| device.starts_with(tag)) || file_device(device));
+    opens.then_some(start..start + name.len())
+}
+
+/// Where the name of a crypttab line from `from` starts: past indentation,
+/// comment markers and opening quotes.
+fn crypttab_name_start(line: &[u8], from: usize) -> usize {
     let mut start = from;
     loop {
         let rest = &line[start..];
@@ -288,15 +313,9 @@ fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> 
         ) {
             1
         } else {
-            break;
+            return start;
         };
     }
-    let rest = line[start..].strip_prefix(name)?;
-    let gap = field_gap(rest);
-    let device = &rest[gap..];
-    let opens =
-        gap > 0 && (DEVICE.iter().any(|tag| device.starts_with(tag)) || file_device(device));
-    opens.then_some(start..start + name.len())
 }
 
 /// The length of the field separator at the start of `text`: blanks and
