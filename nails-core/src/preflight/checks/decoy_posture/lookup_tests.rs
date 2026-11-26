@@ -823,7 +823,7 @@ fn an_auditd_nails_cannot_tell_is_enabled_refuses() {
     let allowed = run(&fs, true);
     assert!(
         allowed.message().contains(
-            "When the decoy starts after the way back, auditd may start with it and write audit \
+            "At the decoy's next boot, auditd may start with it and write audit \
              records to /var/log/audit on the decoy disk."
         ),
         "{allowed:?}"
@@ -870,7 +870,7 @@ fn an_auditd_nails_cannot_tell_runs_refuses_once() {
     let allowed = run(&fs, true).message().to_string();
     for says in [
         "Records written before the overlays are mounted may survive on the decoy disk.",
-        "When the decoy starts after the way back, auditd may start with it",
+        "At the decoy's next boot, auditd may start with it",
     ] {
         assert!(allowed.contains(says), "{allowed}");
     }
@@ -899,7 +899,7 @@ fn an_auditd_unit_nails_cannot_read_counts_where_it_is_enabled() {
         &fs,
         &result,
         "auditd is enabled, though it does not run now, and NAILS cannot tell whether the \
-         service manager starts it again when the decoy starts after the way back (NAILS cannot \
+         service manager starts it again at the decoy's next boot (NAILS cannot \
          look up /usr/lib/systemd/system/auditd.service; run the command again with sudo)",
     );
 }

@@ -3159,12 +3159,15 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Known issues
 
-- Some checks still judge what the decoy does when it "starts again after the way back", which no
-  session takes any more: the auditd and core-pattern findings of `decoy-persistence`, its
-  tuned and firewalld texts, its unattended-upgrades polling warning (python3-gi), and the readings
-  in `journald-storage`, `locate-database`, the systemd configuration and the kernel command line
-  that name it. They can warn or refuse where the decoy's next boot after the power-off is an
-  ordinary one. A later release rewrites them.
+- Some checks still judge what the decoy does at its next boot as they judged its start after the
+  way back, which no session takes any more: the auditd findings of `decoy-persistence` (an
+  enabled auditd that does not run, or one a timer or socket can start), its core-pattern and
+  apport findings (a pattern the decoy's `sysctl.d` or apport sets again at boot), its tuned and
+  firewalld texts, its unattended-upgrades polling warning (python3-gi, a pair of WARNING lines at
+  every boot), and the readings in `journald-storage`, `locate-database`, the systemd
+  configuration and the kernel command line that were written for it. Their texts now name the
+  decoy's next boot, but they can still warn or refuse where that boot after the power-off is an
+  ordinary one, which leaves nothing of the session. A later release rethinks them.
 - The history check (`incremental-history-flush`) does not see a security module (SELinux,
   AppArmor) that keeps zsh from opening a startup file you own and may read by its mode, nor a
   program named like the command you type that zsh finds first in `PATH` (a `sudo` script in

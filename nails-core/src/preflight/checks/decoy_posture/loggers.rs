@@ -241,27 +241,28 @@ impl Auditd {
             Auditd::Active => PersistenceFinding::kept(AUDITD.message),
             Auditd::Starts(StartedBy::Link) => PersistenceFinding::kept(
                 "auditd is enabled, though it does not run now: the service manager starts it \
-                 again when the decoy starts after the way back, and it writes audit records to \
-                 the decoy disk from then on",
+                 again at the decoy's next boot, and it writes audit records to the decoy disk \
+                 from then on",
             ),
             Auditd::Starts(StartedBy::Trigger(how)) => PersistenceFinding::kept(format!(
-                "auditd does not run now, but {how}, so the service manager can start auditd \
-                 after the way back, and it writes audit records to the decoy disk from then on"
+                "auditd does not run now, but {how}, so the service manager can start auditd at \
+                 the decoy's next boot, and it writes audit records to the decoy disk from then on"
             )),
             Auditd::MayStart(StartedBy::Link, why) => PersistenceFinding::untold_as(
                 format!(
                     "auditd is enabled, though it does not run now, and NAILS cannot tell whether \
-                     the service manager starts it again when the decoy starts after the way \
-                     back ({why}), so it counts as one that does: it would write audit records \
-                     to the decoy disk from then on"
+                     the service manager starts it again at the decoy's next boot ({why}), so it \
+                     counts as one that does: it would write audit records to the decoy disk \
+                     from then on"
                 ),
                 why.clone(),
             ),
             Auditd::MayStart(StartedBy::Trigger(how), why) => PersistenceFinding::untold_as(
                 format!(
                     "auditd does not run now, but {how}, and NAILS cannot tell whether the \
-                     service manager can start auditd after the way back ({why}), so it counts \
-                     as one that can: it would write audit records to the decoy disk from then on"
+                     service manager can start auditd at the decoy's next boot ({why}), so it \
+                     counts as one that can: it would write audit records to the decoy disk from \
+                     then on"
                 ),
                 why.clone(),
             ),

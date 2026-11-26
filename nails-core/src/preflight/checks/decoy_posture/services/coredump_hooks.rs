@@ -3,7 +3,7 @@
 
 //! The units systemd-coredump starts for each crash, which can read the
 //! crash whatever `coredump.conf` keeps, and an enabled apport, which takes
-//! the crashes again when the decoy starts after the way back.
+//! the crashes again at the decoy's next boot.
 //!
 //! systemd-coredump takes each crash in an instance of
 //! `systemd-coredump@.service`. The service manager starts the units that
@@ -237,8 +237,8 @@ pub(in crate::preflight::checks::decoy_posture) fn apport_finding<F: Filesystem>
         Some(why) => format!("apport.service may be enabled ({why})"),
     };
     Some(format!(
-        "{enabled}, though kernel.core_pattern does not name apport now: when the decoy starts \
-         after the way back, it sets the pattern to apport's pipe again, and apport logs the path \
+        "{enabled}, though kernel.core_pattern does not name apport now: when the decoy boots \
+         again, it sets the pattern to apport's pipe again, and apport logs the path \
          and the command line of each program that crashes from then on to /var/log/apport.log \
          on the decoy disk; turn it off with systemctl disable --now apport.service"
     ))

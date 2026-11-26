@@ -359,17 +359,16 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     } else if mount.fstype == "btrfs"
         && mount_subvol(mount).is_some_and(|subvol| Path::new(&subvol) == mount.root)
     {
-        // A btrfs mount whose root is exactly its `subvol=` is a subvolume: the
-        // way back mounts it again with that `subvol=`. A mount root that is a
+        // A btrfs mount whose root is exactly its `subvol=` is a subvolume,
+        // which the plan records with that `subvol=`. A mount root that is a
         // deeper path (a bind of a plain folder inside the subvolume) has no
-        // `subvol=` of its own and cannot be mounted again that way, so it is
-        // refused like any other bind below.
+        // `subvol=` of its own, so it is refused like any other bind below.
         if mount.root.to_string_lossy().contains(',') {
-            // mount(2) splits its options at every comma, so the way back
-            // could not name this subvolume.
+            // mount(2) splits its options at every comma, so a `subvol=`
+            // option could not name this subvolume.
             return refuse(format!(
-                "the decoy root's btrfs subvolume {} has a comma in its path, which the way \
-                 back cannot pass to mount(2) to mount it again",
+                "the decoy root's btrfs subvolume {} has a comma in its path, which a subvol= \
+                 mount option cannot name",
                 mount.root.display()
             ));
         }

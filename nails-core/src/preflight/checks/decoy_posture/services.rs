@@ -118,7 +118,7 @@ const TUNED_PPD: Daemon = Daemon {
     unit: "tuned-ppd.service",
     program: "tuned-ppd",
     judge: options::tuned_ppd,
-    around_a_switch: "what it logs as it stops for a switch or starts again after the way back, \
+    around_a_switch: "what it logs as it stops for the switch, \
                       a power profile it sets or a hold it releases, stays there, on the decoy \
                       disk, with the time",
 };

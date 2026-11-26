@@ -250,7 +250,7 @@ fn an_enabled_auditd_that_does_not_run_is_refused_until_it_is_masked() {
     assert!(
         result.message().contains(
             "auditd is enabled, though it does not run now: the service manager starts it again \
-             when the decoy starts after the way back, and it writes audit records to the decoy \
+             at the decoy's next boot, and it writes audit records to the decoy \
              disk from then on"
         ),
         "{result:?}"
@@ -312,7 +312,7 @@ fn an_enabled_auditd_counts_only_where_the_service_manager_can_start_it() {
         check.run(&RealFilesystem).unwrap()
     };
     let enabled = "auditd is enabled, though it does not run now: the service manager starts it \
-                   again when the decoy starts after the way back";
+                   again at the decoy's next boot";
     let result = refused("BOOT_IMAGE=/vmlinuz-6.19.10-300.fc44.x86_64 root=UUID=x ro rhgb quiet\n");
     assert!(result.message().contains(enabled), "{result:?}");
     // A soft-reboot keeps the kernel's command line, where audit=0 or
@@ -326,7 +326,7 @@ fn an_enabled_auditd_counts_only_where_the_service_manager_can_start_it() {
     assert!(
         result.message().contains(
             "auditd is enabled, though it does not run now, and NAILS cannot tell whether the \
-             service manager starts it again when the decoy starts after the way back (NAILS \
+             service manager starts it again at the decoy's next boot (NAILS \
              does not split /proc/cmdline with a quote or a backslash as systemd does)"
         ),
         "{result:?}"
@@ -358,7 +358,7 @@ fn an_enabled_auditd_counts_only_where_the_service_manager_can_start_it() {
     assert!(allowed.is_warn(), "{allowed:?}");
     assert!(
         allowed.message().contains(
-            "When the decoy starts after the way back, auditd starts with it and writes audit \
+            "At the decoy's next boot, auditd starts with it and writes audit \
              records to /var/log/audit on the decoy disk."
         ),
         "{allowed:?}"

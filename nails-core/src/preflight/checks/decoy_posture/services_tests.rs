@@ -224,7 +224,7 @@ fn logs_to(program: &str, path: &str, sources: &str) -> String {
              time"
         }
         _ => {
-            "what it logs as it stops for a switch or starts again after the way back, a power \
+            "what it logs as it stops for the switch, a power \
              profile it sets or a hold it releases, stays there, on the decoy disk, with the time"
         }
     };
@@ -1120,7 +1120,7 @@ fn an_enabled_apport_warns_though_it_is_stopped() {
     assert!(
         result.message().contains(
             "apport.service is enabled, though kernel.core_pattern does not name apport now: \
-             when the decoy starts after the way back, it sets the pattern to apport's pipe \
+             when the decoy boots again, it sets the pattern to apport's pipe \
              again, and apport logs the path and the command line of each program that crashes \
              from then on to /var/log/apport.log on the decoy disk; turn it off with systemctl \
              disable --now apport.service"
@@ -1171,7 +1171,7 @@ fn a_pattern_sysctl_d_sets_again_at_the_way_back_warns() {
     assert!(
         result.message().contains(
             "/etc/sysctl.d/90-crash.conf sets kernel.core_pattern to /var/crash/core.%e.%p.%t \
-             when the decoy starts again after the way back, though another pattern is in force \
+             at the decoy's next boot, though another pattern is in force \
              now: kernel.core_pattern writes core dumps to the decoy disk \
              (/var/crash/core.%e.%p.%t)"
         ),
@@ -2130,7 +2130,7 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
     assert!(
         result.message().contains(
             "auditd does not run now, but auditd.timer is enabled and starts auditd.service, so \
-             the service manager can start auditd after the way back, and it writes audit \
+             the service manager can start auditd at the decoy's next boot, and it writes audit \
              records to the decoy disk from then on"
         ),
         "{result:?}"
@@ -2142,7 +2142,7 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
     let allowed = decoy.check(true);
     assert!(
         allowed.message().contains(
-            "After the way back, auditd can start, as auditd.timer is enabled and starts \
+            "At the decoy's next boot, auditd can start, as auditd.timer is enabled and starts \
              auditd.service, and write audit records to /var/log/audit on the decoy disk."
         ),
         "{allowed:?}"
@@ -2175,13 +2175,13 @@ fn a_timer_that_starts_auditd_after_the_way_back_refuses() {
         result.message().contains(
             "auditd does not run now, but audit-kick.socket is active and starts \
              auditd.service, and NAILS cannot tell whether the service manager can start auditd \
-             after the way back (NAILS cannot read /proc/cmdline"
+             at the decoy's next boot (NAILS cannot read /proc/cmdline"
         ),
         "{result:?}"
     );
     assert!(
         decoy.check(true).message().contains(
-            "After the way back, auditd may start, as audit-kick.socket is active and starts \
+            "At the decoy's next boot, auditd may start, as audit-kick.socket is active and starts \
              auditd.service, and write audit records to /var/log/audit on the decoy disk."
         ),
         "{:?}",

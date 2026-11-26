@@ -627,7 +627,7 @@ impl DecoyPersistenceCheck {
     /// apport adds one, so that warns too
     /// ([`services::coredump_hook_finding`]), and so does an enabled
     /// `apport.service` while the pattern does not name apport, as it sets
-    /// its pipe again when the decoy starts after the way back
+    /// its pipe again at the decoy's next boot
     /// ([`services::apport_finding`]). The pattern the decoy's `sysctl.d`
     /// files set, which systemd-sysctl applies again then, is judged as well
     /// where it differs from the one in force ([`sysctl`]).
@@ -666,17 +666,17 @@ impl DecoyPersistenceCheck {
                 let found = Self::pattern_findings(fs, root, is_nixos, hidden, &pattern);
                 if !both_coredump && !found.is_empty() {
                     out.push(format!(
-                        "{file} sets kernel.core_pattern to {pattern} when the decoy starts again \
-                         after the way back, though another pattern is in force now: {}",
+                        "{file} sets kernel.core_pattern to {pattern} at the decoy's next boot, \
+                         though another pattern is in force now: {}",
                         found.join("; ")
                     ));
                 }
             }
             Ok(_) => {}
             Err(why) => out.push(format!(
-                "NAILS cannot tell which kernel.core_pattern the decoy's sysctl.d files set when \
-                 it starts again after the way back ({why}), and such a pattern can put core \
-                 dumps, or a record of each crash, on the decoy disk"
+                "NAILS cannot tell which kernel.core_pattern the decoy's sysctl.d files set at its \
+                 next boot ({why}), and such a pattern can put core dumps, or a record of each \
+                 crash, on the decoy disk"
             )),
         }
 
@@ -1050,22 +1050,22 @@ impl Blockers {
         }
         match &self.auditd {
             Some(Auditd::Starts(StartedBy::Link)) => msg.push_str(
-                " When the decoy starts after the way back, auditd starts with it and writes \
-                 audit records to /var/log/audit on the decoy disk.",
+                " At the decoy's next boot, auditd starts with it and writes audit records to \
+                 /var/log/audit on the decoy disk.",
             ),
             Some(Auditd::Starts(StartedBy::Trigger(how))) => msg.push_str(&format!(
-                " After the way back, auditd can start, as {how}, and write audit records to \
-                 /var/log/audit on the decoy disk."
+                " At the decoy's next boot, auditd can start, as {how}, and write audit records \
+                 to /var/log/audit on the decoy disk."
             )),
             Some(Auditd::MayStart(StartedBy::Trigger(how), _)) => msg.push_str(&format!(
-                " After the way back, auditd may start, as {how}, and write audit records to \
-                 /var/log/audit on the decoy disk."
+                " At the decoy's next boot, auditd may start, as {how}, and write audit records \
+                 to /var/log/audit on the decoy disk."
             )),
             Some(
                 Auditd::MayStart(StartedBy::Link, _) | Auditd::MayBeEnabled(_) | Auditd::MayRun(_),
             ) => msg.push_str(
-                " When the decoy starts after the way back, auditd may start with it and write \
-                 audit records to /var/log/audit on the decoy disk.",
+                " At the decoy's next boot, auditd may start with it and write audit records to \
+                 /var/log/audit on the decoy disk.",
             ),
             Some(Auditd::Active) | None => {}
         }

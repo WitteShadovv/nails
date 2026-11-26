@@ -40,8 +40,8 @@ pub(super) fn warning<F: Filesystem>(fs: &F, root: &Path) -> Option<String> {
     };
     let lines = "it writes two WARNING lines to /var/log/unattended-upgrades/\
                  unattended-upgrades-shutdown.log on the decoy disk each time it starts, that it \
-                 polls for logind's shutdown signal instead of waiting for it, so every way back \
-                 to the decoy adds a pair dated at the switch";
+                 polls for logind's shutdown signal instead of waiting for it, so every boot of \
+                 the decoy adds a pair";
     let fix = "apt install python3-gi";
     let gi = fs.is_regular_file(&root.join(GI_MODULE));
     // A helper NAILS cannot tell is enabled warns where python3-gi may be

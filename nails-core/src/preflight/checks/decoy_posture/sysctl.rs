@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The `kernel.core_pattern` the decoy's `sysctl.d` files set, which
-//! systemd-sysctl applies again when the decoy starts after the way back.
+//! systemd-sysctl applies again at the decoy's next boot.
 //!
 //! systemd-sysctl reads the `*.conf` files of `/etc/sysctl.d`,
 //! `/run/sysctl.d`, `/usr/local/lib/sysctl.d` and `/usr/lib/sysctl.d`

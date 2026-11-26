@@ -78,7 +78,7 @@ fn an_enabled_helper_without_python3_gi_warns_of_its_lines() {
         "{warning}"
     );
     assert!(
-        warning.contains("every way back to the decoy adds a pair dated at the switch"),
+        warning.contains("every boot of the decoy adds a pair"),
         "{warning}"
     );
     assert!(warning.ends_with("(apt install python3-gi)"), "{warning}");
