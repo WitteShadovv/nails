@@ -193,6 +193,16 @@ distroVm.buildVmTest {
         return pid1_time("ShutdownStartTimestamp"), pid1_time("UserspaceTimestamp")
 
 
+    # What a freshly booted decoy still starts outside PID 1's job queue once
+    # its network is up: NetworkManager's dispatcher (D-Bus activated, on each
+    # change of a connection, with its scripts such as chrony's) and
+    # console-login-helper-messages (issue snippets per link). After the cold
+    # boot that ends every session they read the decoy disk for a while, as
+    # after any boot, and a window opened before they are done counts their
+    # reads.
+    LATE_STARTERS = "NetworkManager-dispatcher.service 'console-login-helper-messages*'"
+
+
     def settle():
         vm.execute(
             quiet("timeout 300 systemctl is-system-running --wait >/dev/null 2>&1 || :"),
@@ -202,8 +212,33 @@ distroVm.buildVmTest {
         while True:
             jobs = vm.succeed(quiet(f"busctl call {PID1} ListJobs")).strip()
             if jobs.startswith("a(usssoo) 0"):
-                return
+                break
             assert time.monotonic() < deadline, f"PID 1 still runs jobs: {jobs}"
+            time.sleep(1)
+        # NetworkManager's startup done, where it runs (all through QUIET,
+        # so the waits read nothing of the disk).
+        vm.execute(
+            quiet(
+                "if command -v nm-online >/dev/null 2>&1; then "
+                + "timeout 130 nm-online -s -q --timeout=120 || :; fi"
+            ),
+            timeout=150,
+        )
+        # Then neither late starter runs, three looks in a row a second apart.
+        idle = 0
+        deadline = time.monotonic() + 180
+        while idle < 3:
+            busy, _ = vm.execute(
+                quiet(
+                    "systemctl list-units --all --plain --no-legend "
+                    + f"--state=active,activating,deactivating {LATE_STARTERS} | grep -q ."
+                )
+            )
+            idle = idle + 1 if busy != 0 else 0
+            assert time.monotonic() < deadline, (
+                "the decoy's late starters still run: "
+                + vm.succeed(quiet(f"systemctl list-units --all --plain --no-legend {LATE_STARTERS} || :"))
+            )
             time.sleep(1)
 
 
