@@ -110,6 +110,11 @@
         # line is said again each second until the host answers.
         (
           exec 3<>/dev/ttyS0
+          # A line the host typed too late for an earlier start (it answers only
+          # after it read that start's hold line, and its reader can fall behind)
+          # still waits in the console's input: it would end this wait before the
+          # host's own answer. Read and drop what is there before the first hold.
+          while timeout --foreground 0.2 head -n 1 <&3 >/dev/null; do :; done
           i=0
           while [ "$i" -lt 15 ]; do
             echo 'blkstat-mark hold' >&3

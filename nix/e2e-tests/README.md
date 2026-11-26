@@ -363,7 +363,9 @@ defines without an id, does not, so its discards are not counted).
   real-image oracle images it) prints `blkstat-mark hold` on the serial console
   at every start of the service manager the host armed it for, before journald
   and the units that write early in a start, again each second (a kernel line
-  can cut one in two), and waits, at most 15 s, for the line `blkstat-go`. The
+  can cut one in two), and waits, at most 15 s, for the line `blkstat-go`; it
+  first drops any line already waiting on the console, a late answer to an
+  earlier start that would end the wait before the host's own. The
   host arms it with `/run/blkstat-arm`, made just before the trigger of a
   watched switch and removed once the window ends: a soft-reboot keeps `/run`
   (the entry binds it into the hidden root, and the way back's scrub keeps
@@ -439,6 +441,9 @@ there.
   the guest made after its hold and before the host's cut. A hidden start
   without a hold line (a hidden NixOS system built without the mark unit) is an
   oracle error: its switch and session phases are one.
+- Seen once in CI and not reproduced locally: the forced way back of
+  `session-switch-timeout` (its job timed out, PID 1 soft-reboots by force)
+  came without a hold line, and its window took in the decoy's own start.
 - A switch that is refused and restarts the decoy drops its window, the
   activation's writes included. A test that ends inside the hidden root has no
   control. A disk the session mounts and writes itself counts as a decoy

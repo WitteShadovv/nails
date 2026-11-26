@@ -45,6 +45,9 @@ let
     if [ -e /run/blkstat-arm ]; then
       (
         exec 3<>/dev/ttyS0
+        # A late answer to an earlier start can wait in the console's input:
+        # drop it before the first hold, as vm-config.nix's unit does.
+        while timeout --foreground 0.2 head -n 1 <&3 >/dev/null; do :; done
         i=0
         while [ "$i" -lt 15 ]; do
           echo 'blkstat-mark hold' >&3
