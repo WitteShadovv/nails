@@ -1316,10 +1316,11 @@ bind of the same filesystem (the gate's own) and into no other filesystem
 mounted below them: every file and folder whose contents
 or inode, its labels among its extended attributes, changed since right
 before the entry, held against those that changed across either plain
-soft-reboot, the login record files aside with exactly the `-journal`,
-`-wal` and `-shm` files SQLite makes beside them and the folders those come
-and go in (any other file there, another sibling of a record file
-included, is compared), and a unit's private temporary
+soft-reboot, the login record files aside, with exactly the `-journal`,
+`-wal` and `-shm` files SQLite makes beside the two that are its databases
+(`lastlog2.db` and `wtmp.db`; `wtmp`, `btmp` and `lastlog` have none) and the
+folders those come and go in (any other file there, another sibling of a
+record file included, is compared), and a unit's private temporary
 folder counted by its unit, since each start of the unit names a new one; and
 every name on them right before the entry that is gone after the way back,
 held against the names either plain soft-reboot took away, since a file
@@ -1357,8 +1358,9 @@ boot partition. Every file of a FAT filesystem mounted from the decoy's disk
 go, as FAT keeps a file's time to two seconds and no inode change time; one
 mounted on one side of the way back only fails too, and at least one must be
 compared. And no login or boot record file may shrink or go, as such a file
-only grows, SQLite's `-journal`, `-wal` and `-shm` files beside them aside,
-which come and go as it writes; the records checks judge what is in them. The gate reads the names three times
+only grows, SQLite's `-journal`, `-wal` and `-shm` files beside its two
+databases aside, which come and go as it writes; the records checks judge
+what is in them. The gate reads the names three times
 before it counts them as not read, which fails the comparison. In this
 driver, once auditd is off, the gate masks
 `audit-rules.service`, which loads the image's rules at every start and with
@@ -1534,8 +1536,9 @@ partition. The ESP is mounted by gpt-auto's `efi.automount`, which a start's
 dbus-broker triggers and which lets it go after 120 idle seconds
 (`TimeoutIdleSec=`), so the gate looks up each automount point of the decoy's
 disks right before it reads them, before the entry and after the way back,
-and the ESP is mounted both times. A mount whose device the gate cannot read
-fails the comparison. Of the mounted ESP no
+and each must have mounted after the way back what it had before the entry.
+A mount whose device the gate cannot read fails the comparison, and a timer's
+run by hand whose listing could not read one explains no change. Of the mounted ESP no
 comparison reads the boot sectors, the FAT tables, the FSInfo sector, the
 free clusters, the entries of deleted files, the files' attributes, or the
 times of `/efi` itself, which a FAT root does not keep.

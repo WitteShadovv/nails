@@ -556,6 +556,20 @@ AUTOMOUNTS = (
     'echo "$t $(findmnt -rn -o FSTYPE --target "$t" | tail -n1)"; '
     "done; true"
 )
+
+
+def automounts_mounted(text: str) -> dict[str, str]:
+    """Each automount point :data:`AUTOMOUNTS` looked up, with the type of
+    the filesystem mounted there after the lookup (``autofs`` where nothing
+    came to be)."""
+    found = {}
+    for line in text.splitlines():
+        target, _, fstype = line.partition(" ")
+        if target.startswith("/"):
+            found[target] = fstype.strip()
+    return found
+
+
 # What :data:`PARTITIONS` prints in place of a digest.
 PARTITION_STATES = ("mounted", "swap", "held")
 # journald's stream files in /run and what the gate holds each to after a way
@@ -699,7 +713,8 @@ def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
         if not path.startswith("/") or path in mounted:
             continue
         if path in RECORD_DIRS or any(
-            path in (kept, *(kept + scratch for scratch in RECORD_SCRATCH))
+            path == kept
+            or (kept.endswith(".db") and path in (kept + s for s in RECORD_SCRATCH))
             for kept in RECORD_PATHS
         ):
             continue
@@ -869,8 +884,11 @@ def rerun_changes(out: str, mount_points: Iterable[str] = ()) -> list[str]:
     """The paths the gate's start of a timer's unit by hand changed, from what
     that start printed (:data:`RERUN_PARTS`): those listed from the start
     until it returned, less every path listed in the quiet time before or
-    after it, which another writer changed. Output without all three parts
-    gives no path."""
+    after it, which another writer changed. Output without all three parts,
+    or with a listing that could not read a mount (:func:`walk_errors`), gives
+    no path: what it did not read it cannot say another writer left alone."""
+    if walk_errors(out):
+        return []
     parts: dict[str, list[str]] = {}
     current = None
     for line in out.splitlines():
@@ -929,9 +947,10 @@ def disk_find(tests: str) -> str:
     :data:`UTAB_BIND`), as ``-xdev`` did. A mount whose device it cannot
     read it neither prunes nor passes over: it prints a
     :data:`WALK_ERROR` line, which fails the reading (:func:`walk_errors`).
-    Glob characters of a mount point are escaped for ``-path``."""
+    Globbing is off (``set -f``), so a mount point named with glob characters
+    is the one mount point, and its characters are escaped for ``-path``."""
     return (
-        "mounts=$(findmnt -rn -o TARGET); "
+        "set -f; mounts=$(findmnt -rn -o TARGET); "
         "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
         f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
         f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
@@ -2384,8 +2403,11 @@ class Gate:
         its entry (:meth:`way_back_disk` reads the same after it): its names,
         the bytes of its partitions that no filesystem is mounted from, the
         files of its FAT filesystems and the sizes of its record files."""
-        self.fact(f"automounts-before-{n}", AUTOMOUNTS)
+        automounts = automounts_mounted(
+            self.fact(f"automounts-before-{n}", AUTOMOUNTS, again=True)
+        )
         return {
+            "automounts": automounts,
             "names": self.disk_names(f"before-{n}"),
             "partitions": partition_hashes(
                 self.fact(f"partitions-before-{n}", PARTITIONS, 600, again=True)
@@ -2419,7 +2441,15 @@ class Gate:
         the bytes of its partitions that no filesystem is mounted from, the
         files of its FAT filesystems and the sizes of its record files. Its
         automount points are looked up first (:data:`AUTOMOUNTS`)."""
-        self.fact(f"automounts-after-{n}", AUTOMOUNTS)
+        automounts = automounts_mounted(
+            self.fact(f"automounts-after-{n}", AUTOMOUNTS, again=True)
+        )
+        self.check(
+            f"way back {n}: each automount point of the decoy's disks has what it "
+            "had mounted before the entry mounted when the gate compares",
+            automounts == state["automounts"],
+            {"before": state["automounts"], "after": automounts},
+        )
         self.disk_changes(f"way-back-{n}", state["since"])
         self.names[f"way-back-{n}"] = (state["names"], self.disk_names(f"after-{n}"))
         partitions = partition_hashes(
@@ -2614,7 +2644,8 @@ class Gate:
         )
         gone = self.fact("auditd-after", "pgrep -x auditd || echo gone")
         self.check(
-            "auditd stops for good by the documented commands, without a reboot",
+            "auditd stops for good by the documented commands, PID 1 reloaded "
+            "only once it has exited, without a reboot",
             gone == "gone",
             gone,
         )

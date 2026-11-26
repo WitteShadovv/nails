@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import io
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -576,17 +577,31 @@ class DecoyDiskTest(unittest.TestCase):
         self.assertEqual(run.disk_names("before-1"), {"/", "/etc"})
         self.assertIn("error", str(run.facts["disk-names-before-1"]["failed reads"]))
 
+    def test_a_rerun_whose_quiet_listing_was_not_read_explains_nothing(
+        self,
+    ) -> None:
+        before, rerun, after = fg.RERUN_PARTS
+        out = (
+            f"{before}\nfg-walk\n{rerun}\n/var/lib/unit/state\n/etc/noise\n"
+            f"{after}\n"
+        ).replace("fg-walk", f"{fg.WALK_ERROR} /")
+        self.assertEqual(fg.rerun_changes(out), [])
+        read = out.replace(f"{fg.WALK_ERROR} /", "/etc/noise")
+        self.assertEqual(fg.rerun_changes(read), ["/var/lib/unit/state"])
+
     def test_a_mount_not_read_fails_the_way_back(self) -> None:
         disk = {"control-1": {"/var"}, "way-back-1": {"/var"}}
         run = gate()
         run.disk = disk
         run.update_states = dict.fromkeys(disk, CURRENT)
         run.names = {label: ({"/etc"}, {"/etc"}) for label in disk}
-        run.walk_failures = {"control-1": ["/home"]}
-        quiet(run.judge_disk)
-        judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
-        self.assertEqual([c["passed"] for c in judged], [False])
-        self.assertIn("/home", judged[0]["detail"])
+        for failures in ({"control-1": ["/home"]}, {"way-back-1": ["/home"]}):
+            run.checks = []
+            run.walk_failures = failures
+            quiet(run.judge_disk)
+            judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
+            self.assertEqual([c["passed"] for c in judged], [False], failures)
+            self.assertIn("/home", judged[0]["detail"])
 
     def test_the_listing_records_a_mount_not_read(self) -> None:
         run = gate()
@@ -1095,25 +1110,44 @@ class GuestCommandTest(unittest.TestCase):
             {other: "the decoy's journald holds no such stream"},
         )
 
+    # Mounts of other filesystems named with glob characters, each beside an
+    # unmounted folder its pattern would match: the walk must leave out the
+    # mount and read the folder. nsub is a btrfs subvolume of its own device
+    # that nothing mounts, which "n*" would match.
+    OTHERS = ("oth[e]r", "a*", "q?", "[b]", "n*")
+    SIBLINGS = ("ab", "qx", "b", "nsub")
+
     def disk_tree(self) -> tuple[str, dict[str, str]]:
         """A disk mount with a nested folder, a bind of the same filesystem
-        and another filesystem mounted below it, and the stubs that list them:
-        findmnt, stat giving the other filesystem a device of its own, and find
-        writing down how it was called before it runs."""
+        and other filesystems mounted below it (:data:`OTHERS`), and the stubs
+        that list them: findmnt, stat giving each other filesystem and nsub a
+        device of their own, and find writing down how it was called before
+        it runs."""
         top = os.path.join(self.tmp, "root")
-        for folder in ("var/lib/machines/deep", "oth[e]r", "srv/bind"):
+        folders = ("var/lib/machines/deep", "srv/bind", *self.OTHERS, *self.SIBLINGS)
+        for folder in folders:
             os.makedirs(os.path.join(top, folder))
-        for path in ("var/lib/machines/deep/file", "oth[e]r/not-mine", "srv/bind/kept"):
-            open(os.path.join(top, path), "w").close()
-        other, bind = os.path.join(top, "oth[e]r"), os.path.join(top, "srv/bind")
+        open(os.path.join(top, "var/lib/machines/deep/file"), "w").close()
+        open(os.path.join(top, "srv/bind/kept"), "w").close()
+        for name in self.OTHERS:
+            open(os.path.join(top, name, "not-mine"), "w").close()
+        for name in self.SIBLINGS:
+            open(os.path.join(top, name, "file"), "w").close()
+        bind = os.path.join(top, "srv/bind")
+        others = [os.path.join(top, name) for name in self.OTHERS]
+        listed = " ".join(shlex.quote(o) for o in others)
         findmnt = (
-            f'if [ "$3" = TARGET ]; then printf "%s\\n" {top} "{other}" {bind}; '
-            f'else echo "{top} btrfs"; echo "{other} tmpfs"; echo "{bind} btrfs"; fi'
+            f'if [ "$3" = TARGET ]; then printf "%s\\n" {top} {listed} {bind}; '
+            f'else echo "{top} btrfs"; '
+            + "".join(f'echo {shlex.quote(o + " tmpfs")}; ' for o in others)
+            + f'echo "{bind} btrfs"; fi'
         )
         real_stat, real_find = shutil.which("stat"), shutil.which("find")
+        elsewhere = [*others, os.path.join(top, "nsub")]
         stat = (
-            f'if [ "$3" = "{other}" ]; then echo 999999; '
-            f'else exec {real_stat} "$@"; fi'
+            'case "$3" in '
+            + "|".join(shlex.quote(o) for o in elsewhere)
+            + f') echo 999999 ;; *) exec {real_stat} "$@" ;; esac'
         )
         find = f'echo "$@" >> {self.tmp}/find-calls; exec {real_find} "$@"'
         self.bind = bind
@@ -1135,7 +1169,9 @@ class GuestCommandTest(unittest.TestCase):
         self.assertIn(f"{top}/var/lib/machines/deep/file", names)
         self.assertIn(f"{top}/srv/bind/kept", names)
         self.assertIn(top, names)
-        self.assertFalse([n for n in names if n.startswith(f"{top}/oth")], names)
+        self.assertFalse([n for n in names if n.endswith("/not-mine")], names)
+        for sibling in self.SIBLINGS:
+            self.assertIn(f"{top}/{sibling}/file", names)
         # The bind is read through its mount alone.
         starts = [line.split()[0] for line in self.find_calls().splitlines()]
         self.assertEqual(starts, [top])
@@ -1148,7 +1184,9 @@ class GuestCommandTest(unittest.TestCase):
         out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
         self.assertIn(f"{top}/var/lib/machines/deep/file", out.splitlines())
         self.assertIn(f"{top}/srv/bind/kept", out.splitlines())
-        self.assertNotIn(f"{top}/oth[e]r/not-mine", out)
+        self.assertNotIn("not-mine", out)
+        for sibling in self.SIBLINGS:
+            self.assertIn(f"{top}/{sibling}/file", out.splitlines())
         self.assertNotIn("-xdev", self.find_calls())
         self.assertNotIn("-path / ", self.find_calls())
 
@@ -1175,7 +1213,16 @@ class GuestCommandTest(unittest.TestCase):
         stubs["stat"] = 'case "$3" in *oth*) exit 1 ;; *) echo 7 ;; esac'
         out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
         self.assertEqual(fg.walk_errors(out), [f"{top}/oth[e]r"])
+        # The names it read of the rest are not taken either.
         packed = guest(self.as_gate_bind(fg.names_command()), stubs, self.tmp)
+        listed = gzip.decompress(base64.b64decode(packed.strip())).decode()
+        self.assertIn(f"{top}/var/lib/machines/deep/file", listed)
+        # Where stat of the mount itself fails, the walk says so and reads
+        # nothing of it, its bind included.
+        stubs["stat"] = f'[ "$3" = {top} ] && exit 1; echo 7'
+        out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
+        self.assertEqual(fg.walk_errors(out), [top])
+        self.assertNotIn(f"{top}/srv/bind/kept", out)
 
         class Vm:
             def execute(self, cmd: str, timeout: int = 900) -> tuple[int, str]:
@@ -1187,6 +1234,18 @@ class GuestCommandTest(unittest.TestCase):
         run = gate()
         run.vm = Vm()
         self.assertIsNone(run.disk_names("after-1"))
+
+    def test_automounts_looks_up_each_automount_point_of_the_disks(self) -> None:
+        calls = f"{self.tmp}/ls-calls"
+        findmnt = (
+            'if [ "$3" = autofs ]; then printf "%s\\n" /efi /proc/sys/fs/binfmt_misc; '
+            'elif [ "$3" = FSTYPE ]; then printf "autofs\\nvfat\\n"; fi'
+        )
+        ls = f'echo "$@" >> {calls}'
+        out = guest(fg.AUTOMOUNTS, {"findmnt": findmnt, "ls": ls}, self.tmp)
+        self.assertEqual(fg.automounts_mounted(out), {"/efi": "vfat"})
+        with open(calls, encoding="utf-8") as handle:
+            self.assertEqual(handle.read().split(), ["/efi"])
 
     def test_fat_files_hashes_every_file(self) -> None:
         top = os.path.join(self.tmp, "efi")
@@ -1263,6 +1322,8 @@ class FatAndRecordsTest(unittest.TestCase):
                 "/var/log/wtmp",
                 "/var/log/wtmp.db-journal",
                 # Siblings of a record file that are none of SQLite's own.
+                "/var/log/wtmp-journal",
+                "/var/log/btmp-wal",
                 "/var/log/wtmp-20261101",
                 "/var/log/btmp-nails",
                 "/var/log/lastlog-x",
@@ -1279,6 +1340,8 @@ class FatAndRecordsTest(unittest.TestCase):
                 "/var/log/lastlog-x",
                 "/var/lib/lastlog/lastlog2.db-planted",
                 "/var/lib/wtmpdb/wtmp.db-backup",
+                "/var/log/wtmp-journal",
+                "/var/log/btmp-wal",
             },
         )
 
@@ -1303,6 +1366,8 @@ class WayBackDiskTest(unittest.TestCase):
         fat_after: str = FAT,
         sizes_before: str = "384 /var/log/wtmp",
         sizes_after: str = "384 /var/log/wtmp",
+        automounts_before: str = "/efi vfat",
+        automounts_after: str = "/efi vfat",
     ) -> fg.Gate:
         """way_back_disk on fakes of what the guest prints before the entry
         (the state) and after the way back."""
@@ -1330,12 +1395,15 @@ class WayBackDiskTest(unittest.TestCase):
                 return sizes_after
             if cmd == fg.FAT_FILES:
                 return fat_after
+            if cmd == fg.AUTOMOUNTS:
+                return automounts_after
             return ""
 
         run.disk_names = disk_names  # type: ignore[method-assign]
         run.fact = fact  # type: ignore[method-assign]
         state = {
             "since": "1",
+            "automounts": fg.automounts_mounted(automounts_before),
             "names": {"/before-1"},
             "partitions": partitions_before,
             "fat": fg.fat_files(fat_before),
@@ -1348,6 +1416,21 @@ class WayBackDiskTest(unittest.TestCase):
     @staticmethod
     def passed(run: fg.Gate, name: str) -> list[bool]:
         return [c["passed"] for c in run.checks if c["name"].startswith(name)]
+
+    def test_the_automounts_must_be_mounted_as_before(self) -> None:
+        name = "way back 1: each automount point of the decoy's disks"
+        part = ({"/dev/vda1": "d1"}, "/dev/vda1 d1")
+        run = self.run_way_back(*part)
+        self.assertEqual(self.passed(run, name), [True])
+        for before, after in (
+            ("/efi vfat", "/efi autofs"),
+            ("/efi vfat", ""),
+            ("", "/efi vfat"),
+        ):
+            run = self.run_way_back(
+                *part, automounts_before=before, automounts_after=after
+            )
+            self.assertEqual(self.passed(run, name), [False], (before, after))
 
     def test_the_automount_points_are_looked_up_first(self) -> None:
         self.run_way_back({"/dev/vda1": "d1"}, "/dev/vda1 d1")
