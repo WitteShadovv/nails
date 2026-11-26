@@ -32,6 +32,11 @@ def settled(run: fg.Gate) -> fg.Gate:
     return run
 
 
+# The folder every gate of these tests writes its results in, removed when
+# the tests end.
+SCRATCH = tempfile.TemporaryDirectory(prefix="gate-test-")
+
+
 def gate(**settings: Any) -> fg.Gate:
     return fg.Gate(
         None,
@@ -39,7 +44,7 @@ def gate(**settings: Any) -> fg.Gate:
         None,
         None,
         {"image": "fedora-44", **settings},
-        tempfile.mkdtemp(prefix="gate-test-"),
+        tempfile.mkdtemp(prefix="gate-test-", dir=SCRATCH.name),
     )
 
 
@@ -571,6 +576,27 @@ class DecoyDiskTest(unittest.TestCase):
         self.assertEqual(run.disk_names("before-1"), {"/", "/etc"})
         self.assertIn("error", str(run.facts["disk-names-before-1"]["failed reads"]))
 
+    def test_a_mount_not_read_fails_the_way_back(self) -> None:
+        disk = {"control-1": {"/var"}, "way-back-1": {"/var"}}
+        run = gate()
+        run.disk = disk
+        run.update_states = dict.fromkeys(disk, CURRENT)
+        run.names = {label: ({"/etc"}, {"/etc"}) for label in disk}
+        run.walk_failures = {"control-1": ["/home"]}
+        quiet(run.judge_disk)
+        judged = [c for c in run.checks if "decoy disk changed" in c["name"]]
+        self.assertEqual([c["passed"] for c in judged], [False])
+        self.assertIn("/home", judged[0]["detail"])
+
+    def test_the_listing_records_a_mount_not_read(self) -> None:
+        run = gate()
+        run.fact = lambda label, cmd, timeout=300, again=False: (  # type: ignore[method-assign]
+            "/etc/x\ngate-walk-error /home"
+        )
+        run.other_mounts = lambda: []  # type: ignore[method-assign]
+        self.assertEqual(run.disk_changes("way-back-1", "1"), {"/etc/x"})
+        self.assertEqual(run.walk_failures, {"way-back-1": ["/home"]})
+
     def test_names_gone(self) -> None:
         self.assertEqual(
             fg.gone_names({"/a", "/b", "/c"}, {"/a"}, [({"/b"}, set())]), ["/c"]
@@ -1075,18 +1101,19 @@ class GuestCommandTest(unittest.TestCase):
         findmnt, stat giving the other filesystem a device of its own, and find
         writing down how it was called before it runs."""
         top = os.path.join(self.tmp, "root")
-        for folder in ("var/lib/machines/deep", "other", "srv/bind"):
+        for folder in ("var/lib/machines/deep", "oth[e]r", "srv/bind"):
             os.makedirs(os.path.join(top, folder))
-        for path in ("var/lib/machines/deep/file", "other/not-mine", "srv/bind/kept"):
+        for path in ("var/lib/machines/deep/file", "oth[e]r/not-mine", "srv/bind/kept"):
             open(os.path.join(top, path), "w").close()
-        other, bind = os.path.join(top, "other"), os.path.join(top, "srv/bind")
+        other, bind = os.path.join(top, "oth[e]r"), os.path.join(top, "srv/bind")
         findmnt = (
-            f'if [ "$4" = TARGET ]; then printf "%s\\n" {top} {other} {bind}; '
+            f'if [ "$3" = TARGET ]; then printf "%s\\n" {top} "{other}" {bind}; '
             f'else echo "{top} btrfs"; echo "{other} tmpfs"; echo "{bind} btrfs"; fi'
         )
         real_stat, real_find = shutil.which("stat"), shutil.which("find")
         stat = (
-            f'if [ "$3" = {other} ]; then echo 999999; else exec {real_stat} "$@"; fi'
+            f'if [ "$3" = "{other}" ]; then echo 999999; '
+            f'else exec {real_stat} "$@"; fi'
         )
         find = f'echo "$@" >> {self.tmp}/find-calls; exec {real_find} "$@"'
         self.bind = bind
@@ -1108,7 +1135,10 @@ class GuestCommandTest(unittest.TestCase):
         self.assertIn(f"{top}/var/lib/machines/deep/file", names)
         self.assertIn(f"{top}/srv/bind/kept", names)
         self.assertIn(top, names)
-        self.assertFalse([n for n in names if n.startswith(f"{top}/other")], names)
+        self.assertFalse([n for n in names if n.startswith(f"{top}/oth")], names)
+        # The bind is read through its mount alone.
+        starts = [line.split()[0] for line in self.find_calls().splitlines()]
+        self.assertEqual(starts, [top])
         # find crosses devices itself, as -xdev would stop at a btrfs
         # subvolume nested in the mount.
         self.assertNotIn("-xdev", self.find_calls())
@@ -1118,9 +1148,45 @@ class GuestCommandTest(unittest.TestCase):
         out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
         self.assertIn(f"{top}/var/lib/machines/deep/file", out.splitlines())
         self.assertIn(f"{top}/srv/bind/kept", out.splitlines())
-        self.assertNotIn(f"{top}/other/not-mine", out)
+        self.assertNotIn(f"{top}/oth[e]r/not-mine", out)
         self.assertNotIn("-xdev", self.find_calls())
         self.assertNotIn("-path / ", self.find_calls())
+
+    def test_the_root_is_read_and_other_devices_left_out(self) -> None:
+        calls = f"{self.tmp}/find-calls"
+        findmnt = (
+            'if [ "$3" = TARGET ]; then printf "%s\\n" / /proc /srv/same; '
+            'else echo "/ btrfs"; echo "/proc proc"; fi'
+        )
+        stat = 'case "$3" in /|/srv/same) echo 30 ;; /proc) echo 4 ;; *) exit 1 ;; esac'
+        find = f'echo "$@" >> {calls}'
+        stubs = {"findmnt": findmnt, "stat": stat, "find": find}
+        out = guest(fg.disk_listing("1"), stubs, self.tmp)
+        self.assertEqual(fg.walk_errors(out), [])
+        with open(calls, encoding="utf-8") as handle:
+            args = handle.read().split()
+        self.assertEqual(args[0], "/")
+        self.assertIn("/proc", args)
+        self.assertNotIn("/srv/same", args)
+        self.assertEqual(args.count("-path"), 1)
+
+    def test_a_device_it_cannot_read_fails_the_reading(self) -> None:
+        top, stubs = self.disk_tree()
+        stubs["stat"] = 'case "$3" in *oth*) exit 1 ;; *) echo 7 ;; esac'
+        out = guest(self.as_gate_bind(fg.disk_listing("1")), stubs, self.tmp)
+        self.assertEqual(fg.walk_errors(out), [f"{top}/oth[e]r"])
+        packed = guest(self.as_gate_bind(fg.names_command()), stubs, self.tmp)
+
+        class Vm:
+            def execute(self, cmd: str, timeout: int = 900) -> tuple[int, str]:
+                return 0, packed
+
+            def succeed(self, cmd: str) -> str:
+                return ""
+
+        run = gate()
+        run.vm = Vm()
+        self.assertIsNone(run.disk_names("after-1"))
 
     def test_fat_files_hashes_every_file(self) -> None:
         top = os.path.join(self.tmp, "efi")
@@ -1195,9 +1261,26 @@ class FatAndRecordsTest(unittest.TestCase):
                 "/var/lib/lastlog/planted",
                 "/var/lib/wtmpdb/wtmp.db-wal",
                 "/var/log/wtmp",
+                "/var/log/wtmp.db-journal",
+                # Siblings of a record file that are none of SQLite's own.
+                "/var/log/wtmp-20261101",
+                "/var/log/btmp-nails",
+                "/var/log/lastlog-x",
+                "/var/lib/lastlog/lastlog2.db-planted",
+                "/var/lib/wtmpdb/wtmp.db-backup",
             )
         )
-        self.assertEqual(fg.changed_paths(listing), {"/var/lib/lastlog/planted"})
+        self.assertEqual(
+            fg.changed_paths(listing),
+            {
+                "/var/lib/lastlog/planted",
+                "/var/log/wtmp-20261101",
+                "/var/log/btmp-nails",
+                "/var/log/lastlog-x",
+                "/var/lib/lastlog/lastlog2.db-planted",
+                "/var/lib/wtmpdb/wtmp.db-backup",
+            },
+        )
 
     def test_a_record_file_only_grows(self) -> None:
         before = {"/var/log/btmp": 768, "/var/lib/wtmpdb/wtmp.db-journal": 512}
@@ -1225,7 +1308,13 @@ class WayBackDiskTest(unittest.TestCase):
         (the state) and after the way back."""
         run = gate()
         read: list[str] = []
-        run.disk_changes = lambda label, since: set()  # type: ignore[method-assign]
+        self.order: list[str] = []
+
+        def disk_changes(label: str, since: str) -> set[str]:
+            self.order.append("changes")
+            return set()
+
+        run.disk_changes = disk_changes  # type: ignore[method-assign]
 
         def disk_names(label: str) -> set[str]:
             read.append(label)
@@ -1234,6 +1323,7 @@ class WayBackDiskTest(unittest.TestCase):
         def fact(
             label: str, cmd: str, timeout: int = 300, again: bool = False
         ) -> str:
+            self.order.append(label)
             if cmd == fg.PARTITIONS:
                 return partitions_after
             if cmd == fg.RECORD_SIZES:
@@ -1258,6 +1348,23 @@ class WayBackDiskTest(unittest.TestCase):
     @staticmethod
     def passed(run: fg.Gate, name: str) -> list[bool]:
         return [c["passed"] for c in run.checks if c["name"].startswith(name)]
+
+    def test_the_automount_points_are_looked_up_first(self) -> None:
+        self.run_way_back({"/dev/vda1": "d1"}, "/dev/vda1 d1")
+        self.assertEqual(self.order[:2], ["automounts-after-1", "changes"])
+        run = gate()
+        asked: list[str] = []
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            asked.append(cmd)
+            return ""
+
+        run.fact = fact  # type: ignore[method-assign]
+        run.disk_names = lambda label: asked.append("names") or set()  # type: ignore[method-assign,func-returns-value]
+        run.before_disk(1)
+        self.assertEqual(asked[:2], [fg.AUTOMOUNTS, "names"])
 
     def test_the_names_after_are_read_after(self) -> None:
         run = self.run_way_back({"/dev/vda1": "d1"}, "/dev/vda1 d1")
@@ -1322,7 +1429,9 @@ class WayBackDiskTest(unittest.TestCase):
         class Gate(fg.Gate):
             session_files = ("/efi/gate-efi-1",)
 
-        run = Gate(None, None, None, None, {"image": "x"}, tempfile.mkdtemp())
+        run = Gate(
+            None, None, None, None, {"image": "x"}, tempfile.mkdtemp(dir=SCRATCH.name)
+        )
 
         def fact(
             label: str, cmd: str, timeout: int = 300, again: bool = False
@@ -1334,6 +1443,55 @@ class WayBackDiskTest(unittest.TestCase):
         quiet(run.session_files_left, 1)
         self.assertIn("/efi/gate-efi-1", cmds[0])
         self.assertNotIn("/etc/gate-new", cmds[0])
+
+    def test_a_dangling_link_of_the_session_counts(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="gate-files-") as tmp:
+            link, kept = f"{tmp}/link", f"{tmp}/kept"
+            os.symlink(f"{tmp}/nowhere", link)
+
+            class Gate(fg.Gate):
+                session_files = (link, kept)
+
+            out_dir = tempfile.mkdtemp(dir=SCRATCH.name)
+            run = Gate(None, None, None, None, {"image": "x"}, out_dir)
+            run.fact = lambda label, cmd, timeout=300, again=False: subprocess.run(  # type: ignore[method-assign]
+                [BASH, "-c", cmd], capture_output=True, text=True, timeout=60
+            ).stdout.strip()
+            quiet(run.session_files_left, 1)
+            self.assertFalse(run.checks[0]["passed"])
+            self.assertEqual(run.checks[0]["detail"].splitlines()[0], link)
+
+
+class AuditdTest(unittest.TestCase):
+    def test_pid_1_reloads_only_once_auditd_has_exited(self) -> None:
+        run = gate()
+        ran: list[str] = []
+        rows = {
+            "decoy-persistence": {
+                "status": "fail",
+                "message": "auditd runs",
+                "remediation": "mask ... auditctl --signal stop",
+            }
+        }
+        run.fact = lambda label, cmd, timeout=300, again=False: (  # type: ignore[method-assign]
+            "845" if label == "auditd-before" else "gone"
+        )
+        run.check_rows = lambda *a: (4, rows)  # type: ignore[method-assign]
+        run.read_audit_log = lambda: None  # type: ignore[method-assign]
+
+        def sh(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> tuple[int, str]:
+            ran.append(cmd)
+            return 0, ""
+
+        run.sh = sh  # type: ignore[method-assign]
+        quiet(run.auditd)
+        off = ran[0]
+        self.assertIn("systemctl --no-reload disable auditd.service", off)
+        self.assertIn("systemctl --no-reload mask auditd.service", off)
+        self.assertLess(off.index("pgrep -x auditd"), off.index("daemon-reload"))
+        self.assertLess(off.index("auditctl --signal stop"), off.index("daemon-reload"))
 
 
 class AdvisoryTest(unittest.TestCase):

@@ -180,6 +180,8 @@ PROCESS_EXES = (
     'for p in /proc/[0-9]*; do e=$(readlink "$p/exe" 2>/dev/null) || continue; '
     'echo "${p#/proc/} $e"; done'
 )
+# What readlink of /proc/<pid>/exe adds for a program deleted since it started.
+DELETED = " (deleted)"
 # The names of NAILS's programs: the binary the harness shares and the copy
 # in RAM it runs from.
 NAILS_PROGRAMS = ("nails", "control")
@@ -334,17 +336,20 @@ def process_exes(text: str) -> dict[str, str]:
 
 def nails_elsewhere(exes: str) -> list[str]:
     """The processes :data:`PROCESS_EXES` listed that run a program of
-    NAILS's (:data:`NAILS_PROGRAMS`) from anywhere but its copy in RAM."""
-    return sorted(
-        f"{pid} {exe}"
-        for pid, exe in process_exes(exes).items()
-        if exe != fg.RAM
-        and (
+    NAILS's (:data:`NAILS_PROGRAMS`, or one below its runtime folder or the
+    hidden volume) from anywhere but its copy in RAM, a program deleted
+    since it started (``readlink`` adds `` (deleted)``) judged by its path,
+    and the copy in RAM deleted as well."""
+    found = []
+    for pid, read in process_exes(exes).items():
+        exe = read.removesuffix(DELETED)
+        if read != fg.RAM and (
             exe.rsplit("/", 1)[-1] in NAILS_PROGRAMS
             or exe.startswith(fg.RUNTIME + "/")
             or exe.startswith(fg.HIDDEN + "/")
-        )
-    )
+        ):
+            found.append(f"{pid} {read}")
+    return sorted(found)
 
 
 def processes_from_ram(lines: Sequence[str], exes: str) -> bool:

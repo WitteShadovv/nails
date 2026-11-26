@@ -542,6 +542,20 @@ lsblk -nrpo NAME,TYPE "/dev/$disk" | while read -r name type; do
   echo "$name $(sha256sum < "$name" | cut -d' ' -f1)"
 done
 """
+# The automount points of the decoy's disks (an ESP behind gpt-auto's
+# efi.automount), each looked up so that what it mounts is mounted when the
+# gate compares: gpt-auto's automount lets the ESP go after 120 idle seconds
+# (TimeoutIdleSec=), and what else looks it up after a switch (dbus-broker's
+# start on arch-boxes) does so only at its start. Listing a FAT root changes
+# no time of it, as a FAT root keeps none. Those of /proc, /sys, /dev and
+# /run are none of the disks'.
+AUTOMOUNTS = (
+    "findmnt -rn -t autofs -o TARGET | while read -r t; do "
+    'case "$t" in /proc/*|/sys/*|/dev/*|/run/*) continue ;; esac; '
+    'ls "$t" >/dev/null 2>&1; '
+    'echo "$t $(findmnt -rn -o FSTYPE --target "$t" | tail -n1)"; '
+    "done; true"
+)
 # What :data:`PARTITIONS` prints in place of a digest.
 PARTITION_STATES = ("mounted", "swap", "held")
 # journald's stream files in /run and what the gate holds each to after a way
@@ -685,7 +699,7 @@ def changed_paths(listing: str, mount_points: Iterable[str] = ()) -> set[str]:
         if not path.startswith("/") or path in mounted:
             continue
         if path in RECORD_DIRS or any(
-            path == kept or path.startswith((kept + "/", kept + "-"))
+            path in (kept, *(kept + scratch for scratch in RECORD_SCRATCH))
             for kept in RECORD_PATHS
         ):
             continue
@@ -912,18 +926,39 @@ def disk_find(tests: str) -> str:
     ``/swap``): it leaves out each mount point below the mount whose device
     is not the mount's own, so it reads no other filesystem, and reads on
     through a bind of the same filesystem (the gate's own bind of
-    :data:`UTAB_BIND`), as ``-xdev`` did."""
+    :data:`UTAB_BIND`), as ``-xdev`` did. A mount whose device it cannot
+    read it neither prunes nor passes over: it prints a
+    :data:`WALK_ERROR` line, which fails the reading (:func:`walk_errors`).
+    Glob characters of a mount point are escaped for ``-path``."""
     return (
         "mounts=$(findmnt -rn -o TARGET); "
         "findmnt -rn -o TARGET,FSTYPE | while read -r target fstype; do "
         f'case "$fstype" in {"|".join(DISK_FSTYPES)}) ;; *) continue ;; esac; '
         f'case "$target" in {HIDDEN}|{HIDDEN}/*|{UTAB_BIND}) continue ;; esac; '
-        'dev=$(stat -c %d "$target"); set --; for m in $mounts; do '
+        f'dev=$(stat -c %d "$target") || {{ echo "{WALK_ERROR} $target"; continue; }}; '
+        "set --; for m in $mounts; do "
+        '[ "$m" = "$target" ] && continue; '
         'case "$target" in /) ;; *) case "$m" in "$target"/*) ;; *) continue ;; '
         "esac ;; esac; "
-        '[ "$(stat -c %d "$m" 2>/dev/null)" = "$dev" ] && continue; '
-        'set -- "$@" -path "$m" -prune -o; done; '
+        f'd=$(stat -c %d "$m") || {{ echo "{WALK_ERROR} $m"; continue; }}; '
+        '[ "$d" = "$dev" ] && continue; '
+        """e=$(printf '%s' "$m" | sed 's/[][*?\\\\]/\\\\&/g'); """
+        'set -- "$@" -path "$e" -prune -o; done; '
         f'find "$target" "$@" \\( {tests} \\); done | sort -u'
+    )
+
+
+# What :func:`disk_find` prints for a mount whose device it could not read.
+WALK_ERROR = "gate-walk-error"
+
+
+def walk_errors(listing: str) -> list[str]:
+    """The mounts :func:`disk_find` could not read the device of, from what
+    it printed (:data:`WALK_ERROR` lines)."""
+    return sorted(
+        line.split(" ", 1)[1]
+        for line in listing.splitlines()
+        if line.startswith(WALK_ERROR + " ") and " " in line
     )
 
 
@@ -1675,6 +1710,9 @@ class Gate:
         # The changes on the decoy disk across each switch, by its label, and
         # what the decoy's own timers did there (:meth:`decoy_timers`).
         self.disk: dict[str, set[str]] = {}
+        # The mounts each switch's listing of changes could not read the
+        # device of (:func:`walk_errors`), by its label.
+        self.walk_failures: dict[str, list[str]] = {}
         self.timers: dict[str, dict[str, Any]] = {}
         # Every name on the decoy disk before and after each switch, by its
         # label (None where the gate could not read them).
@@ -2188,6 +2226,9 @@ class Gate:
         wall clock ``since``: the hidden volume and the gate's bind left out,
         and the record files the records checks judge."""
         listing = self.fact(f"disk-changes-{label}", disk_listing(since), 600)
+        errors = walk_errors(listing)
+        if errors:
+            self.walk_failures[label] = errors
         changed = changed_paths(listing, self.other_mounts())
         self.disk[label] = changed
         return changed
@@ -2312,16 +2353,20 @@ class Gate:
                 failures.append(f"{type(error).__name__}: {error}")
                 continue
             try:
-                text = gzip.decompress(base64.b64decode(out.strip(), validate=True))
-                names = changed_paths(
-                    text.decode("utf-8", "replace"), self.other_mounts()
-                )
+                text = gzip.decompress(
+                    base64.b64decode(out.strip(), validate=True)
+                ).decode("utf-8", "replace")
             except (ValueError, OSError, EOFError, zlib.error) as error:
                 failures.append(
                     f"exit {status}, {len(out)} characters: "
                     f"{type(error).__name__}: {error}"
                 )
                 continue
+            errors = walk_errors(text)
+            if errors:
+                failures.append(f"could not read the device of {', '.join(errors)}")
+                continue
+            names = changed_paths(text, self.other_mounts())
             if status != 0 or not names:
                 failures.append(f"exit {status}, {len(names)} names")
                 continue
@@ -2339,6 +2384,7 @@ class Gate:
         its entry (:meth:`way_back_disk` reads the same after it): its names,
         the bytes of its partitions that no filesystem is mounted from, the
         files of its FAT filesystems and the sizes of its record files."""
+        self.fact(f"automounts-before-{n}", AUTOMOUNTS)
         return {
             "names": self.disk_names(f"before-{n}"),
             "partitions": partition_hashes(
@@ -2371,7 +2417,9 @@ class Gate:
         """What way back ``n`` left on the decoy disk, read right after it as
         before its entry (``state``): its changes since the entry, its names,
         the bytes of its partitions that no filesystem is mounted from, the
-        files of its FAT filesystems and the sizes of its record files."""
+        files of its FAT filesystems and the sizes of its record files. Its
+        automount points are looked up first (:data:`AUTOMOUNTS`)."""
+        self.fact(f"automounts-after-{n}", AUTOMOUNTS)
         self.disk_changes(f"way-back-{n}", state["since"])
         self.names[f"way-back-{n}"] = (state["names"], self.disk_names(f"after-{n}"))
         partitions = partition_hashes(
@@ -2549,12 +2597,19 @@ class Gate:
             "auditctl --signal stop" in fix and "mask" in fix,
             fix,
         )
+        # The documented commands, with PID 1's reload held back until auditd
+        # has exited: a reload logs records of its own (BPF programs loaded
+        # and unloaded), and those that reach auditd while it stops reach
+        # neither its log nor the kernel's, which the gate's count of audit
+        # serials would read as lost.
         self.sh(
             "auditd-off",
-            "systemctl disable auditd.service; systemctl mask auditd.service; "
+            "systemctl --no-reload disable auditd.service; "
+            "systemctl --no-reload mask auditd.service; "
             "auditctl --signal stop; "
             "for i in $(seq 30); do pgrep -x auditd >/dev/null || break; "
             "sleep 1; done; "
+            "systemctl daemon-reload; "
             "pgrep -x auditd; systemctl is-active auditd.service; true",
         )
         gone = self.fact("auditd-after", "pgrep -x auditd || echo gone")
@@ -3890,9 +3945,17 @@ class Gate:
             self.check(
                 f"{label.replace('-', ' ')}: the decoy disk changed only where a "
                 "plain soft-reboot or a run of the decoy's own timer changes it",
-                bool(usable) and not residue and gone == [],
+                bool(usable)
+                and not residue
+                and gone == []
+                and not any(self.walk_failures.get(c) for c in (label, *usable)),
                 {
                     "not in a control": residue,
+                    "mounts not read": {
+                        c: self.walk_failures[c]
+                        for c in (label, *usable)
+                        if c in self.walk_failures
+                    },
                     "gone": gone if gone is not None else "names not read",
                     "the decoy's timers": own,
                     "controls": usable,

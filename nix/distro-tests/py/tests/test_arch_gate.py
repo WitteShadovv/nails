@@ -16,6 +16,10 @@ from typing import Any
 import arch_gate as ag
 import fedora_gate as fg
 
+# The folder every gate of these tests writes its results in, removed when
+# the tests end.
+SCRATCH = tempfile.TemporaryDirectory(prefix="arch-gate-test-")
+
 
 def gate(**settings: Any) -> ag.ArchGate:
     return ag.ArchGate(
@@ -24,7 +28,7 @@ def gate(**settings: Any) -> ag.ArchGate:
         None,
         None,
         {"image": "arch-boxes", **settings},
-        tempfile.mkdtemp(prefix="arch-gate-test-"),
+        tempfile.mkdtemp(prefix="arch-gate-test-", dir=SCRATCH.name),
     )
 
 
@@ -126,7 +130,8 @@ class GateSettingsTest(unittest.TestCase):
         self.assertFalse(g.zram)
 
     def test_fedora_s_gate_keeps_its_own(self) -> None:
-        g = fg.Gate(None, None, None, None, {"image": "fedora-44"}, tempfile.mkdtemp())
+        out_dir = tempfile.mkdtemp(dir=SCRATCH.name)
+        g = fg.Gate(None, None, None, None, {"image": "fedora-44"}, out_dir)
         self.assertEqual(g.python, "python3")
         self.assertTrue(g.zram)
         self.assertEqual(g.hidden_root, fg.HIDDEN_ROOT)
@@ -342,6 +347,34 @@ class ProcessesTest(unittest.TestCase):
             ag.nails_elsewhere(f"1800 {fg.HIDDEN}/x/control\n"),
             [f"1800 {fg.HIDDEN}/x/control"],
         )
+        # Below NAILS's runtime folder or the hidden volume, whatever the
+        # program's name, and a program deleted since it started by its path.
+        for exe in (
+            f"{fg.RUNTIME}/helper",
+            f"{fg.HIDDEN}/bin/tool",
+            "/usr/lib/nails/nails (deleted)",
+            "/usr/lib/nails/control (deleted)",
+            f"{fg.RAM} (deleted)",
+        ):
+            self.assertEqual(ag.nails_elsewhere(f"1900 {exe}\n"), [f"1900 {exe}"])
+        self.assertEqual(ag.nails_elsewhere("1901 /usr/bin/bash (deleted)\n"), [])
+
+    def test_the_programs_are_read_again_when_torn(self) -> None:
+        g = gate()
+        asked: dict[str, bool] = {}
+
+        def fact(
+            label: str, cmd: str, timeout: int = 300, again: bool = False
+        ) -> str:
+            asked[cmd] = again
+            if cmd == ag.PROCESS_EXES:
+                return f"1602 {fg.RAM}"
+            return self.LINES[0]
+
+        g.fact = fact  # type: ignore[method-assign]
+        quiet(g.nails_processes, 1)
+        self.assertTrue(asked[ag.PROCESS_EXES])
+        self.assertTrue(g.checks[0]["passed"], g.checks)
 
     def test_each_runs_from_the_copy_in_ram(self) -> None:
         self.assertTrue(ag.processes_from_ram(self.LINES, f"1602 {fg.RAM}\n"))
