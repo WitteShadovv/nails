@@ -1126,3 +1126,86 @@ mod kernel_tests {
 fn the_real_host_finds_no_device_without_its_node() {
     assert!(!RealEntryHost.device_present(Path::new("/dev/disk/by-id/nails-test-no-such-disk")));
 }
+
+/// The step that decides the units outside the fstab records in the plan
+/// what the hidden session keeps off, and returns the warnings: a disk mount
+/// unit linked in local-fs.target.requires whose device is not there is
+/// masked, recorded with that device, and warned of, and a noauto line of a
+/// decoy disk is masked with its automount. Nothing is mounted: the hidden
+/// volume is in place already, and nothing else is bound or overlaid. The
+/// mutants lane runs no test that needs a user namespace, so this one holds
+/// the step there.
+#[test]
+fn keep_units_off_records_the_masks_and_returns_the_warnings() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths {
+        root: dir.path().join("root"),
+        run: dir.path().join("run"),
+    };
+    let units = paths.nextroot().join("etc/systemd/system");
+    std::fs::create_dir_all(units.join("local-fs.target.requires")).unwrap();
+    std::fs::write(
+        units.join("srv-scratch.mount"),
+        "[Mount]\nWhat=/dev/vdz9\nWhere=/srv/scratch\nType=ext4\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        "../srv-scratch.mount",
+        units.join("local-fs.target.requires/srv-scratch.mount"),
+    )
+    .unwrap();
+    let layout = Layout::new(&dir.path().join("hidden"));
+    let inputs = minimal_inputs(layout.hidden_root(), Path::new("/proc/self/exe"), None);
+    let mounts = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+    let fstab = parse_fstab("/dev/vdy1 /r/a ext4 noauto 0 2\n");
+    let absent = |_: &Path| false;
+    let mut decided = Decided {
+        decisions: policy::decide_all(&fstab, &mounts, layout.hidden_root(), &absent),
+        fstab,
+    };
+    let mut plan = Plan::from_json(
+        r#"{"version":2,"hidden_root":"/mnt/data","upper":"/mnt/data/root/upper",
+        "work":"/mnt/data/root/work","decoy_root":{"source":"/dev/vda2","fstype":"ext4"},
+        "decoy":{"init":"/sbin/init"},"hidden":{"init":"/sbin/init"}}"#,
+    )
+    .unwrap();
+    plan.policy_mounts.push(PolicyMount {
+        target: layout.hidden_root().to_path_buf(),
+        kind: PolicyMountKind::HiddenVolume,
+    });
+
+    let warnings = keep_units_off(
+        &paths,
+        &layout,
+        &mut plan,
+        &mut decided,
+        &mounts,
+        &inputs,
+        &absent,
+    )
+    .unwrap();
+
+    for unit in ["srv-scratch.mount", "r-a.mount", "r-a.automount"] {
+        assert!(
+            plan.masks.iter().any(|mask| mask == unit),
+            "{unit}: {plan:?}"
+        );
+    }
+    assert_eq!(
+        plan.required_masks,
+        [nails_teardown::whole_root::plan::RequiredMask {
+            unit: "srv-scratch.mount".into(),
+            cause: nails_teardown::whole_root::plan::MaskCause::DeviceAbsent,
+            device: Some("/dev/vdz9".into()),
+        }]
+    );
+    assert!(plan.skips.is_empty(), "{plan:?}");
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(
+        warnings[0].starts_with(
+            "/srv/scratch is masked rather than skipped, as its device /dev/vdz9 is not there: \
+             the hidden session will not reach local-fs.target"
+        ),
+        "{warnings:?}"
+    );
+}

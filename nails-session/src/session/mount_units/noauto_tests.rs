@@ -890,3 +890,65 @@ fn a_needed_noauto_line_s_automount_yields_as_its_mask_does() {
         }
     }
 }
+
+/// Two noauto lines that tmpfs lines below them need only for a path, each
+/// skip masked after all by a drop-in of the decoy's: both warnings say the
+/// target may not be reached, and neither mask is recorded. The first one
+/// masked takes only its own units out of the unsure skips.
+#[test]
+fn two_path_skips_masked_after_all_both_say_may() {
+    let decoy = Decoy::new();
+    reset_conditions(&decoy, "n-a.mount");
+    reset_conditions(&decoy, "m-a.mount");
+    let fstab = "/dev/vdn1 /n/a ext4 noauto 0 0\ntmpfs /n/a/t tmpfs defaults 0 0\n\
+                 /dev/vdm1 /m/a ext4 noauto 0 0\ntmpfs /m/a/t tmpfs defaults 0 0\n";
+    let (_, kept, warnings) = kept(&decoy, fstab);
+    for unit in ["n-a.mount", "m-a.mount"] {
+        assert!(
+            kept.masks.iter().any(|mask| mask == unit),
+            "{unit}: {kept:?}"
+        );
+    }
+    assert!(kept.required_masks.is_empty(), "{kept:?}");
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
+    for warning in &warnings {
+        assert!(
+            warning.contains("so the hidden session may not reach that target"),
+            "{warnings:?}"
+        );
+        assert!(!warning.contains("will not"), "{warnings:?}");
+    }
+}
+
+/// A disk mount unit linked in local-fs.target.requires, skipped, that
+/// requires the mount of a noauto line that the session skips too, as a
+/// tmpfs a target requires needs it: the skip of the disk holds, as the
+/// mount it pulls in is kept off by its own skip. Left out of what the walk
+/// reads as kept off, that mount counted as one the hidden systemd would
+/// mount from the decoy's disk, and the disk's skip was masked.
+#[test]
+fn a_skip_that_requires_a_noauto_mount_the_session_skips_holds() {
+    let decoy = tmpfs_puller("requires");
+    decoy.write(
+        "/etc/systemd/system/srv-d.mount",
+        "[Unit]\nRequires=r-a.mount\nAfter=r-a.mount\n[Mount]\nWhat=/dev/vdd1\nWhere=/srv/d\n\
+         Type=ext4\n",
+    );
+    decoy.link(
+        "/etc/systemd/system/local-fs.target.requires/srv-d.mount",
+        "../srv-d.mount",
+    );
+    let (_, kept, warnings) = kept(&decoy, PULLED_LINE);
+    for unit in ["r-a.mount", "srv-d.mount"] {
+        assert!(
+            kept.skips.iter().any(|skip| skip.units == [unit]),
+            "{unit}: {kept:?}"
+        );
+        assert!(
+            !kept.masks.iter().any(|mask| mask == unit),
+            "{unit}: {kept:?}"
+        );
+    }
+    assert!(kept.required_masks.is_empty(), "{kept:?}");
+    assert!(warnings.is_empty(), "{warnings:?}");
+}
