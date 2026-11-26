@@ -1330,6 +1330,9 @@ impl crate::whole_root::fence::FenceKernel for StubFence {
     fn stop_efi_crash_log(&self) -> std::io::Result<()> {
         Ok(())
     }
+    fn dm_targets(&self, _: disk_guard::DevNum) -> std::io::Result<Vec<String>> {
+        Ok(Vec::new())
+    }
     fn probe(&self, _: &crate::whole_root::fence::Rules) -> std::io::Result<()> {
         Ok(())
     }

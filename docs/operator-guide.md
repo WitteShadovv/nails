@@ -1342,10 +1342,13 @@ f2fs recover their logs, all onto the disk, read-only mount or not.
   superblock and keeps its device closed, so a read-write mount is refused
   (`mount` without `-w` then mounts it read-only with the warning "source
   write-protected, mounted read-only").
-  Mount it read-only and name its type: the kernel then finds the live
-  read-only filesystem by its device number without opening the device, and
-  nothing is replayed onto the disk. A mount without `-t` fails, since
-  `mount` cannot read the device to find out the type.
+  Mount an ext4, XFS or f2fs read-only and name its type: the kernel then
+  finds the live read-only filesystem by its device number without opening
+  the device, and nothing is replayed onto the disk. A mount without `-t`
+  fails, since `mount` cannot read the device to find out the type. A btrfs
+  cannot be mounted again in the session: its mount scans its devices, which
+  the fence keeps closed. Read it through the mount the session carries
+  below `<hidden_volume_root>/root/decoy`.
 
   ```bash
   sudo mount -t ext4 -o ro /dev/sda2 /mnt/decoy

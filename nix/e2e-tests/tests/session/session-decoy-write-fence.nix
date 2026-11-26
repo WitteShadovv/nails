@@ -9,6 +9,10 @@
 # /opt: the hidden volume shares a disk with the decoy, and the fence has to
 # set that disk read-only while the hidden volume on it keeps writing.
 #
+#   0. A decoy filesystem on an LVM RAID1 volume over two more disks: the
+#      activation is refused, naming the volume's device-mapper `raid`
+#      target, which writes its metadata to the disks below on its own past
+#      their read-only flag. The test then takes the volume down.
 #   1. On the decoy, a raw SG_IO WRITE(10) of one block into the gap between
 #      the two partitions succeeds: passthrough works on this machine, so its
 #      refusal later is the fence's.
@@ -68,10 +72,23 @@ in
             size = 512;
             driveConfig.deviceExtraOpts.serial = "xfsdecoy";
           }
+          {
+            size = 64;
+            driveConfig.deviceExtraOpts.serial = "raida";
+          }
+          {
+            size = 64;
+            driveConfig.deviceExtraOpts.serial = "raidb";
+          }
         ];
         fileSystems = {
           "/srv" = {
             device = "/dev/disk/by-label/srvdecoy";
+            fsType = "ext4";
+            options = [ "nofail" ];
+          };
+          "/var/lib/raiddecoy" = {
+            device = "/dev/disk/by-label/raiddecoy";
             fsType = "ext4";
             options = [ "nofail" ];
           };
@@ -90,6 +107,7 @@ in
           };
         };
       };
+      boot.kernelModules = [ "dm_raid" ];
       boot.supportedFilesystems = [
         "btrfs"
         "xfs"
@@ -99,6 +117,7 @@ in
         pkgs.sg3_utils
         pkgs.btrfs-progs
         pkgs.xfsprogs
+        pkgs.lvm2
       ];
     };
 
@@ -175,6 +194,32 @@ in
         machine.succeed("mountpoint -q /var/lib/xfsdecoy && echo decoy > /var/lib/xfsdecoy/decoy-file")
         machine.succeed("nails init /mnt/data")
         write_headless_config(CONFIG)
+
+    with subtest("a decoy filesystem on LVM RAID refuses the activation"):
+        raid_a, raid_b = disk("raida"), disk("raidb")
+        machine.succeed(
+            f"pvcreate -q /dev/{raid_a} /dev/{raid_b}",
+            f"vgcreate -q decoyraid /dev/{raid_a} /dev/{raid_b}",
+            "lvcreate -q -y --type raid1 -m 1 -L 16M -n data decoyraid",
+            "udevadm settle",
+            "dmsetup table decoyraid-data | grep -w raid",
+            "mkfs.ext4 -q -L raiddecoy /dev/decoyraid/data",
+            "udevadm settle",
+            "systemctl daemon-reload && systemctl start var-lib-raiddecoy.mount",
+        )
+        status, out = machine.execute(
+            f"nails --config {CONFIG} activate -y --overlay-only 2>&1"
+        )
+        machine.log(out)
+        assert status != 0, "the activation went ahead over LVM RAID"
+        # The kernel's table, read through DM_TABLE_STATUS, names the target.
+        assert "(device-mapper raid)" in out, out
+        assert machine.succeed("findmnt -no FSTYPE /").strip() != "overlay"
+        machine.succeed(
+            "systemctl stop var-lib-raiddecoy.mount",
+            "vgchange -q -an decoyraid",
+            "udevadm settle",
+        )
 
     with subtest("on the decoy, SG_IO writes the control block"):
         machine.succeed("head -c 512 /dev/urandom > /run/pattern")

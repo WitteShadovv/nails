@@ -39,9 +39,12 @@ The decoy also has to be one the session can enter:
   a subvolume) or f2fs. A tmpfs root (impermanence), an overlay root
   (overlayroot, bilibop-lockfs) and ZFS are refused. The way back mounted the
   root again by device. It is gone, but the check still refuses these roots.
-  Activation also refuses a decoy disk under an md array: md writes its bitmap
-  and superblock to its members past the
-  [write fence](threat-model.md#the-write-fence)'s read-only flag.
+  Activation also refuses a decoy disk under a stacked device that writes to
+  it on its own past the [write fence](threat-model.md#the-write-fence)'s
+  read-only flag: md, LVM RAID and every device-mapper target but `linear`,
+  `striped` and `crypt` (mirror, cache, writecache, integrity, thin
+  provisioning among them), bcache and drbd. A decoy on a plain partition, on
+  LUKS and on linear or striped LVM passes.
 - **The tools NAILS runs** (`host-tools`): `systemctl` and `loginctl`
   (systemd), `dmsetup` when the hidden volume is on device-mapper (dm-crypt,
   LUKS or a VeraCrypt mapping) or its backend cannot be read, and on NixOS

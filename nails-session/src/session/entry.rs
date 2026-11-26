@@ -182,7 +182,9 @@ pub trait EntryHost: GuardHost {
     /// still maps or holds a deleted file (an `ld.so.cache` or library a
     /// package update replaced; [`deleted_file_releases`]): a filesystem with
     /// a deleted file in use cannot go read-only for the write fence at the
-    /// switch, and PID 1 and udevd outlive every other process there.
+    /// switch, and PID 1 and udevd outlive every other process there. The
+    /// entry calls it while the decoy's mounts are `noatime`
+    /// ([`quiet_mounts`]), before its own reloads.
     fn release_deleted_files(&self) {}
 }
 
@@ -587,9 +589,6 @@ fn build(
     }
     let building = inputs.builder.is_some();
     activation_step(ActivationPhase::Runtime, building);
-    // Before anything is written: a reexec reloads PID 1's state, and the
-    // entry's own reloads follow it.
-    host.release_deleted_files();
     super::program_label::require(inputs.program_label, host.selinux())?;
     let snapshot = Snapshot::take(&paths.run);
     write_runtime(paths, inputs, &snapshot, host.selinux())?;
@@ -617,6 +616,11 @@ fn build(
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
     let quiet = quiet_mounts(paths, &mut plan)?;
+    // Inside the window, before the entry's own reloads: PID 1 executing
+    // itself again and udevd starting again read their unit files,
+    // generators, libraries, rules and hwdb with every decoy mount
+    // `noatime`, and the entry's reloads follow the reexec.
+    host.release_deleted_files();
     install_transition(paths, inputs, host, dropin)?;
     crate::cancel::checkpoint()?;
 

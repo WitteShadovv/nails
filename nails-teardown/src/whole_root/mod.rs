@@ -77,6 +77,7 @@ pub mod emergency;
 pub mod fence;
 pub mod fence_bpf;
 pub mod fence_kernel;
+pub mod fence_stack;
 pub mod fresh_pids;
 pub mod guard_policy;
 pub mod kernel_helpers;

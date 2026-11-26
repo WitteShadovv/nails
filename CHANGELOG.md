@@ -2786,46 +2786,53 @@ of this changelog for that version becomes the release notes word for word, and
   `/run/nextroot` skips the step, and a root user in the session can remove the step's drop-in and
   guards from `/run`. RAM keeps data for a while after the power-off, so leave the machine off for
   a few minutes before you hand it over.
-- The decoy's disks are read-only in the kernel for the whole hidden session (the write fence),
-  so a program that writes to them around the overlays gets an error instead of leaving a trace.
-  The fence stays up until the power-off that ends every session. The entry transition, after the
-  decoy's shutdown and before the switch, ends the decoy's leftover processes (but udevd's),
-  makes every decoy filesystem still mounted read-only at the superblock (after a `sync`; ext4 and
-  btrfs commit and mark themselves clean once, at entry, and XFS writes back its log items and
-  covers its log, which a plain `sync` would leave for tens of seconds later), turns pstore's EFI backend off (it
-  writes a kernel crash log into an EFI variable itself, past efivarfs, which `systemd-pstore`
-  copies onto the decoy disk at the next boot), sets every disk the decoy mounts at entry (with
-  the other devices a multi-device btrfs or an external journal or log uses, and its swap), each
-  partition of it and every device stacked on them read-only with `BLKROSET` (only the hidden
-  volume's own top device left out), turns discard off on them, makes efivarfs and pstore
-  read-only, and attaches a device-cgroup program to the root cgroup that denies every open of
-  those devices, of the sg, bsg and NVMe controller and generic nodes of their hardware (an NVMe
-  multipath head's through its paths; every sg node where a fenced disk is a SCSI device) and of
-  `/dev/efi_test` and `/dev/efi_capsule_loader`: raw writes and reads, SG_IO and NVMe
-  passthrough, read-write mounts, `mknod` and swap onto them are refused. A read-only mount of a
-  decoy filesystem with its type given still works, since the kernel reuses its live read-only
-  superblock. `BLKROSET` alone stops none of a mounted filesystem's, device-mapper's, md's or
-  swap's writes, which the kernel only warns about; the hidden volume on a partition, LUKS mapping
-  or volume group of the decoy's keeps writing for that reason. Activation refuses when no decoy
-  disk is found, when the hidden root shares a filesystem with the decoy (a folder or subvolume of
-  a decoy filesystem, or a container file on one, which the session would have to keep writable),
-  when an md array lies on a decoy disk (md writes its bitmap and superblock to its members past
-  their read-only flag), when a crash-log backend keeps records past a power-off and cannot be turned off (ACPI ERST,
-  mtd, a block device, a built-in EFI backend before Linux 6.12), and when the kernel does not
-  load the device program; before anything is written it has PID 1 execute itself again and
-  restarts udevd where either still maps a deleted file (an `ld.so.cache` a package update
-  replaced). A step of the fence that fails at the switch (a swap area active on a decoy disk, a filesystem still busy, whose holders
-  the reason names) ends the session in a power-off. Not covered: a root user of the session who
-  undoes it (detaches the program, clears the flag, remounts; loads a table into the hidden
-  volume's mapping naming a decoy device it holds; sends SCSI commands through a hidden mapping
-  that is a linear part of a decoy disk); a `mount -o remount,rw` of a decoy btrfs through a mount
-  the session sees (the carried decoy filesystems), which btrfs lets through on a read-only
-  device; a process that survives the switch, or a loop device set up before it, holding a decoy
-  device; md's own metadata and resync writes; a USB decoy disk's `/dev/bus/usb` node; on Linux
-  6.8 a disk's revalidation, which gives it discard back; disks the decoy does not mount at entry;
-  a `ramoops` crash log; the TPM and the drive's internal state. See
-  [The write fence](docs/threat-model.md#the-write-fence). VM tests `session-decoy-write-fence`
-  and `session-crash-log-fence`.
+- The decoy's disks are read-only in the kernel for the whole hidden session (the write fence), so a
+  program that writes to them around the overlays gets an error instead of leaving a trace. The
+  fence stays up until the power-off that ends every session. The entry transition, after the
+  decoy's shutdown and before the switch, ends the decoy's leftover processes (but udevd's), makes
+  every decoy filesystem still mounted read-only at the superblock (after a `sync`; ext4 and btrfs
+  commit and mark themselves clean once, at entry, and XFS writes back its log items and covers its
+  log, which a plain `sync` would leave for tens of seconds later), turns pstore's EFI backend off
+  (it writes a kernel crash log into an EFI variable itself, past efivarfs, which `systemd-pstore`
+  copies onto the decoy disk at the next boot), sets every disk the decoy mounts at entry (with the
+  other devices a multi-device btrfs keeps data on, an XFS log or realtime device, an ext3 or ext4
+  journal on a device of its own as jbd2 names it, and its swap), each partition of it and every
+  device stacked on them read-only with `BLKROSET` (only the hidden volume's own top device left
+  out), turns discard off on them, makes efivarfs and pstore read-only, and attaches a device-cgroup
+  program to the root cgroup that denies every open of those devices, of the sg, bsg and NVMe
+  controller and generic nodes of their hardware (an NVMe multipath head's through its paths; every
+  sg node where a fenced disk is a SCSI device) and of `/dev/efi_test` and
+  `/dev/efi_capsule_loader`: raw writes and reads, SG_IO and NVMe passthrough, read-write mounts,
+  `mknod` and swap onto them are refused. A read-only mount of a decoy ext4, XFS or f2fs with its
+  type given still works, since the kernel reuses its live read-only superblock; a btrfs mount scans
+  its devices and is refused. `BLKROSET` alone stops none of a mounted filesystem's,
+  device-mapper's, md's or swap's writes, which the kernel only warns about; the hidden volume on a
+  partition, LUKS mapping or volume group of the decoy's keeps writing for that reason. Activation
+  refuses when no decoy disk is found, when a decoy filesystem's device or an ext4 journal cannot be
+  found, when the hidden root shares a filesystem with the decoy (a folder or subvolume of a decoy
+  filesystem, or a container file on one, which the session would have to keep writable), when a
+  stacked device on a decoy disk writes to it on its own past the read-only flag (md, and every
+  device-mapper target but `linear`, `striped` and `crypt`, LVM RAID, mirror, cache, thin and
+  integrity among them, as the kernel's table shows them; bcache, drbd), when a writable loop device
+  is bound to a decoy file, when a crash-log backend keeps records past a power-off and cannot be
+  turned off (ACPI ERST, mtd, a block device, a built-in EFI backend before Linux 6.12), and when
+  the kernel does not load the device program; with the decoy's mounts `noatime` for its reloads, it
+  has PID 1 execute itself again and restarts udevd where either still maps a deleted file (an
+  `ld.so.cache` a package update replaced). A step of the fence that fails at the switch (a stacked
+  device that writes, a swap area active on a decoy disk, a filesystem still busy, whose holders the
+  reason names, a filesystem of a fenced device still read-write once the fence is up) ends the
+  session in a power-off. Not covered: a root user of the session who undoes it (detaches the
+  program, clears the flag, remounts; loads a table into the hidden volume's mapping naming a decoy
+  device it holds; sends SCSI commands through a hidden mapping that is a linear part of a decoy
+  disk); a `mount -o remount,rw` of a decoy btrfs through a mount the session sees (the carried
+  decoy filesystems), which btrfs lets through on a read-only device; a btrfs with a second copy of
+  its data or metadata (DUP, RAID profiles), which writes the good copy over a damaged one when a
+  read finds a bad checksum; a process that survives the switch, or a loop device set up before it,
+  holding a decoy device; a USB decoy disk's `/dev/bus/usb` node; on Linux 6.8 a disk's
+  revalidation, which gives it discard back; disks the decoy does not mount at entry; a `ramoops`
+  crash log; the TPM and the drive's internal state. See [The write
+  fence](docs/threat-model.md#the-write-fence). VM tests `session-decoy-write-fence` and
+  `session-crash-log-fence`.
 - `check` and activation refuse a hidden volume whose filesystem is also mounted at another place in
   the decoy's mount table. A desktop that mounts drives by itself (gnome-shell through gvfs and
   udisks2, KDE Plasma, udiskie) can mount a volume unlocked from a terminal again under

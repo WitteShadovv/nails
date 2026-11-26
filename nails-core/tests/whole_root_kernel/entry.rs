@@ -53,6 +53,8 @@ pub(crate) struct FakeHost {
     /// The switch step's start commands once the drop-ins are loaded, when a
     /// later drop-in sets them again; else NAILS's own.
     exec_start: Option<&'static str>,
+    /// Why the write fence cannot go up, when the test says it cannot.
+    fence_refusal: Option<&'static str>,
 }
 
 impl FakeHost {
@@ -100,6 +102,17 @@ impl GuardHost for FakeHost {
 impl EntryHost for FakeHost {
     fn release_deleted_files(&self) {
         self.released.set(self.released.get() + 1);
+    }
+    fn fence_spec(
+        &self,
+        _: &[MountEntry],
+        _: &Path,
+        _: &Path,
+    ) -> nails_core::Result<Option<nails_teardown::whole_root::fence::FenceSpec>> {
+        match self.fence_refusal {
+            Some(why) => Err(NailsError::InvalidState(why.to_string())),
+            None => Ok(None),
+        }
     }
     fn daemon_reload(&self) -> nails_core::Result<()> {
         if self.cancel_at_reload && self.reloads.get() == 0 {
@@ -1498,8 +1511,9 @@ fn a_failed_entry_leaves_no_next_root_and_no_runtime_pieces() {
         let host = FakeHost::default();
         let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
         assert!(error.to_string().contains("does not resolve"), "{error}");
-        // Before anything else, the entry has PID 1 let go of deleted files,
-        // which would keep the decoy root from going read-only at the switch.
+        // Inside the noatime window, the entry has PID 1 and udevd let go of
+        // deleted files, which would keep the decoy root from going
+        // read-only at the switch.
         assert_eq!(host.released.get(), 1);
         let entries = read_mountinfo().unwrap();
         assert!(
@@ -1513,6 +1527,38 @@ fn a_failed_entry_leaves_no_next_root_and_no_runtime_pieces() {
         assert_timeout_guard(&world, false);
         // One reload installs the drop-in, one removes it again.
         assert_eq!(host.reloads.get(), 2);
+    });
+}
+
+#[test]
+fn an_entry_the_write_fence_cannot_cover_is_refused_and_leaves_nothing() {
+    let _ = Rerun::new(test_path!(
+        an_entry_the_write_fence_cannot_cover_is_refused_and_leaves_nothing
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        let host = FakeHost {
+            fence_refusal: Some(
+                "the decoy disk cannot be made read-only for the session: md0 (md)",
+            ),
+            ..FakeHost::default()
+        };
+        let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+        assert!(error.to_string().contains("md0 (md)"), "{error}");
+        assert!(!paths.runtime().exists(), "the runtime pieces are left");
+        assert!(!world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
+        let entries = read_mountinfo().unwrap();
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.mount_point.starts_with(paths.nextroot())),
+            "the next root is left"
+        );
+        // Refused before the noatime window: nothing was reloaded or released.
+        assert_eq!(host.reloads.get(), 0);
+        assert_eq!(host.released.get(), 0);
     });
 }
 

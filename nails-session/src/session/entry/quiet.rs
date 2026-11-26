@@ -22,8 +22,11 @@ use nails_teardown::whole_root::plan::Plan;
 /// block device loads that device's `blockdev@.target` instance, whose
 /// template PID 1 reads. A drop-in the entry writes changes a unit directory,
 /// and PID 1 then lists every unit directory again at its next load of a
-/// unit. All of that happens while the mounts are `noatime`, up to the
-/// reload at the end of the entry ([`settle`]).
+/// unit. PID 1 executing itself again and udevd starting again, where either
+/// held a deleted file ([`super::deleted_file_releases`]), read their unit
+/// files, generators, libraries, rules and hwdb. All of that happens while
+/// the mounts are `noatime`, up to the reload at the end of the entry
+/// ([`settle`]).
 ///
 /// The mounts it changes and their modes go to the plan before any is
 /// changed, so that a rollback or `nails recover` gives them their modes

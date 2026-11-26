@@ -18,10 +18,13 @@
 //!
 //! 1. every decoy filesystem still alive at the switch is reconfigured
 //!    read-only, after a `sync`: what refuses file writes (`EROFS`) and keeps
-//!    the filesystem itself from writing (journal, metadata, access times);
-//!    efivarfs and pstore as well;
+//!    the filesystem itself from writing (journal, metadata, access times;
+//!    XFS pushes and covers its log there); efivarfs and pstore as well.
+//!    The disks it is on include those its options name and an ext3 or ext4
+//!    journal on a device of its own, which jbd2 names;
 //! 2. `BLKROSET` on every decoy disk, each partition of it and every device
-//!    stacked on them (the decoy's LUKS, LVM, md), but the hidden volume's own
+//!    stacked on them (the decoy's LUKS and linear or striped LVM; a stack
+//!    that writes on its own is refused, [`crate::whole_root::fence_stack`]), but the hidden volume's own
 //!    top device: writes through a device node, read-write mounts and
 //!    remounts (but a btrfs's, which skips the check), and the journal or log
 //!    replay of a new mount are refused. The hidden volume's writes to a
@@ -42,9 +45,12 @@
 //!    else unloads the module).
 //!
 //! The entry refuses at activation what the fence cannot cover ([`check`]):
-//! no decoy disk found, a hidden root that shares a filesystem with the decoy
-//! (a folder or subvolume of a decoy filesystem, a container file on one),
-//! a crash-log backend that keeps records past a power-off and cannot be
+//! no decoy disk found, a decoy filesystem whose device or journal cannot be
+//! found, a hidden root that shares a filesystem with the decoy (a folder or
+//! subvolume of a decoy filesystem, a container file on one), a stacked
+//! device that writes on its own (md, device-mapper's raid, mirror, cache,
+//! thin and the like, bcache, a writable loop device over a decoy file), a
+//! crash-log backend that keeps records past a power-off and cannot be
 //! turned off, and a kernel that does not load the device program. A step
 //! that fails at the switch ends the session there ([`FenceError`]); the
 //! caller powers off with what is up of the fence, which nothing undoes.
@@ -60,6 +66,7 @@
 
 use crate::mountinfo::MountEntry;
 use crate::whole_root::disk_guard::{DevNum, Sysfs, block_device, mount_device, node_of};
+use crate::whole_root::fence_stack;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::io;
@@ -98,6 +105,11 @@ pub struct FenceSpec {
     /// ([`check`]).
     #[serde(default)]
     pub shared_superblocks: Vec<String>,
+    /// What the entry could not find of the decoy's storage: a block
+    /// filesystem whose device cannot be told, an ext3 or ext4 journal that
+    /// cannot be told. The entry refuses them ([`check`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unfound: Vec<String>,
 }
 
 /// A block device of the fence.
@@ -198,8 +210,13 @@ pub trait FenceKernel: std::fmt::Debug + Send + Sync {
     /// can be unloaded, or a kernel (6.12 and newer) whose `pstore_disable`
     /// unregisters it at once.
     fn efi_crash_log_stoppable(&self) -> bool;
-    /// Stop pstore's EFI backend, as far as the kernel lets it.
+    /// Stop pstore's EFI backend, as far as the kernel lets it, and keep a
+    /// later load of it disabled; the fence calls it whether the backend is
+    /// registered or not.
     fn stop_efi_crash_log(&self) -> io::Result<()>;
+    /// The target types of the live table of the device-mapper device `dev`,
+    /// in order (`linear`, `crypt`, `raid`).
+    fn dm_targets(&self, dev: DevNum) -> io::Result<Vec<String>>;
     /// Load the device program for `rules` and let it go again, attaching
     /// nothing: the entry's early check that the fence can be put up.
     fn probe(&self, rules: &Rules) -> io::Result<()>;
@@ -268,9 +285,49 @@ impl Sysfs {
         found
     }
 
-    /// Whether a device is an md array (`/sys/block/md0/md`).
-    fn is_md(&self, dev: DevNum) -> bool {
-        self.dir(dev).is_some_and(|d| d.join("md").is_dir())
+    /// Where procfs is beside this sysfs: `/proc` for the real `/sys`.
+    fn proc_root(&self) -> PathBuf {
+        if self.root == Path::new("/sys") {
+            PathBuf::from("/proc")
+        } else {
+            self.root.join("proc")
+        }
+    }
+
+    /// The device of the journal of the ext3 or ext4 filesystem on `dev`,
+    /// where that journal is on a device of its own: `Ok(None)` for one inside
+    /// the filesystem or none, `Err` with what could not be read. jbd2 names
+    /// the thread that writes a journal `jbd2/<journal>`, `<device>-<inode>`
+    /// for one inside a filesystem, and ext4 shows that thread as its
+    /// `journal_task`.
+    fn ext4_journal(&self, dev: DevNum) -> Result<Option<DevNum>, String> {
+        let name = self.name(dev).ok_or_else(|| dev.text())?;
+        let task = self.root.join("fs/ext4").join(&name).join("journal_task");
+        let text = std::fs::read_to_string(&task).map_err(|_| task.display().to_string())?;
+        let text = text.trim();
+        if text == "<none>" {
+            return Ok(None);
+        }
+        let pid: u32 = text.parse().map_err(|_| task.display().to_string())?;
+        let comm = self.proc_root().join(pid.to_string()).join("comm");
+        let journal = std::fs::read_to_string(&comm)
+            .ok()
+            .and_then(|c| {
+                c.trim_end_matches('\n')
+                    .strip_prefix("jbd2/")
+                    .map(str::to_string)
+            })
+            .ok_or_else(|| comm.display().to_string())?;
+        let inside = journal
+            .strip_prefix(&name)
+            .and_then(|rest| rest.strip_prefix('-'))
+            .is_some_and(|ino| !ino.is_empty() && ino.bytes().all(|b| b.is_ascii_digit()));
+        if inside {
+            return Ok(None);
+        }
+        self.by_name(&journal)
+            .map(Some)
+            .ok_or_else(|| format!("the journal device {journal}"))
     }
 
     /// The kernel name of a device (`sda1`, `dm-0`).
@@ -279,12 +336,12 @@ impl Sysfs {
     }
 
     /// The device of a kernel name (`sda1`).
-    fn by_name(&self, name: &str) -> Option<DevNum> {
+    pub(crate) fn by_name(&self, name: &str) -> Option<DevNum> {
         Self::dev_in(&self.root.join("class/block").join(name))
     }
 
     /// The file a loop device is bound to.
-    fn loop_backing(&self, dev: DevNum) -> Option<PathBuf> {
+    pub(crate) fn loop_backing(&self, dev: DevNum) -> Option<PathBuf> {
         let text = std::fs::read_to_string(self.dir(dev)?.join("loop/backing_file")).ok()?;
         let path = text.trim_end_matches('\n');
         (!path.is_empty()).then(|| PathBuf::from(path))
@@ -405,19 +462,41 @@ fn disks_below(sys: &Sysfs, dev: DevNum) -> BTreeSet<DevNum> {
 /// The devices other than its source a filesystem keeps data on, named in its
 /// options: an XFS log or realtime device, an ext4 journal by path, a btrfs
 /// `device=`.
-fn option_devices(mount: &MountEntry) -> Vec<DevNum> {
+fn option_devices(mount: &MountEntry, sys: &Sysfs) -> Vec<DevNum> {
     mount
         .super_opts
         .split(',')
         .chain(mount.mount_opts.split(','))
         .filter_map(|opt| {
             let (key, value) = opt.split_once('=')?;
-            ["logdev", "rtdev", "journal_path", "device"]
-                .contains(&key)
-                .then(|| block_device(Path::new(value)))?
+            if !["logdev", "rtdev", "journal_path", "device"].contains(&key) {
+                return None;
+            }
+            let path = Path::new(value);
+            block_device(path).or_else(|| by_kernel_name(path, sys))
         })
         .collect()
 }
+
+/// The device a path in `/dev` names by its kernel name (`/dev/sdb1`), as
+/// sysfs knows it: a source the mount table shows that the caller's `/dev`
+/// does not have, the kernel's `/dev/root` aside.
+fn by_kernel_name(path: &Path, sys: &Sysfs) -> Option<DevNum> {
+    sys.by_name(&path.file_name()?.to_string_lossy())
+}
+
+/// The block device a mount is of: [`mount_device`], or its source by its
+/// kernel name.
+pub(crate) fn device_of(mount: &MountEntry, sys: &Sysfs) -> Option<DevNum> {
+    mount_device(mount).or_else(|| by_kernel_name(&mount.source, sys))
+}
+
+/// The filesystem types that live on a block device, whose device the
+/// entry must find to fence it.
+const BLOCK_FILESYSTEMS: [&str; 12] = [
+    "ext2", "ext3", "ext4", "xfs", "btrfs", "f2fs", "vfat", "exfat", "ntfs3", "jfs", "bcachefs",
+    "nilfs2",
+];
 
 /// The fence's record of the decoy at entry. `mounts` is the decoy's mount
 /// table, `swaps` the active swap areas, `root` the decoy root (`/`) and
@@ -474,20 +553,38 @@ pub fn spec(
         }
     }
     let mut disks = BTreeSet::new();
+    let mut unfound = Vec::new();
     for mount in &decoy_mounts {
-        let mut devices: Vec<DevNum> = mount_device(mount).into_iter().collect();
-        if mount.fstype == "btrfs" {
-            // A btrfs mount shows an anonymous device number; its source names
-            // one member, which sysfs also knows by its kernel name.
-            let named = mount
-                .source
-                .file_name()
-                .and_then(|name| sys.by_name(&name.to_string_lossy()));
-            if let Some(dev) = devices.first().copied().or(named) {
-                devices = sys.btrfs_devices(dev);
+        // A btrfs mount shows an anonymous device number; its source names
+        // one member, which sysfs also knows by its kernel name.
+        let found = device_of(mount, sys);
+        if found.is_none() && BLOCK_FILESYSTEMS.contains(&mount.fstype.as_str()) {
+            unfound.push(format!(
+                "the {} filesystem at {} (from {}), whose device cannot be found",
+                mount.fstype,
+                mount.mount_point.display(),
+                mount.source.display()
+            ));
+        }
+        let mut devices: Vec<DevNum> = found.into_iter().collect();
+        if mount.fstype == "btrfs"
+            && let Some(dev) = found
+        {
+            devices = sys.btrfs_devices(dev);
+        }
+        if (mount.fstype == "ext3" || mount.fstype == "ext4")
+            && let Some(dev) = found
+        {
+            match sys.ext4_journal(dev) {
+                Ok(journal) => devices.extend(journal),
+                Err(what) => unfound.push(format!(
+                    "the journal of the {} filesystem at {} ({what} cannot be read)",
+                    mount.fstype,
+                    mount.mount_point.display()
+                )),
             }
         }
-        devices.extend(option_devices(mount));
+        devices.extend(option_devices(mount, sys));
         for dev in devices {
             if !kept_devices.contains(&dev) {
                 disks.extend(disks_below(sys, dev));
@@ -513,6 +610,7 @@ pub fn spec(
         kept_devices: kept_devices.into_iter().collect(),
         kept_superblocks: kept_superblocks.into_iter().collect(),
         shared_superblocks,
+        unfound,
     }
 }
 
@@ -563,7 +661,7 @@ pub fn targets(spec: &FenceSpec, mounts: &[MountEntry], sys: &Sysfs) -> Targets 
         let device = if FIRMWARE_FILESYSTEMS.contains(&mount.fstype.as_str()) {
             None
         } else {
-            match mount_device(mount) {
+            match device_of(mount, sys) {
                 Some(dev) if fenced.contains(&dev) => Some(
                     devices
                         .iter()
@@ -676,16 +774,16 @@ pub fn apply(
     if let Some(why) = crash_log_refusal(kernel) {
         return Err(fail("crash log", why));
     }
-    if kernel.crash_log_backend().as_deref() == Some(EFI_CRASH_LOG) {
-        kernel
-            .stop_efi_crash_log()
-            .map_err(|e| fail("crash log", e))?;
-        if let Some(left) = kernel.crash_log_backend().filter(|b| b != RAM_CRASH_LOG) {
-            return Err(fail(
-                "crash log",
-                format!("the kernel still keeps its crash records in {left}"),
-            ));
-        }
+    // Every time, the backend registered or not: the drop-in keeps a later
+    // load of `efi_pstore` in the session disabled too.
+    kernel
+        .stop_efi_crash_log()
+        .map_err(|e| fail("crash log", e))?;
+    if let Some(left) = kernel.crash_log_backend().filter(|b| b != RAM_CRASH_LOG) {
+        return Err(fail(
+            "crash log",
+            format!("the kernel still keeps its crash records in {left}"),
+        ));
     }
     for device in &targets.devices {
         if kernel.device_read_only(device) {
@@ -714,21 +812,6 @@ pub fn apply(
     Ok(())
 }
 
-/// The md arrays among the devices the fence would set read-only, by kernel
-/// name. md writes its bitmap and its superblock (with the time of the
-/// update) to its members past their read-only flag, which the kernel only
-/// warns about, and keeps doing so seconds after the last write it carried,
-/// so the fence cannot keep a decoy disk under md unwritten.
-fn md_arrays(targets: &Targets, sys: &Sysfs) -> Vec<String> {
-    targets
-        .rules
-        .block
-        .iter()
-        .filter(|&&dev| sys.is_md(dev))
-        .filter_map(|&dev| sys.name(dev))
-        .collect()
-}
-
 /// Put the fence up at the switch from the entry's record. `runtime_dir`
 /// holds the scratch directory.
 pub fn put_up(
@@ -750,20 +833,52 @@ pub fn put_up(
             "the hidden root shares a filesystem with the decoy",
         ));
     }
+    if !spec.unfound.is_empty() {
+        return Err(fail("decoy disks", spec.unfound.join("; ")));
+    }
     let targets = targets(spec, mounts, sys);
-    let md = md_arrays(&targets, sys);
-    if !md.is_empty() {
+    let active = fence_stack::active_stacks(&targets, sys, kernel);
+    if !active.is_empty() {
         return Err(fail(
-            "md arrays",
-            format!("md writes to the decoy disk under {}", md.join(", ")),
+            "stacked devices",
+            format!("{} write to the decoy disk on their own", active.join(", ")),
         ));
     }
-    apply(&targets, kernel, &runtime_dir.join(SCRATCH_NAME))
+    apply(&targets, kernel, &runtime_dir.join(SCRATCH_NAME))?;
+    // Whatever the mount table shows of a fenced device is read-only now.
+    for mount in mounts {
+        let Some(dev) = device_of(mount, sys) else {
+            continue;
+        };
+        if !targets.rules.block.contains(&dev) {
+            continue;
+        }
+        let sb = Superblock {
+            sb_dev: mount.dev.clone(),
+            fstype: mount.fstype.clone(),
+            device: None,
+            read_write: true,
+        };
+        if kernel.superblock_read_only(&sb) == Some(false) {
+            return Err(fail(
+                "read-only filesystem",
+                format!(
+                    "{} ({}) at {} is on a fenced device and still reads read-write",
+                    mount.dev,
+                    mount.fstype,
+                    mount.mount_point.display()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The entry's check, at activation, that the fence can go up at the switch:
 /// a decoy disk was found, the hidden root shares no filesystem with the
-/// decoy, no md array lies on a decoy disk ([`md_arrays`]), no crash-log backend keeps records past a power-off that cannot be
+/// decoy, every decoy filesystem's device and journal was found, no stacked
+/// device on a decoy disk writes on its own and no writable loop device is
+/// bound to a decoy file ([`crate::whole_root::fence_stack`]), no crash-log backend keeps records past a power-off that cannot be
 /// turned off, and the kernel loads the device program for the devices it
 /// would deny (a cgroup2 hierarchy, `CONFIG_CGROUP_BPF`, no policy that
 /// denies it). What only the switch can find (a filesystem still busy) the
@@ -790,14 +905,30 @@ pub fn check(
             spec.shared_superblocks.join(", ")
         ));
     }
-    let targets = targets(&spec, mounts, sys);
-    let md = md_arrays(&targets, sys);
-    if !md.is_empty() {
+    if !spec.unfound.is_empty() {
         return Err(format!(
-            "the decoy disk cannot be made read-only for the session: the md array {} \
-             lies on it, and md writes its bitmap and superblock to its members past a \
-             read-only flag",
-            md.join(", ")
+            "the decoy disk cannot be made read-only for the session: NAILS cannot find {}",
+            spec.unfound.join("; ")
+        ));
+    }
+    let targets = targets(&spec, mounts, sys);
+    let active = fence_stack::active_stacks(&targets, sys, kernel);
+    if !active.is_empty() {
+        return Err(format!(
+            "the decoy disk cannot be made read-only for the session: {} on it {} to the \
+             disk on {} own past a read-only flag; only linear, striped and crypt \
+             mappings can be fenced",
+            active.join(", "),
+            if active.len() == 1 { "writes" } else { "write" },
+            if active.len() == 1 { "its" } else { "their" },
+        ));
+    }
+    let loops = fence_stack::writable_loops(&targets, mounts, sys, &spec.kept_devices);
+    if !loops.is_empty() {
+        return Err(format!(
+            "the decoy disk cannot be made read-only for the session: the writable loop \
+             device {} is bound to a file on a decoy filesystem",
+            loops.join(", ")
         ));
     }
     if let Some(why) = crash_log_refusal(kernel) {

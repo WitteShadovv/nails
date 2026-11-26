@@ -48,6 +48,7 @@ impl Fake {
             let name = Path::new(rel).file_name().unwrap();
             std::os::unix::fs::symlink(&d, class.join(name)).unwrap();
             std::os::unix::fs::symlink(root.join("class/block"), d.join("subsystem")).unwrap();
+            journal_inside(root, &name.to_string_lossy(), dev);
             d
         };
         let queue = |d: &Path| {
@@ -98,6 +99,7 @@ impl Fake {
         let dm3 = block("virtual/block/dm-3", "253:3");
         for d in [&dm0, &dm1, &dm2, &dm3] {
             queue(d);
+            std::fs::create_dir_all(d.join("dm")).unwrap();
         }
         link(&dm0, "slaves", &vda2);
         link(&vda2, "holders", &dm0);
@@ -112,6 +114,8 @@ impl Fake {
         let dm5 = block("virtual/block/dm-5", "253:5");
         queue(&dm4);
         queue(&dm5);
+        std::fs::create_dir_all(dm4.join("dm")).unwrap();
+        std::fs::create_dir_all(dm5.join("dm")).unwrap();
         link(&dm4, "slaves", &dm0);
         link(&dm0, "holders", &dm4);
         link(&dm5, "slaves", &dm0);
@@ -146,6 +150,8 @@ impl Fake {
         // A loop device.
         let loop0 = block("virtual/block/loop0", "7:0");
         std::fs::create_dir_all(loop0.join("loop")).unwrap();
+        // Bound read-only, so that the checks pass it wherever the fake is.
+        std::fs::write(loop0.join("ro"), "1\n").unwrap();
         std::fs::write(root.join("backing"), "").unwrap();
         std::fs::write(
             loop0.join("loop/backing_file"),
@@ -162,6 +168,42 @@ impl Fake {
         let meta = std::fs::metadata(self.dir.path().join("backing")).unwrap();
         DevNum::from_raw(meta.dev()).text()
     }
+}
+
+/// An ext4 on the device `name` (`dev`) whose journal is inside it, as ext4
+/// and jbd2 show it: its `journal_task` and that thread's name.
+fn journal_inside(root: &Path, name: &str, dev_text: &str) {
+    journal_named(root, name, dev_text, &format!("{name}-8"));
+}
+
+/// An ext4 on the device `name` whose journal jbd2 calls `journal`.
+fn journal_named(root: &Path, name: &str, dev_text: &str, journal: &str) {
+    let d = dev(dev_text);
+    let pid = 100_000 + d.major * 1000 + d.minor;
+    let fs = root.join("fs/ext4").join(name);
+    std::fs::create_dir_all(&fs).unwrap();
+    std::fs::write(fs.join("journal_task"), format!("{pid}\n")).unwrap();
+    let proc = root.join("proc").join(pid.to_string());
+    std::fs::create_dir_all(&proc).unwrap();
+    std::fs::write(proc.join("comm"), format!("jbd2/{journal}\n")).unwrap();
+}
+
+/// Add a stacked device `name` (`dev_text`) on `below` to the fake, its
+/// driver's directory `marker` (`dm`, `md`, `bcache`) in its sysfs entry.
+fn add_stacked(fake: &Fake, name: &str, dev_text: &str, below: &str, marker: &str) {
+    let root = fake.sys.root.clone();
+    let d = root.join("devices/virtual/block").join(name);
+    std::fs::create_dir_all(d.join("slaves")).unwrap();
+    std::fs::create_dir_all(d.join(marker)).unwrap();
+    std::fs::write(d.join("dev"), format!("{dev_text}\n")).unwrap();
+    std::fs::write(d.join("ro"), "0\n").unwrap();
+    std::os::unix::fs::symlink(&d, root.join("dev/block").join(dev_text)).unwrap();
+    std::os::unix::fs::symlink(&d, root.join("class/block").join(name)).unwrap();
+    let b = std::fs::canonicalize(root.join("class/block").join(below)).unwrap();
+    std::os::unix::fs::symlink(&b, d.join("slaves").join(below)).unwrap();
+    std::fs::create_dir_all(b.join("holders")).unwrap();
+    std::os::unix::fs::symlink(&d, b.join("holders").join(name)).unwrap();
+    journal_inside(&root, name, dev_text);
 }
 
 /// The decoy's table at entry: the root LV, the ESP, /srv on the SCSI disk,
@@ -445,7 +487,15 @@ fn an_nvme_multipath_head_is_a_disk_and_its_controllers_are_denied() {
 fn an_xfs_log_device_on_another_disk_makes_that_disk_a_decoy_disk() {
     let mount = parse_mountinfo("1 0 8:2 / / rw - xfs /nonexistent/x rw,logdev=/dev/null\n");
     // /dev/null is no block device: nothing is named.
-    assert!(option_devices(&mount[0]).is_empty());
+    assert!(
+        option_devices(
+            &mount[0],
+            &Sysfs {
+                root: "/nonexistent".into()
+            }
+        )
+        .is_empty()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +525,10 @@ struct State {
     crash_stuck: bool,
     /// The rules the probe loaded.
     probed: Option<Rules>,
+    /// The device-mapper tables by device; one not listed is `linear`.
+    dm_tables: BTreeMap<DevNum, Vec<String>>,
+    /// A device-mapper device whose table cannot be read.
+    dm_unreadable: Option<DevNum>,
 }
 
 impl Mock {
@@ -569,10 +623,21 @@ impl FenceKernel for Mock {
     fn stop_efi_crash_log(&self) -> io::Result<()> {
         self.check("stop crash log".into())?;
         let mut state = self.state.lock().unwrap();
-        if !state.crash_stuck {
+        if !state.crash_stuck && state.crash.as_deref() == Some(EFI_CRASH_LOG) {
             state.crash = None;
         }
         Ok(())
+    }
+    fn dm_targets(&self, dev: DevNum) -> io::Result<Vec<String>> {
+        let state = self.state.lock().unwrap();
+        if state.dm_unreadable == Some(dev) {
+            return Err(io::Error::from_raw_os_error(libc::ENXIO));
+        }
+        Ok(state
+            .dm_tables
+            .get(&dev)
+            .cloned()
+            .unwrap_or_else(|| vec!["linear".to_string()]))
     }
     fn probe(&self, rules: &Rules) -> io::Result<()> {
         self.check("probe".into())?;
@@ -643,6 +708,7 @@ fn the_fence_goes_up_filesystems_first_and_the_program_last() {
             "sync",
             "ro 252:2",
             "ro 0:30",
+            "stop crash log",
             "setro 252:0",
             "setro 252:2",
             "discard off /q/vda",
@@ -656,10 +722,11 @@ fn a_step_that_fails_stops_the_fence_there_and_undoes_nothing() {
     for (step, done) in [
         ("ro 252:2", 1),
         ("ro 0:30", 2),
-        ("setro 252:0", 3),
-        ("setro 252:2", 5),
-        ("discard off /q/vda", 6),
-        ("attach 3", 8),
+        ("stop crash log", 3),
+        ("setro 252:0", 4),
+        ("setro 252:2", 6),
+        ("discard off /q/vda", 7),
+        ("attach 3", 9),
     ] {
         let kernel = Mock::failing(step);
         let error = apply(&sample_targets(), &kernel, Path::new("/s")).unwrap_err();
@@ -745,7 +812,10 @@ fn a_superblock_no_mount_shows_counts_as_done_once_reconfigured() {
             true
         }
         fn stop_efi_crash_log(&self) -> io::Result<()> {
-            unreachable!("no backend")
+            Ok(())
+        }
+        fn dm_targets(&self, dev: DevNum) -> io::Result<Vec<String>> {
+            self.0.dm_targets(dev)
         }
         fn probe(&self, _: &Rules) -> io::Result<()> {
             Ok(())
@@ -772,7 +842,7 @@ fn a_ram_crash_log_is_left_and_one_that_outlives_a_power_off_refuses_the_fence()
     let kernel = Mock::default();
     kernel.state.lock().unwrap().crash = Some(RAM_CRASH_LOG.into());
     assert!(apply(&sample_targets(), &kernel, Path::new("/s")).is_ok());
-    assert!(!kernel.log().contains(&"stop crash log".to_string()));
+    assert_eq!(kernel.crash_log_backend().as_deref(), Some(RAM_CRASH_LOG));
 
     for backend in ["erst", "pstore_blk", "mtdoops"] {
         let kernel = Mock::default();
@@ -910,31 +980,250 @@ fn the_firmware_s_own_nodes_are_denied_where_they_exist() {
     );
 }
 
-#[test]
-fn an_md_array_on_a_decoy_disk_is_refused_at_activation_and_at_the_switch() {
-    let fake = Fake::new();
-    let mounts = decoy_table("253:1");
-    let at = |p: &str| spec(&mounts, &[], Path::new("/"), Path::new(p), &fake.sys);
-    let spec = at("/mnt/data");
-    assert!(check(spec.clone(), &mounts, &fake.sys, &Mock::default()).is_ok());
-    // md0 (9:0) on the decoy's ESP partition vda1.
-    let root = fake.sys.root.clone();
-    let md0 = root.join("devices/virtual/block/md0");
-    std::fs::create_dir_all(md0.join("md")).unwrap();
-    std::fs::write(md0.join("dev"), "9:0\n").unwrap();
-    std::os::unix::fs::symlink(&md0, root.join("dev/block/9:0")).unwrap();
-    std::os::unix::fs::symlink(&md0, root.join("class/block/md0")).unwrap();
-    let vda1 = root.join("devices/pci0/virtio1/block/vda/vda1");
-    std::fs::create_dir_all(vda1.join("holders")).unwrap();
-    std::os::unix::fs::symlink(&md0, vda1.join("holders/md0")).unwrap();
-    let refused = check(spec.clone(), &mounts, &fake.sys, &Mock::default()).unwrap_err();
-    assert!(refused.contains("md array md0"), "{refused}");
-    let kernel = Mock::default();
-    let run = tempfile::tempdir().unwrap();
-    let at_switch = put_up(&spec, &mounts, &fake.sys, &kernel, run.path()).unwrap_err();
-    assert!(at_switch.to_string().contains("md0"), "{at_switch}");
-    assert!(
-        kernel.state.lock().unwrap().log.is_empty(),
-        "nothing of the fence goes up"
+/// The decoy root on `top` over the decoy's partitions, with the hidden
+/// volume on dm-1 at /mnt/data.
+fn root_on(top: &str, source: &str) -> Vec<MountEntry> {
+    parse_mountinfo(&format!(
+        "1 0 {top} / / rw - ext4 /nonexistent/{source} rw\n\
+         2 1 252:1 / /boot rw - vfat /nonexistent/vda1 rw\n\
+         3 1 253:1 / /mnt/data rw - ext4 /nonexistent/mapper/data rw\n"
+    ))
+}
+
+/// Check, and put up at the switch, the fence of `mounts` on `kernel`: the
+/// refusals of both, or `None` for each that passes.
+fn refusals(fake: &Fake, mounts: &[MountEntry], kernel: &Mock) -> (Option<String>, Option<String>) {
+    let spec = spec(
+        mounts,
+        &[],
+        Path::new("/"),
+        Path::new("/mnt/data"),
+        &fake.sys,
     );
+    let checked = check(spec.clone(), mounts, &fake.sys, kernel).err();
+    let run = tempfile::tempdir().unwrap();
+    kernel.state.lock().unwrap().log.clear();
+    let switched = put_up(&spec, mounts, &fake.sys, kernel, run.path())
+        .err()
+        .map(|e| e.to_string());
+    (checked, switched)
+}
+
+#[test]
+fn a_stack_that_writes_on_its_own_is_refused_and_a_passive_one_is_fenced() {
+    // LVM over the decoy's LUKS: dm-6 over dm-0, the decoy root on it.
+    let fake = Fake::new();
+    add_stacked(&fake, "dm-6", "253:6", "dm-0", "dm");
+    let mounts = root_on("253:6", "mapper/vg-root");
+    for passive in [
+        vec!["linear"],
+        vec!["striped"],
+        vec!["linear", "linear"],
+        vec!["crypt"],
+    ] {
+        let kernel = Mock::default();
+        kernel.state.lock().unwrap().dm_tables.insert(
+            dev("253:6"),
+            passive.iter().map(|t| t.to_string()).collect(),
+        );
+        assert_eq!(
+            refusals(&fake, &mounts, &kernel),
+            (None, None),
+            "{passive:?}"
+        );
+    }
+    for active in [
+        "raid",
+        "mirror",
+        "cache",
+        "writecache",
+        "integrity",
+        "thin-pool",
+        "thin",
+        "vdo",
+        "clone",
+    ] {
+        let kernel = Mock::default();
+        kernel
+            .state
+            .lock()
+            .unwrap()
+            .dm_tables
+            .insert(dev("253:6"), vec!["linear".into(), active.into()]);
+        let (checked, switched) = refusals(&fake, &mounts, &kernel);
+        let checked = checked.expect(active);
+        assert!(
+            checked.contains(&format!("dm-6 (device-mapper {active})")),
+            "{checked}"
+        );
+        assert!(switched.expect(active).contains("dm-6"), "{active}");
+        assert!(
+            kernel.log().is_empty(),
+            "the refused switch put up {:?}",
+            kernel.log()
+        );
+    }
+    // A table that cannot be read counts as one that writes.
+    let kernel = Mock::default();
+    kernel.state.lock().unwrap().dm_unreadable = Some(dev("253:6"));
+    let (checked, switched) = refusals(&fake, &mounts, &kernel);
+    assert!(checked.unwrap().contains("cannot be read"));
+    assert!(switched.is_some());
+}
+
+#[test]
+fn md_bcache_and_any_other_stacked_driver_on_a_decoy_disk_are_refused() {
+    for (name, dev_text, below, marker, kind) in [
+        ("md0", "9:0", "vda1", "md", "md"),
+        ("md1", "9:1", "sda", "md", "md"),
+        ("bcache0", "251:0", "vda2", "bcache", "bcache"),
+        ("drbd0", "147:0", "sda", "holders", "drbd"),
+        ("zz0", "240:9", "vda2", "holders", "a stacked driver"),
+    ] {
+        let fake = Fake::new();
+        add_stacked(&fake, name, dev_text, below, marker);
+        let mounts = if below == "vda1" {
+            decoy_table("253:1")
+        } else {
+            root_on(dev_text, name)
+        };
+        let kernel = Mock::default();
+        let (checked, switched) = refusals(&fake, &mounts, &kernel);
+        assert!(
+            kernel.log().is_empty(),
+            "the refused switch put up {:?}",
+            kernel.log()
+        );
+        let checked = checked.unwrap_or_else(|| panic!("{name} passes the check"));
+        assert!(checked.contains(&format!("{name} ({kind})")), "{checked}");
+        assert!(switched.unwrap_or_default().contains(name), "{name}");
+    }
+}
+
+#[test]
+fn a_writable_loop_device_over_a_decoy_file_is_refused_and_a_read_only_one_is_not() {
+    let fake = Fake::new();
+    let at = fake.dir.path().join("decoy");
+    std::fs::create_dir_all(&at).unwrap();
+    let at = std::fs::canonicalize(&at).unwrap();
+    std::fs::write(at.join("disk.img"), "").unwrap();
+    // A decoy filesystem on the SCSI disk, mounted at the fake's directory.
+    let mounts = parse_mountinfo(&format!(
+        "1 0 253:2 / / rw - ext4 /nonexistent/mapper/root rw\n\
+         5 1 253:1 / /mnt/data rw - ext4 /nonexistent/mapper/data rw\n\
+         9 1 8:0 / {} rw - ext4 /nonexistent/sda rw\n",
+        at.display()
+    ));
+    add_stacked(&fake, "loop5", "7:5", "vdb", "loop");
+    let loop5 = fake.sys.root.join("devices/virtual/block/loop5");
+    std::fs::remove_file(
+        fake.sys
+            .root
+            .join("devices/pci3/virtio2/block/vdb/holders/loop5"),
+    )
+    .unwrap();
+    std::fs::remove_dir_all(loop5.join("slaves")).unwrap();
+    std::fs::write(
+        loop5.join("loop/backing_file"),
+        format!("{}\n", at.join("disk.img").display()),
+    )
+    .unwrap();
+    let spec = spec(
+        &mounts,
+        &[],
+        Path::new("/"),
+        Path::new("/mnt/data"),
+        &fake.sys,
+    );
+    let refused = check(spec.clone(), &mounts, &fake.sys, &Mock::default()).unwrap_err();
+    assert!(refused.contains("loop device loop5"), "{refused}");
+    std::fs::write(loop5.join("ro"), "1\n").unwrap();
+    assert_eq!(
+        check(spec.clone(), &mounts, &fake.sys, &Mock::default()),
+        Ok(spec)
+    );
+}
+
+#[test]
+fn the_devices_an_xfs_or_btrfs_names_and_an_ext4_s_own_journal_are_decoy_disks() {
+    let fake = Fake::new();
+    let with = |line: &str| {
+        let mut mounts = decoy_table("253:1");
+        mounts.extend(parse_mountinfo(line));
+        spec(
+            &mounts,
+            &[],
+            Path::new("/"),
+            Path::new("/mnt/data"),
+            &fake.sys,
+        )
+    };
+    for line in [
+        "9 1 8:0 / /var rw - xfs /nonexistent/sda rw,logdev=/nonexistent/vdb\n",
+        "9 1 8:0 / /var rw - xfs /nonexistent/sda rw,rtdev=/nonexistent/vdb\n",
+        "9 1 0:50 / /var rw - btrfs /nonexistent/sda rw,device=/nonexistent/vdb\n",
+    ] {
+        assert!(with(line).disks.contains(&dev("252:16")), "{line}");
+    }
+    // An ext4 whose journal is the device vdb, as jbd2 names it.
+    let root = fake.sys.root.clone();
+    journal_named(&root, "sda", "8:0", "vdb");
+    assert!(
+        with("").disks.contains(&dev("252:16")),
+        "the journal's disk"
+    );
+    // A journal ext4 does not show cannot be told: refused.
+    std::fs::remove_file(root.join("fs/ext4/sda/journal_task")).unwrap();
+    let spec = with("");
+    let refused = check(spec, &decoy_table("253:1"), &fake.sys, &Mock::default()).unwrap_err();
+    assert!(
+        refused.contains("the journal of the ext4 filesystem at /srv"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_decoy_filesystem_whose_device_cannot_be_found_is_refused() {
+    let fake = Fake::new();
+    let mounts = parse_mountinfo(
+        "1 0 0:44 / / rw - btrfs /dev/root rw,subvol=/\n\
+         2 1 252:1 / /boot rw - vfat /nonexistent/vda1 rw\n\
+         3 1 253:1 / /mnt/data rw - ext4 /nonexistent/mapper/data rw\n",
+    );
+    let (checked, switched) = refusals(&fake, &mounts, &Mock::default());
+    assert!(
+        checked
+            .unwrap()
+            .contains("btrfs filesystem at / (from /dev/root)")
+    );
+    assert!(switched.is_some());
+}
+
+#[test]
+fn a_filesystem_on_a_fenced_device_still_read_write_after_the_fence_ends_the_switch() {
+    let fake = Fake::new();
+    // The ESP's superblock read-only already, by its options; the kernel
+    // shows it read-write after the fence.
+    let mounts = parse_mountinfo(
+        "1 0 253:2 / / rw - ext4 /nonexistent/mapper/root rw\n\
+         2 1 252:1 / /boot ro - vfat /nonexistent/vda1 ro\n\
+         3 1 253:1 / /mnt/data rw - ext4 /nonexistent/mapper/data rw\n",
+    );
+    let (checked, switched) = refusals(&fake, &mounts, &Mock::default());
+    assert_eq!(checked, None);
+    let switched = switched.unwrap();
+    assert!(switched.contains("252:1 (vfat) at /boot"), "{switched}");
+}
+
+#[test]
+fn the_crash_log_drop_in_is_written_whether_or_not_the_efi_backend_is_registered() {
+    for backend in [None, Some(RAM_CRASH_LOG), Some(EFI_CRASH_LOG)] {
+        let kernel = Mock::default();
+        kernel.state.lock().unwrap().crash = backend.map(str::to_string);
+        apply(&sample_targets(), &kernel, Path::new("/s")).unwrap();
+        assert!(
+            kernel.log().contains(&"stop crash log".to_string()),
+            "{backend:?}"
+        );
+    }
 }

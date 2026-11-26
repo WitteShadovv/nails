@@ -583,17 +583,18 @@ also refuses writes to the decoy's disks that go around it, so a program NAILS
 does not know of gets an error instead of leaving a trace. The entry
 transition puts the fence up, after the decoy's own shutdown and before PID 1
 switches root, around every disk the decoy mounts at entry (its root, its
-other filesystems, its ESP, the other devices a multi-device btrfs or an
-external journal or log keeps data on, its swap), each partition of those
-disks and every device stacked on them (the decoy's LUKS, LVM and md). Only
-the hidden volume's own top device, and what is stacked on it, is left out.
+other filesystems, its ESP, the other devices a multi-device btrfs keeps data
+on, an XFS log or realtime device, an ext3 or ext4 journal on a device of its
+own as jbd2 names it, its swap), each partition of those disks and every
+device stacked on them (the decoy's LUKS, and LVM's linear and striped
+volumes). Only the hidden volume's own top device, and what is stacked on it,
+is left out.
 A hidden session never goes back to the decoy's kernel, so the fence stays up
 until the power-off ends it:
 
 - every decoy filesystem still mounted is made read-only at the superblock,
   after a `sync`. This is what refuses file writes (`EROFS`) and keeps the
-  filesystem from writing a journal, metadata or access times of its own
-  (btrfs writes no read repair on a read-only superblock either). An ext4 or
+  filesystem from writing a journal, metadata or access times of its own. An ext4 or
   btrfs read-only remount commits its journal and marks itself clean, once,
   at entry: that superblock then records the entry time as its last write,
   where a decoy that ran on would record its power-off. A plain `sync` would
@@ -619,9 +620,10 @@ until the power-off ends it:
   node for them, swap onto them or mount them read-write. It needs only
   `CONFIG_CGROUP_BPF` and a cgroup2 hierarchy, which every supported
   distribution has; a kernel lockdown would not close these paths. A
-  read-only mount of a decoy filesystem with its type given still works: the
-  kernel finds the filesystem's live superblock by its device number without
-  opening the device, and that superblock is read-only;
+  read-only mount of a decoy ext4, XFS or f2fs with its type given still
+  works: the kernel finds the filesystem's live superblock by its device
+  number without opening the device, and that superblock is read-only. A
+  btrfs mount scans its devices and is refused;
 - efivarfs and pstore are made read-only, and the program denies the
   firmware's own nodes past them (`/dev/efi_test`, `/dev/efi_capsule_loader`);
 - the kernel's crash log is kept from the firmware. pstore's EFI backend
@@ -632,30 +634,41 @@ until the power-off ends it:
   an older kernel it unloads the module, and a later load stays disabled).
 
 Activation refuses what the fence cannot cover, before the soft-reboot: no
-decoy disk is found; the hidden root shares a filesystem with the decoy (a
-folder or subvolume of a decoy filesystem, which `--allow-decoy-storage`
-accepts for `check`, or a container file on one), which the session would
-have to keep writable; an md array on a decoy disk, since md writes its
-bitmap and its superblock (with the time of the update) to its members
-seconds after the last write it carried, whatever their read-only flag says;
-a crash-log backend that keeps records past a
+decoy disk is found; a decoy filesystem whose device cannot be found (a
+btrfs root the mount table shows only as `/dev/root`), or an ext3 or ext4
+whose journal cannot be told; the hidden root shares a filesystem with the
+decoy (a folder or subvolume of a decoy filesystem, which
+`--allow-decoy-storage` accepts for `check`, or a container file on one),
+which the session would have to keep writable; a stacked device on a decoy
+disk that writes to it on its own, whatever its read-only flag says: md and
+LVM RAID (device-mapper's `raid`) write their superblocks and bitmaps, with
+the time of the update, seconds after the last write they carried, and so do
+device-mapper's `mirror`, `cache`, `writecache`, `integrity`, `thin-pool`
+and every other target but `linear`, `striped` and `crypt`, bcache and drbd
+(the device-mapper table is read from the kernel; one that cannot be read
+counts as one that writes); a loop device that may write and is bound to a
+file of a decoy filesystem; a crash-log backend that keeps records past a
 power-off and cannot be turned off for the session (ACPI ERST, mtd, a block
 device, a built-in EFI backend on a kernel older than 6.12); or the kernel
-does not load the device program for the devices it would deny. Before
-anything is written, where PID 1 still maps or holds a deleted file (an
-`ld.so.cache` or library a package update replaced, which it keeps until it
-executes itself again) the activation has it do so (`systemctl
-daemon-reexec`), and where udevd does, it restarts udevd, steps the decoy's
-journal records in the window around the switch. At the switch the
-transition first ends the decoy's leftover processes but udevd, which PID 1
-kills a moment later as at a plain soft-reboot, and a
-step of the fence that fails then ends the session in a power-off, with what
-is up of the fence: a swap area active on a decoy disk, or a filesystem that
-cannot go read-only, because a process still holds a file of it open for
-writing or a deleted file of it open (the reason, which `status` shows once
-the hidden volume is open again, names those processes). All of it is kernel
-state in RAM: nothing of the fence is written to a disk, and the power-off
-ends it.
+does not load the device program for the devices it would deny. Where PID 1
+still maps or holds a deleted file (an `ld.so.cache` or library a package
+update replaced, which it keeps until it executes itself again) the
+activation has it do so (`systemctl daemon-reexec`), and where udevd does, it
+restarts udevd; both run while the decoy's mounts are `noatime` for the
+activation's reloads, before them, and the decoy's journal records them in
+the window around the switch.
+
+At the switch the transition first ends the decoy's leftover processes, all
+but udevd's, which PID 1 kills a moment later as at a plain soft-reboot. It
+then checks the stacked devices again and puts the fence up. Where a step
+fails, the session ends in a power-off with what is up of the fence. A step
+fails on a stacked device that writes on its own, a swap area active on a
+decoy disk, a filesystem that cannot go read-only because a process still
+holds a file of it open for writing or a deleted file of it open (the reason,
+which `status` shows once the hidden volume is open again, names those
+processes), and any filesystem of a fenced device that the mount table still
+shows read-write once the fence is up. All of it is kernel state in RAM:
+nothing of the fence is written to a disk, and the power-off ends it.
 
 What it does not cover:
 
@@ -676,6 +689,12 @@ What it does not cover:
   `<hidden_volume_root>/root/decoy`) makes it read-write again, and its next
   transaction reaches the disk. A new mount of it, another subvolume
   included, is refused, since that opens the device.
+- **btrfs read repair.** A btrfs that keeps a second copy of its data or
+  metadata (the DUP, RAID1, RAID1C3/4, RAID10 and RAID5/6 profiles) writes
+  the good copy over a bad one when a read finds a checksum that does not
+  match, read-only superblock or not, and the kernel lets that write through
+  the read-only flag. It writes only where a copy on the decoy disk was
+  already damaged.
 - **Writers that hold their access from before the fence**: a process that
   survives the switch (a unit with `SurviveFinalKillSignal=`) and holds a
   decoy device open or mapped shared, and a loop device the decoy set up over

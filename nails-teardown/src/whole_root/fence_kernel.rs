@@ -28,6 +28,55 @@ const EFI_PSTORE_INITSTATE: &str = "/sys/module/efi_pstore/initstate";
 /// The drop-in that keeps a later `modprobe efi_pstore` disabled.
 const MODPROBE_DROPIN: &str = "/run/modprobe.d/50-overlay-runtime.conf";
 
+/// Device-mapper's control node, which answers `DM_TABLE_STATUS`.
+const DM_CONTROL: &str = "/dev/mapper/control";
+/// `sizeof(struct dm_ioctl)`, where a reply's targets start.
+pub(crate) const DM_IOCTL_SIZE: usize = 312;
+/// `_IOWR(DM_IOCTL, DM_TABLE_STATUS_CMD, struct dm_ioctl)`.
+pub(crate) const DM_TABLE_STATUS: u32 =
+    (3 << 30) | ((DM_IOCTL_SIZE as u32) << 16) | (0xfd << 8) | 12;
+/// Ask for the table rather than the targets' status.
+const DM_STATUS_TABLE_FLAG: u32 = 1 << 4;
+/// The reply did not fit the buffer.
+const DM_BUFFER_FULL_FLAG: u32 = 1 << 8;
+
+/// The target types of the live table of the device-mapper device `dev`
+/// (`DM_TABLE_STATUS` on its number, as `dmsetup table -j -m` asks).
+#[allow(unsafe_code)]
+fn dm_table_targets(dev: DevNum) -> io::Result<Vec<String>> {
+    use std::os::fd::AsRawFd;
+    let control = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(DM_CONTROL)?;
+    let encoded = u64::from(dev.minor & 0xff)
+        | (u64::from(dev.major) << 8)
+        | (u64::from(dev.minor & !0xff) << 12);
+    let mut size = 16 * 1024;
+    loop {
+        let mut buf = vec![0u8; size];
+        buf[0..4].copy_from_slice(&4u32.to_ne_bytes());
+        buf[12..16].copy_from_slice(&(size as u32).to_ne_bytes());
+        buf[16..20].copy_from_slice(&(DM_IOCTL_SIZE as u32).to_ne_bytes());
+        buf[28..32].copy_from_slice(&DM_STATUS_TABLE_FLAG.to_ne_bytes());
+        buf[40..48].copy_from_slice(&encoded.to_ne_bytes());
+        // SAFETY: `buf` is a `struct dm_ioctl` followed by room for the reply,
+        // `data_size` says how much, and it outlives the call.
+        let ret =
+            unsafe { libc::ioctl(control.as_raw_fd(), DM_TABLE_STATUS as _, buf.as_mut_ptr()) };
+        if ret < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let flags = u32::from_ne_bytes(buf[28..32].try_into().unwrap_or([0; 4]));
+        if flags & DM_BUFFER_FULL_FLAG != 0 && size < 16 * 1024 * 1024 {
+            size *= 4;
+            continue;
+        }
+        return crate::whole_root::fence_stack::parse_targets(&buf)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e));
+    }
+}
+
 #[allow(unsafe_code)]
 fn delete_module(name: &std::ffi::CStr) -> io::Result<()> {
     // SAFETY: `name` is a NUL-terminated string that outlives the call, and
@@ -203,6 +252,10 @@ impl FenceKernel for RealKernel {
             delete_module(c"efi_pstore")?;
         }
         Ok(())
+    }
+
+    fn dm_targets(&self, dev: DevNum) -> io::Result<Vec<String>> {
+        dm_table_targets(dev)
     }
 
     fn probe(&self, rules: &Rules) -> io::Result<()> {

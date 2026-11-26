@@ -780,10 +780,11 @@ fn enter(env: &Env, plan: &mut Plan, mounts: &[MountEntry]) -> Outcome {
 
 /// Put up the write fence the entry recorded ([`fence::put_up`]). A plan
 /// without the record is refused where the fence applies: the entry always
-/// writes it. First the decoy's leftover processes end, udevd's included: a
-/// process PID 1 kills only at the switch can still hold a file of the decoy
-/// open for writing, or a deleted one open, and a filesystem with either
-/// cannot go read-only.
+/// writes it. First the decoy's leftover processes end, all but udevd's,
+/// which PID 1 kills at the switch as at a plain soft-reboot: a leftover can
+/// still hold a file of the decoy open for writing, or a deleted one open,
+/// and a filesystem with either cannot go read-only. The activation
+/// restarted a udevd that held a deleted file.
 fn put_up_fence(env: &Env, plan: &Plan, mounts: &[MountEntry]) -> Result<(), String> {
     let Some(places) = &env.fence else {
         return Ok(());
