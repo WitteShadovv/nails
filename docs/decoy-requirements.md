@@ -1303,125 +1303,22 @@ history yourself so an interactive shell has nowhere to write:
   `SHARE_HISTORY` and `INC_APPEND_HISTORY_TIME` (NixOS's `programs.zsh` sets
   `SHARE_HISTORY` by default, through `programs.zsh.setOptions`, Home
   Manager's `programs.zsh` through `history.share`, which is on by default,
-  and so does Oh My Zsh), keep `fc -A`, `fc -W` and `fc -p`, and a write to
-  any file but a device, out of zsh's hooks (`$TTY` counts as any file, as
-  your files may change what it holds: write to `/dev/tty` instead; and a
-  write to a device too where your files define a global alias) and
-  `history -a` and
-  `history -w` out of bash's `PROMPT_COMMAND`, and type the decoy commands in
-  fish only as `fish --private`. For zsh, the check counts any mention of the
-  three options in a file zsh reads as on, an `unsetopt` too, as no reading of
-  the files can show that a turn-off holds: leave them out of every startup file
-  (on NixOS, out of `programs.zsh.setOptions`), or type the decoy commands in a
-  zsh started as `zsh -f`, which reads no startup file but `/etc/zshenv` (and on
-  NixOS `/etc/zshenv.local`). Start that zsh after your last change to its
-  startup files, and on NixOS after the rebuild: zsh keeps what it read as it
-  started, so the check warns for the zsh you type into when a file it reads
-  or looks for, a link or a directory on the way to it changed after that zsh
-  started (an edit, `rm ~/.zshrc`, a rebuild, or any program that makes or
-  removes a file in your home). As zsh reads a history file that holds lines
-  at its start, it makes and removes a lock file beside it unless
-  `HIST_FCNTL_LOCK` is on,
-  so with the history file in your home or `ZDOTDIR` turn that option on, as
-  NixOS does by default, or keep the history file in a directory of its own:
-  else the check warns for a zsh however new it is. The check reads zsh's
-  files by a list of the commands it knows to be harmless, each read by its
-  name and every word, so any other command it reads in your files where zsh
-  may run it makes it warn: an outside program, in the foreground or the
-  background (`stty`, `git` in `precmd`, `sh -c ...`, a script of yours), a
-  key binding other than `bindkey -e` or `bindkey -v`, a widget, a terminal
-  setting, and a name zsh runs as an outside program because no function of
-  it is certainly defined before it runs, or no alias, as an alias counts
-  only on a later line of the same file and in a file sourced after it, and
-  only where nothing may turn `ALIASES` off (see the operator guide). It reads
-  the files by rules that follow zsh 5.9 to 5.9.2 as far as its tests went, so
-  a form they read otherwise than zsh does can still pass. On NixOS, the
-  `/etc/zshrc` that `programs.zsh` generates runs the `hostname` program and
-  sources `/etc/zinputrc`, which binds keys and makes widgets, so a zsh that
-  reads it warns: type the decoy commands in a zsh started as `zsh -f`, which
-  reads `/etc/zshenv` and the `set-environment` NixOS writes, and passes where
-  you add nothing it warns about. The check knows the lines NixOS generates
-  as they are written, and follows `promptinit` into zsh's own directory and
-  the Nix profiles. It warns wherever your files autoload `compinit`, as
-  NixOS's `/etc/zshrc` does with `programs.zsh.enableCompletion` on, the
-  default, and nearly every `.zshrc` does: zsh's own completion functions run
-  what programs print as code as you complete a word, and the programs and
-  settings that may change what they print cannot all be listed (`tar` with a
-  `LANGUAGE` that names a message catalog of yours, `bash` with a
-  `BASH_ENV`). Beside a command off the list, it warns at
-  an alias, a `TRAP...` function, a `trap`, `ARGV0` or a variable of the
-  dynamic loader (`LD_...`) in your `.zshenv` or in
-  `programs.zsh.shellInit` or `interactiveShellInit`, which run before the
-  line of `/etc/zshrc` that runs `dircolors` and may change what it runs, an
-  `ARGV0` or a variable of the dynamic loader (`LD_...`) in the environment you
-  start the shell from, arithmetic in your files that names a parameter that
-  holds no number (`(( i++ ))` before `i` is set in it), a global alias your
-  files use or one named like an operator (`alias -g '>'=...`), any global alias
-  where a hook writes to a device, an `alias` word an expansion, brace
-  expansion or a glob may make a flag of (`alias $g`, `alias {-g,-g}`), a
-  `bindkey` word with a glob or a brace outside quotes, or an expansion there
-  that may make several words of it (`bindkey ^[[A up-line-or-search` written
-  without quotes, `bindkey $k`), `compctl`, an alias
-  named like a reserved word of the code's structure (`alias do=...`),
-  a builtin's word brace expansion or a glob may make a flag or a name of
-  (`setopt {-m,...}`, `functions {-c,f} preexec`), a `histchars` your files set,
-  `RC_QUOTES`, `IGNORE_BRACES` or `IGNORE_CLOSE_BRACES` where a function's `}`
-  follows a command's words, a `typeset -m`, which sets every parameter its
-  pattern matches, an `unset -m` whose pattern may match one the check reads
-  (`ZDOTDIR`, `HOME` and the like), a word of a builtin that sets or takes
-  away a parameter where an expansion, brace expansion or a glob may make its
-  options or the name (`private -$o x`, `typeset {a,b}=x`, `print "$x"`, which
-  `print -r -- "$x"` is not), an attribute that changes what `ZDOTDIR` or
-  `XDG_CONFIG_HOME` expands to or keeps a later assignment from setting it
-  (`typeset -l`, `readonly`, `typeset -a XDG_CONFIG_HOME`), an
-  `XDG_CONFIG_HOME` set otherwise than by an assignment or an `unset`
-  (`read`, `+=`), a `ZDOTDIR` or `XDG_CONFIG_HOME` whose `~` a quote or a
-  backslash keeps (`ZDOTDIR="~/.zd"`), a function or an alias named like a
-  builtin that sets one (`alias export=:`, `unset() { ... }`) or a `disable`
-  of one, an `autoload -X`, `ALIAS_FUNC_DEF` where an alias shares a
-  function's
-  name, a prompt with code where `PROMPT_SUBST` (or `PROMPT_VARS`) may be on, a
-  `NULLCMD` or `READNULLCMD` of any value in the environment you start the shell
-  from, a `TMOUT`, `PERIOD` or `REPORTTIME` (and the like) that is no number,
-  which zsh reads as arithmetic each time it uses it, in your files or in that
-  environment, or tied to another name (`typeset -T TMOUT tmout`), a `TMOUT`
-  above 0 there, with which zsh ends by itself at a prompt left waiting and
-  writes its history then (start the shell you type in without it,
-  `env -u TMOUT zsh -f`), a hook that may end the shell, which writes its
-  history as it ends (`exit`, in a `$(...)` too, `exec`, `kill -HUP $$`), a
-  job your files start that may signal the shell later
-  (`{ sleep 3; kill -HUP $$ } &!`, any program in the background, a process
-  substitution, `nohup`, `setsid`, the code a shell is given with `-c`), a
-  widget that sets the line zsh runs otherwise than to a value as written
-  (`LBUFFER=...`, `BUFFER="sudo $BUFFER"`) or runs a widget of zsh's own that
-  may put other text in it (`zle up-history`, as `up-line-or-beginning-search`
-  does), a line typed or set as written that zsh may expand history in (`!`),
-  a `.zshenv` that sets `ZDOTDIR` or `XDG_CONFIG_HOME` and is not yours, is a
-  link or is one you may not read by its mode, or whose first line holds more
-  than that one assignment, as the check then reads your home's startup files
-  too (keep `export ZDOTDIR=...` alone on the first line of a `.zshenv` you
-  own), a startup file with bytes that are no UTF-8 in it, a
-  builtin's name a hook runs as an outside program (after `command` or a
-  `disable` of it, or of a module zsh does not load, as `stat`), a file your
-  files source by a path with a modifier on `$HOME` (`source $HOME:a/x`), a
-  file your startup files write before zsh reads it (at any point, for one a
-  hook or another function reads), a function
-  or an alias named `sudo`, `doas`, `run0`, `pkexec`, `su` or `nails` (or the
-  path you start `nails` by) that writes a file or hands a program a word an
-  expansion makes (`nails() { sudo /mnt/data/nails "$@" }`; one that only runs
-  its own name through `command`, as `sudo() { command sudo "$@" }`, passes),
-  one named `run-help`, `which-command`, `man` or `run-help-...` that does
-  so, which zsh runs with the line you type as you press Alt-h or Alt-?, or
-  named like a widget a key runs them by (`.run-help`, a name `zle -A` gives
-  one), and a global alias named like a word of the NAILS commands you type
-  (`activate`, `--yes`) or like one of those commands.
-  For any other zsh than one from the Nix store, and when the check finds no
-  shell you typed into, it cannot tell where zsh finds a function your files
-  autoload (`promptinit` too), a doubt. With Home Manager's `programs.zsh`,
-  only `zsh -f` passes the check, as it names the options in `.zshrc` whether
-  it turns them on or off. A history tool that records each command itself,
-  such as atuin, writes as the command runs too. No kill takes back what such
-  a shell has written.
+  and so does Oh My Zsh), keep `fc -A`, `fc -W` and `fc -p` out of zsh's hooks
+  and `history -a` and `history -w` out of bash's `PROMPT_COMMAND`, and type
+  the decoy commands in fish only as `fish --private`. The
+  `incremental-history-flush` check reads bash's startup files and fish's
+  command line, but not zsh's startup files: a zsh the decoy commands are
+  typed into, or the operator's login zsh, always warns, whatever its files
+  hold, and so does a zsh the operator may use wherever one of its startup
+  files is there (`zshenv`, `zprofile`, `zshrc`, `zlogin` or `zlogout` in
+  `/etc` or `/etc/zsh`, and their dot files in the home). What zsh may run
+  from its files, its hooks, widgets and completion, and the programs those
+  start, cannot be read to a sure verdict, and nearly every real `.zshrc`
+  warned before for that reason, as zsh's own completion code runs what
+  programs print. So type the decoy commands in a bash with its history off,
+  a `fish --private` or dash, or check your zsh's files yourself. A history
+  tool that records each command itself, such as atuin, writes as the command
+  runs too. No kill takes back what such a shell has written.
 - **Terminal multiplexers.** Leave off the options that end a session when its
   last client goes: tmux's `destroy-unattached` and `exit-unattached`,
   screen's `autodetach off` and zellij's `on_force_close "quit"`. Activation

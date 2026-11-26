@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Reading a shell's startup files, and what bash's say about when it writes
-//! its history; zsh's are read by [`super::zsh`].
+//! Reading bash's startup files, and what they say about when it writes its
+//! history.
 //!
 //! bash's files are read as a login shell and an interactive one read them,
 //! together: `/etc/profile`, `/etc/bash.bashrc`, `/etc/bashrc`, then
@@ -37,12 +37,6 @@ const READ_LIMIT: u64 = 4 << 20;
 pub(super) struct Write {
     /// The setting and where it is made, as the warning names them.
     pub what: String,
-    /// Whether the shell writes a command line as it is entered, rather than
-    /// once the command ends.
-    pub entered: bool,
-    /// Whether it is one of zsh's options, which the check counts as on
-    /// wherever a file names it, a turn-off too.
-    pub option: bool,
 }
 
 /// What the check read of a shell's startup files.
@@ -53,13 +47,6 @@ pub(super) struct Scan {
     /// What the check could not follow, each as a clause of the warning
     /// (`it could not read ...`).
     pub doubts: Vec<String>,
-    /// Whether the files a zsh started with `-f` or `-d` reads may turn
-    /// `RCS` or `GLOBAL_RCS` on again, so that it reads what it would skip.
-    pub reopened: bool,
-    /// The doubts of the prompts that hold code zsh runs as it shows them,
-    /// which hold when `PROMPT_SUBST` is on: the files do not turn it on,
-    /// but a command line may.
-    pub prompts: Vec<String>,
 }
 
 /// The text of the startup file at `path`, read through `fs`: `Ok(None)` when
@@ -621,8 +608,6 @@ pub(super) fn bash<F: Filesystem>(fs: &F, homes: &[PathBuf]) -> Scan {
                 if let Some(command) = prompt_command_writes(&text) {
                     scan.writes.push(Write {
                         what: format!("{} runs `{command}` from PROMPT_COMMAND", path.display()),
-                        entered: false,
-                        option: false,
                     });
                 }
             }

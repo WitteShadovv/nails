@@ -526,11 +526,10 @@ pub fn build_registry<F: Filesystem>(
 
     // Warns (never fails) when the shell the command was typed into, else the
     // operator's login shell, writes each command line to its history file as
-    // it runs (zsh INC_APPEND_HISTORY, SHARE_HISTORY or
-    // INC_APPEND_HISTORY_TIME, bash `history -a` or `history -w` in
-    // PROMPT_COMMAND, fish outside private mode): it has written the decoy
-    // commands before activation kills it. Degrades to a skipped Pass when no
-    // shell could be found.
+    // it runs (bash `history -a` or `history -w` in PROMPT_COMMAND, fish
+    // outside private mode), or is a zsh, whose startup files it does not
+    // read: it has written the decoy commands before activation kills it.
+    // Degrades to a skipped Pass when no shell could be found.
     let shell = inputs
         .typed_shell
         .clone()

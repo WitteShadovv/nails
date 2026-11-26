@@ -5,55 +5,38 @@
 //!
 //! Warns, never fails. Activation SIGKILLs the decoy's interactive shells, so
 //! a shell that writes its history only when it ends never writes the decoy
-//! commands ([`nails_teardown::shells`]), unless it ends before that: of zsh,
-//! a hook that may end it, a job the startup files start that may signal it
-//! later, a line a widget may give it to run, a `TMOUT` above 0 and any
-//! command its startup code runs that is none of those the check knows to be
-//! harmless are doubts too ([`zsh`]). A shell that writes each command
-//! line to its history file as it runs has written them before activation
-//! starts, and no kill takes that back: zsh with `INC_APPEND_HISTORY` or
-//! `SHARE_HISTORY` as each line is entered, with `INC_APPEND_HISTORY_TIME`
-//! once each command ends, and with an `fc -A` or `fc -W` that a hook runs
-//! after each command, bash with `history -a` or `history -w` in
-//! `PROMPT_COMMAND` at the next prompt, and fish, unless it runs in private
-//! mode, as it starts each command. Refusing the activation would take none
-//! of those lines back, and with a shell that writes once a command ends it
-//! would add one: the refused activation ends, and its command line is written
-//! then. So the check warns, and names the shell and the setting.
+//! commands ([`nails_teardown::shells`]), unless it ends before that. A shell
+//! that writes each command line to its history file as it runs has written
+//! them before activation starts, and no kill takes that back: bash with
+//! `history -a` or `history -w` in `PROMPT_COMMAND` at the next prompt, fish,
+//! unless it runs in private mode, as it starts each command, and zsh with
+//! `INC_APPEND_HISTORY`, `INC_APPEND_HISTORY_TIME` or `SHARE_HISTORY`, or an
+//! `fc -A` or `fc -W` a hook runs. Refusing the activation would take none of
+//! those lines back, and with a shell that writes once a command ends it
+//! would add one: the refused activation ends, and its command line is
+//! written then. So the check warns, and names the shell and the setting.
 //!
 //! It reads the settings of the shell the running command was typed into, as
 //! its process tree shows ([`InspectedShell::typed`]). When it can only tell
 //! the shell the command was likely typed into, it reads that one's and every
 //! other shell's it knows; when it finds none (the command ran from a window,
 //! through `run0`, or the like), it reads the settings of every shell it knows,
-//! bash, zsh and the operator's login shell, and fish's when the operator's
-//! home has its configuration ([`InspectedShell::login`]). Of a shell it reads
-//! the startup files in `/etc` and in the home of the account the shell runs
-//! as, and in the operator's home when that is another ([`startup`], [`zsh`]),
-//! through the [`Filesystem`] seam: as root a read changes no file's access
-//! time, but a link on the way to one is followed and its access time can
-//! change. It never reads a history file. Of the shell the command was typed
-//! into it also reads, from `/proc`, the program it runs and the few
-//! variables of its environment that tell where zsh finds the functions it
-//! autoloads and the user's startup files, the prompts zsh takes from it and
-//! the parameters it reads as arithmetic each time it uses them (`TMOUT`)
-//! ([`zsh::Install`]), and when its process started: zsh keeps what it read
-//! as it started, so a file of zsh's it reads or looks for that changed
-//! after that is a doubt. What it cannot read or follow makes it warn that
-//! it cannot tell. Of zsh, any mention of an
-//! option counts as on, a turn-off too, as no reading of the files shows that
-//! one holds, so the fix it gives is one it can see: a zsh started as
-//! `zsh -f`, which reads `/etc/zshenv` alone (and `/etc/zshenv.local` on
-//! NixOS), or for such a zsh, what the check names taken out of those. It
-//! knows the settings of bash, zsh and fish, and that dash keeps no history
-//! file; of any other shell it warns that it cannot tell. It reads the
-//! options a zsh's command line turns on too. It does not see a setting typed
-//! into the shell, one a plugin manager's function makes, one an `eval` in
-//! bash's files makes (zsh's it reads, or warns of), a change of bash's files
-//! after the bash it reads started (zsh's it warns of), or one in the files of a
-//! shell started with others (`--rcfile`, or a `ZDOTDIR` from the environment
-//! of a shell that does not run yet), nor a prompt or a `TMOUT` the
-//! environment of such a shell may hold.
+//! bash and the operator's login shell, zsh when `/etc` or the operator's home
+//! holds one of its startup files, and fish when the home has its
+//! configuration ([`InspectedShell::login`]). Of bash it reads the startup
+//! files in `/etc` and in the home of the account the shell runs as, and in
+//! the operator's home when that is another ([`startup`]), through the
+//! [`Filesystem`] seam: as root a read changes no file's access time, but a
+//! link on the way to one is followed and its access time can change. It
+//! never reads a history file. It does not read zsh's startup files: what
+//! zsh may run from them, its hooks, widgets, completion and the programs
+//! they start, cannot be read to a verdict, so a zsh the decoy commands may
+//! be typed into always warns, and passes only where none of its startup
+//! files exists and it is not the shell the command was typed into. It knows
+//! that dash keeps no history file; of any other shell it warns that it
+//! cannot tell. It does not see a setting typed into the shell, one an `eval`
+//! in bash's files makes, a change of bash's files after the bash it reads
+//! started, or one in the files of a shell started with others (`--rcfile`).
 //!
 //! It reads through the automount guard ([`crate::filesystem::automount`]): a
 //! lookup that would mount an automount point that nothing is mounted on yet,
@@ -62,92 +45,12 @@
 //! looks up nothing, and warns.
 
 mod startup;
-mod zsh;
 
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::filesystem::automount::{Guarded, OnSkip, Snapshot, describe, settle};
 use crate::{Filesystem, Result, TargetUser};
-
-/// The commands an operator may type a NAILS command with as the line's
-/// first word: `sudo`, as the operator guide has it, the other ways to run
-/// one as root (`doas`, `run0`, `pkexec`, `su`), and `nails` itself. In zsh
-/// a function or a regular alias of such a name runs in that command's
-/// place, with the line.
-pub const TYPED_COMMANDS: [&str; 6] = ["sudo", "doas", "run0", "pkexec", "su", "nails"];
-
-/// The other words of the NAILS commands the operator guide has the operator
-/// type in the decoy: the name of every command `nails` lists, of `discard`,
-/// and of their steps (`rehearse scan`, `config set`), and every option they
-/// and `nails` take as it reads them, the global ones, `-h`, `-V` and the
-/// `-vv` its help names among them. In zsh a global alias of such a name
-/// runs in place of that word as the line is entered.
-pub const TYPED_WORDS: [&str; 62] = [
-    "check",
-    "activate",
-    "status",
-    "emergency",
-    "deactivate",
-    "recover",
-    "verify",
-    "rehearse",
-    "plant",
-    "scan",
-    "reset",
-    "init",
-    "config",
-    "path",
-    "show",
-    "validate",
-    "set",
-    "unset",
-    "discard",
-    "completions",
-    "help",
-    "-c",
-    "--config",
-    "-v",
-    "-vv",
-    "--verbose",
-    "-q",
-    "--quiet",
-    "--color",
-    "--ascii",
-    "--json",
-    "--no-log-file",
-    "-h",
-    "--help",
-    "-V",
-    "--version",
-    "-y",
-    "--yes",
-    "--nixos-flake",
-    "--dry-run",
-    "--overlay-only",
-    "--allow-persistent-decoy",
-    "--allow-decoy-storage",
-    "--allow-discards",
-    "--poweroff",
-    "--countdown",
-    "--reboot",
-    "--details",
-    "--deep",
-    "--offline",
-    "--root",
-    "--examiner",
-    "--disk",
-    "--user",
-    "--device",
-    "--image",
-    "--token-file",
-    "--allow-same-boot",
-    "--max-bytes",
-    "--example",
-    "--hardware-config",
-    "--no-hardware-config",
-];
 
 /// How the check found the shell whose settings it reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,21 +82,6 @@ pub struct InspectedShell {
     /// The program of the operator's login shell, read beside a shell the
     /// command was only likely typed into.
     pub login: Option<String>,
-    /// The file its process runs, as `/proc/<pid>/exe` names it; `None` for
-    /// a login shell, which may not run now, or when it cannot be read.
-    pub exe: Option<PathBuf>,
-    /// The variables of its environment that the check reads, those it keeps
-    /// ([`zsh::kept`]) that it holds, as `/proc/<pid>/environ` gives them;
-    /// `None` for a login shell, or when it cannot be read.
-    pub environment: Option<Vec<(String, String)>>,
-    /// When its process started ([`start_time`]), before it read any startup
-    /// file; `None` for a login shell, which may not run now, and an error
-    /// that says why when the check cannot read it.
-    pub started: Option<std::result::Result<SystemTime, String>>,
-    /// The user it opens its startup files as: its process's file system
-    /// uid, the operator's for a login shell; `None` when the check cannot
-    /// read it.
-    pub uid: Option<u32>,
 }
 
 impl InspectedShell {
@@ -205,10 +93,6 @@ impl InspectedShell {
             argv: Vec::new(),
             origin: ShellOrigin::Login,
             login: None,
-            exe: None,
-            environment: None,
-            started: None,
-            uid: Some(operator.uid),
         }
     }
 
@@ -240,9 +124,6 @@ impl InspectedShell {
             }
         };
         let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
-        let environment = std::fs::read(format!("/proc/{pid}/environ"))
-            .ok()
-            .and_then(|bytes| environment(&bytes));
         Some(Self {
             program: program_name(exe.as_deref(), proc::comm(pid))?,
             homes,
@@ -251,87 +132,8 @@ impl InspectedShell {
             login: operator
                 .filter(|_| origin == ShellOrigin::Likely)
                 .map(|operator| file_name(&operator.shell)),
-            exe,
-            environment,
-            started: Some(start_time(pid)),
-            uid: proc::fs_uid(pid),
         })
     }
-}
-
-/// The clock ticks a second in which `/proc/<pid>/stat` gives a process's
-/// start (`USER_HZ`, what `sysconf(_SC_CLK_TCK)` returns): 100 on every
-/// architecture NAILS builds for.
-const TICKS_PER_SECOND: u64 = 100;
-
-/// When the process `pid` started, in the clock the change times of files
-/// are written in: the boot time `/proc/stat` gives, in whole seconds, and
-/// the clock ticks since the boot that `/proc/<pid>/stat` gives
-/// ([`started_at`]). A process keeps the time it started across an `exec`.
-fn start_time(pid: u32) -> std::result::Result<SystemTime, String> {
-    let stat = std::fs::read_to_string("/proc/stat")
-        .map_err(|error| format!("/proc/stat cannot be read ({})", error.kind()))?;
-    let ticks = nails_teardown::proc::stat(pid)
-        .ok_or_else(|| format!("/proc/{pid}/stat cannot be read"))?
-        .start_time;
-    started_at(&stat, ticks).ok_or_else(|| "/proc/stat gives no boot time".to_string())
-}
-
-/// When a process started `ticks` clock ticks after the boot whose time
-/// `stat`, the text of `/proc/stat`, gives (`btime`): no later than it did,
-/// as that time is cut to the whole second.
-fn started_at(stat: &str, ticks: u64) -> Option<SystemTime> {
-    let boot: u64 = stat
-        .lines()
-        .find_map(|line| line.strip_prefix("btime "))?
-        .trim()
-        .parse()
-        .ok()?;
-    let since_boot = Duration::from_secs(ticks / TICKS_PER_SECOND)
-        + Duration::from_millis(ticks % TICKS_PER_SECOND * (1000 / TICKS_PER_SECOND));
-    Some(UNIX_EPOCH + Duration::from_secs(boot) + since_boot)
-}
-
-/// The variables the check keeps ([`zsh::kept`]) that `bytes`, a process's
-/// `/proc/<pid>/environ`, holds, each once, as the first that names it sets
-/// it, as zsh takes it; no other is kept, but that a variable of the dynamic
-/// loader is set, kept as [`zsh::LOADER`] without its value. `None` when one
-/// of them holds what is no UTF-8, a path the check cannot name as zsh reads
-/// it; the value of a prompt, `MAILPATH`, `NULLCMD` or `READNULLCMD`, which
-/// the check reads only for an expansion in it or not at all, and of a
-/// parameter zsh reads as arithmetic each time it uses it (`TMOUT`), which
-/// it reads only for whether it is a number, is kept with what is no UTF-8
-/// replaced ([`zsh::lossy`]).
-fn environment(bytes: &[u8]) -> Option<Vec<(String, String)>> {
-    let mut found: Vec<(String, String)> = Vec::new();
-    for entry in bytes.split(|byte| *byte == 0) {
-        let Some(at) = entry.iter().position(|byte| *byte == b'=') else {
-            continue;
-        };
-        let (name, value) = (&entry[..at], &entry[at + 1..]);
-        if name.starts_with(zsh::LOADER.as_bytes()) {
-            if !found.iter().any(|(known, _)| known == zsh::LOADER) {
-                found.push((zsh::LOADER.to_string(), String::new()));
-            }
-            continue;
-        }
-        let Some(name) = std::str::from_utf8(name)
-            .ok()
-            .filter(|name| zsh::kept(name))
-        else {
-            continue;
-        };
-        if found.iter().any(|(known, _)| known == name) {
-            continue;
-        }
-        let value = if zsh::lossy(name) {
-            String::from_utf8_lossy(value).into_owned()
-        } else {
-            String::from_utf8(value.to_vec()).ok()?
-        };
-        found.push((name.to_string(), value));
-    }
-    Some(found)
 }
 
 /// The name a shell's process is known by: the file name of the program its
@@ -377,33 +179,27 @@ fn kind(program: &str) -> Kind {
     }
 }
 
-/// The fix for a zsh that may write each command line as it runs, one the
-/// check can see: such a zsh reads only `/etc/zshenv`, and the zsh of
-/// nixpkgs `/etc/zshenv.local` too on NixOS. A fix in the startup
-/// files is none it could see on NixOS or with Home Manager, whose generated
-/// files name the options whether they turn them on or off, or hold what the
-/// check cannot follow (a `compinit`, whose completion code it cannot read).
-const ZSH_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, which reads no \
-                       startup file but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
+/// The fix for a zsh, whose startup files the check does not read: a shell
+/// whose settings it can read.
+const ZSH_FIX: &str = "Type the decoy commands in a shell the check reads: a bash whose \
+                       PROMPT_COMMAND runs no `history -a` or `history -w`, a fish started as \
+                       `fish --private`, or dash.";
 
-/// The fix for a zsh started with `-f` that may write each command line as
-/// it runs: what it reads is in `/etc/zshenv`, or `/etc/zshenv.local`.
-const BARE_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
-                            /etc/zshenv.local too, and what they source, so take what the \
-                            check names out of them.";
-
-/// The fix for a zsh started with `-f` whose `/etc/zshenv` may turn `RCS`
-/// on again, so that it reads every other startup file too.
-const REOPENED_ZSH_FIX: &str = "A zsh started as `zsh -f` still reads /etc/zshenv, on NixOS \
-                                /etc/zshenv.local too, and what they source, and as they name \
-                                RCS or GLOBAL_RCS, it may read the other startup files too: \
-                                take that out of them.";
-
-/// The fix for a zsh whose command line turns an option on, or makes it
-/// read other startup files.
-const COMMAND_LINE_FIX: &str = "Type the decoy commands in a zsh started as `zsh -f`, with \
-                                nothing else on its command line, which reads no startup file \
-                                but /etc/zshenv and, on NixOS, /etc/zshenv.local.";
+/// zsh's startup files in `/etc`, as Debian, Ubuntu and Arch (`/etc/zsh`) and
+/// Fedora and NixOS (`/etc`) keep them, and in a home.
+const ZSH_SYSTEM_FILES: [&str; 10] = [
+    "/etc/zshenv",
+    "/etc/zprofile",
+    "/etc/zshrc",
+    "/etc/zlogin",
+    "/etc/zlogout",
+    "/etc/zsh/zshenv",
+    "/etc/zsh/zprofile",
+    "/etc/zsh/zshrc",
+    "/etc/zsh/zlogin",
+    "/etc/zsh/zlogout",
+];
+const ZSH_HOME_FILES: [&str; 5] = [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"];
 
 /// What a write after every command means for the decoy commands.
 const ON_DISK: &str = "the commands typed in it are on the decoy disk once it writes them, and \
@@ -432,21 +228,13 @@ impl IncrementalHistoryFlushCheck {
     }
 }
 
-/// One shell to judge: its program, its homes, how zsh would read its files,
-/// and its part, as a message names it.
+/// One shell to judge: its program, its homes, its command line and its
+/// part, as a message names it.
 struct Judged<'a> {
     program: &'a str,
     homes: &'a [PathBuf],
     argv: &'a [String],
-    zsh: zsh::Start,
     part: &'a str,
-    /// The file its process runs, the variables of its environment the
-    /// check reads and when it started, when it runs now, and the user it
-    /// opens its files as.
-    exe: Option<&'a Path>,
-    environment: Option<&'a [(String, String)]>,
-    started: Option<&'a std::result::Result<SystemTime, String>>,
-    uid: Option<u32>,
 }
 
 /// The result for one shell, whose startup files `fs` holds.
@@ -454,37 +242,12 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
     let program = nails_teardown::shells::unwrapped(shell.program);
     let part = shell.part;
     match kind(program) {
-        Kind::Zsh => {
-            let mut install = zsh::Install::of(fs, shell.exe, shell.environment);
-            install.started = shell.started.cloned();
-            install.uid = shell.uid;
-            let mut scan = zsh::zsh(fs, shell.homes, shell.zsh, &install);
-            let line = zsh::CommandLine::of(shell.argv);
-            let writes = line.writes();
-            let fix = if !writes.is_empty() || !line.doubts.is_empty() {
-                COMMAND_LINE_FIX
-            } else if shell.zsh.rcs {
-                ZSH_FIX
-            } else if scan.reopened {
-                REOPENED_ZSH_FIX
-            } else {
-                BARE_ZSH_FIX
-            };
-            scan.writes.extend(writes);
-            scan.doubts.extend(line.doubts);
-            if line.prompt_subst {
-                let prompts = std::mem::take(&mut scan.prompts);
-                scan.doubts.extend(prompts);
-            }
-            // A zsh whose only doubt is what changed after it started reads
-            // its files as they are now once started again.
-            let restart = scan
-                .writes
-                .is_empty()
-                .then(|| zsh::restart_fix(&scan.doubts))
-                .flatten();
-            judge_zsh(&scan, program, part, restart.unwrap_or(fix))
-        }
+        Kind::Zsh => CheckResult::Warn(format!(
+            "NAILS does not read zsh's startup files, so it cannot tell whether {program} \
+             ({part}) writes each command line to its history file as it runs, as \
+             INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME, SHARE_HISTORY or an `fc -A` or \
+             `fc -W` in a hook make it do. If it does, {ON_DISK}. {ZSH_FIX}"
+        )),
         Kind::Bash => judge_bash(&startup::bash(fs, shell.homes), program, part),
         Kind::Fish if nails_teardown::shells::fish_is_private(shell.argv) => CheckResult::Pass(
             format!("{program} ({part}) runs in private mode and writes no history"),
@@ -496,56 +259,12 @@ fn judge_one<F: Filesystem>(fs: &F, shell: &Judged) -> CheckResult {
         )),
         Kind::NoHistory => CheckResult::Pass(format!("{program} ({part}) keeps no history file")),
         Kind::Unknown => CheckResult::Warn(format!(
-            "NAILS reads the history settings of bash, zsh and fish only, so it cannot tell \
-             whether {program}, {part}, writes each command line to a history file as it runs, \
-             as the Korn shells, yash, nu and elvish can. If it does, {ON_DISK}. Type the decoy \
+            "NAILS reads the history settings of bash and fish only, so it cannot tell whether \
+             {program}, {part}, writes each command line to a history file as it runs, as the \
+             Korn shells, yash, nu and elvish can. If it does, {ON_DISK}. Type the decoy \
              commands in a shell whose history is off."
         )),
     }
-}
-
-/// The result for a zsh whose startup files gave `scan`. No reading of them
-/// can show that a turn-off holds, so any mention of the options counts as
-/// on; `fix` is one the check can see ([`ZSH_FIX`], [`BARE_ZSH_FIX`]).
-fn judge_zsh(scan: &startup::Scan, program: &str, part: &str, fix: &str) -> CheckResult {
-    let doubts = (!scan.doubts.is_empty()).then(|| scan.doubts.join("; "));
-    if scan.writes.is_empty() {
-        return match doubts {
-            None => CheckResult::Pass(format!(
-                "{program} ({part}): no startup file the check reads names \
-                 INC_APPEND_HISTORY, INC_APPEND_HISTORY_TIME or SHARE_HISTORY, or holds an `fc` \
-                 that writes the history file"
-            )),
-            Some(doubts) => CheckResult::Warn(format!(
-                "The check cannot tell whether {program}, {part}, writes each command line to \
-                 its history file as it runs: {doubts}. If it does, {ON_DISK}. {fix}"
-            )),
-        };
-    }
-    let when = if scan.writes.iter().any(|write| write.entered) {
-        "as you enter it"
-    } else {
-        "once the command ends"
-    };
-    let what: Vec<&str> = scan
-        .writes
-        .iter()
-        .map(|write| write.what.as_str())
-        .collect();
-    let unread = doubts
-        .map(|doubts| format!(" Beyond that, {doubts}."))
-        .unwrap_or_default();
-    let counts = if scan.writes.iter().any(|write| write.option) {
-        " The check counts any mention of these options as on, as no reading of the startup \
-         files can show that a turn-off holds."
-    } else {
-        ""
-    };
-    CheckResult::Warn(format!(
-        "{program}, {part}, may write each command line to its history file {when}: {}.{counts} \
-         So {ON_DISK}. {fix}{unread}",
-        what.join("; ")
-    ))
 }
 
 /// The result for a bash whose startup files gave `scan`.
@@ -589,27 +308,16 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 program: &shell.program,
                 homes: &shell.homes,
                 argv: &shell.argv,
-                zsh: zsh::Start::of(&shell.argv),
                 part: "the shell this command was typed into",
-                exe: shell.exe.as_deref(),
-                environment: shell.environment.as_deref(),
-                started: shell.started.as_ref(),
-                uid: shell.uid,
             },
         ),
         ShellOrigin::Likely => {
-            // Its command line is its own: what it turns on counts, but zsh
-            // is taken to read every startup file it may read.
             let mut first = vec![Judged {
                 argv: &shell.argv,
-                exe: shell.exe.as_deref(),
-                environment: shell.environment.as_deref(),
-                started: shell.started.as_ref(),
                 ..unsure(
                     &shell.program,
                     &shell.homes,
                     "the shell this command was likely typed into",
-                    shell.uid,
                 )
             }];
             first.extend(
@@ -617,9 +325,7 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                     .login
                     .as_deref()
                     .filter(|login| !same_shell(login, &shell.program))
-                    .map(|login| {
-                        unsure(login, &shell.homes, "the operator's login shell", shell.uid)
-                    }),
+                    .map(|login| unsure(login, &shell.homes, "the operator's login shell")),
             );
             let program = nails_teardown::shells::unwrapped(&shell.program);
             every_shell(
@@ -637,7 +343,6 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
                 &shell.program,
                 &shell.homes,
                 "the operator's login shell",
-                shell.uid,
             )],
             "This command was not typed into a shell the check can see, so it read the startup \
              files of every shell it knows",
@@ -646,29 +351,13 @@ fn judge<F: Filesystem>(fs: &F, shell: &InspectedShell) -> CheckResult {
 }
 
 /// `program`, which the decoy commands may have been typed into, read as any
-/// shell the operator may use, as the user `uid` when the check knows it: no
-/// command line tells how it started, so zsh is taken to read every startup
-/// file it may read.
-fn unsure<'a>(
-    program: &'a str,
-    homes: &'a [PathBuf],
-    part: &'a str,
-    uid: Option<u32>,
-) -> Judged<'a> {
+/// shell the operator may use: no command line tells how it started.
+fn unsure<'a>(program: &'a str, homes: &'a [PathBuf], part: &'a str) -> Judged<'a> {
     Judged {
         program,
         homes,
         argv: &[],
-        zsh: zsh::Start {
-            login: None,
-            rcs: true,
-            global_rcs: true,
-        },
         part,
-        exe: None,
-        environment: None,
-        started: None,
-        uid,
     }
 }
 
@@ -679,51 +368,75 @@ fn same_shell(a: &str, b: &str) -> bool {
     unwrapped(a) == unwrapped(b) || (kind(a) == kind(b) && kind(a) != Kind::Unknown)
 }
 
-/// The result for the shells `first`, then bash, zsh and, when one of their
-/// homes has its configuration, fish, each that `first` does not hold already;
-/// `preface` says why the check reads them all. A home where NAILS cannot
-/// tell whether fish keeps its configuration warns that it cannot tell
-/// whether fish writes each command line as it runs.
-fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> CheckResult {
-    let homes = first.first().map_or(&[][..], |shell| shell.homes);
-    let uid = first.first().and_then(|shell| shell.uid);
-    let mut has_fish = false;
-    let mut fish_untold: Vec<String> = Vec::new();
-    for home in homes {
-        let settings = home.join(".config/fish");
-        match fs.path_exists(&settings) {
-            Ok(present) => has_fish |= present,
+/// Whether any of `paths` is there, and a sentence for each lookup that
+/// fails, saying that NAILS cannot tell whether `shell` writes each command
+/// line as it runs.
+fn any_there<F: Filesystem>(fs: &F, paths: &[PathBuf], shell: &str) -> (bool, Vec<String>) {
+    let mut there = false;
+    let mut untold = Vec::new();
+    for path in paths {
+        match fs.path_exists(path) {
+            Ok(present) => there |= present,
             Err(error) => {
-                let shown = settings.display().to_string();
-                fish_untold.push(format!(
-                    "NAILS cannot tell whether fish keeps its settings in {shown}, so it cannot \
-                     tell whether fish writes each command line as it runs: {}.",
+                let shown = path.display().to_string();
+                untold.push(format!(
+                    "NAILS cannot tell whether {shell} keeps its settings in {shown}, so it \
+                     cannot tell whether {shell} writes each command line as it runs: {}.",
                     describe(&shown, &error).sentence
                 ));
             }
         }
     }
+    (there, untold)
+}
+
+/// The result for the shells `first`, then bash, and zsh and fish where one
+/// of their startup files or their configuration is there, each that `first`
+/// does not hold already; `preface` says why the check reads them all. A
+/// place where NAILS cannot tell whether zsh or fish keeps its settings warns
+/// that it cannot tell whether that shell writes each command line as it
+/// runs.
+fn every_shell<F: Filesystem>(fs: &F, first: Vec<Judged>, preface: &str) -> CheckResult {
+    let homes = first.first().map_or(&[][..], |shell| shell.homes);
+    let fish_paths: Vec<PathBuf> = homes.iter().map(|home| home.join(".config/fish")).collect();
+    let zsh_paths: Vec<PathBuf> = ZSH_SYSTEM_FILES
+        .iter()
+        .map(PathBuf::from)
+        .chain(
+            homes
+                .iter()
+                .flat_map(|home| ZSH_HOME_FILES.iter().map(|file| home.join(file))),
+        )
+        .collect();
+    let (has_fish, fish_untold) = any_there(fs, &fish_paths, "fish");
+    let (has_zsh, zsh_untold) = any_there(fs, &zsh_paths, "zsh");
     let mut shells = first;
-    let fish_known = shells.iter().any(|shell| same_shell(shell.program, "fish"));
-    for other in ["bash", "zsh", "fish"] {
-        let known = shells.iter().any(|shell| same_shell(shell.program, other));
-        if !known && (other != "fish" || has_fish) {
-            shells.push(unsure(other, homes, "a shell the operator may use", uid));
+    let known = |shells: &[Judged], other: &str| {
+        shells.iter().any(|shell| same_shell(shell.program, other))
+    };
+    let fish_known = known(&shells, "fish");
+    let zsh_known = known(&shells, "zsh");
+    for (other, there) in [("bash", true), ("zsh", has_zsh), ("fish", has_fish)] {
+        if !known(&shells, other) && there {
+            shells.push(unsure(other, homes, "a shell the operator may use"));
         }
     }
     let results: Vec<CheckResult> = shells.iter().map(|shell| judge_one(fs, shell)).collect();
-    // Fish read as one of the shells says more than a home that may hold its
-    // configuration.
-    let fish_untold = if fish_known || has_fish {
-        Vec::new()
-    } else {
-        fish_untold
-    };
+    // A shell read as one of the shells says more than a place that may hold
+    // its settings.
+    let untold: Vec<&str> = [
+        (fish_known || has_fish, &fish_untold),
+        (zsh_known || has_zsh, &zsh_untold),
+    ]
+    .into_iter()
+    .filter(|(read, _)| !read)
+    .flat_map(|(_, untold)| untold.iter().map(String::as_str))
+    .collect();
     let warnings: Vec<&str> = results
         .iter()
         .filter(|result| matches!(result, CheckResult::Warn(_)))
         .map(CheckResult::message)
-        .chain(fish_untold.iter().map(String::as_str))
+        .chain(untold)
         .collect();
     if warnings.is_empty() {
         let passes: Vec<&str> = results.iter().map(CheckResult::message).collect();

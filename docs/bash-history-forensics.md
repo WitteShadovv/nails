@@ -67,8 +67,9 @@ NAILS does at runtime is:
    `history -a` or `history -w` in bash's `PROMPT_COMMAND`, fish outside
    private mode), because such a shell writes
    the unlock and mount commands to disk before activation can help. It reads
-   that shell's startup files, never a history file, and says so when it
-   cannot tell (see [operator-guide.md](./operator-guide.md#shell-history)).
+   bash's startup files, never a history file, and says so when it cannot
+   tell; zsh's it does not read, so a zsh always warns (see
+   [operator-guide.md](./operator-guide.md#shell-history)).
 
 Journal, audit and accounting surfaces are host-policy concerns: NAILS does not
 enable them, and an operator who turns them on must account for them separately.
