@@ -433,8 +433,8 @@ class HiddenDrives(unittest.TestCase):
             "lsblk -nrspo PATH,TYPE,SERIAL /dev/mapper/hid": (
                 "/dev/mapper/hid crypt \n/dev/loop0 loop "
             ),
-            "losetup -nO BACK-FILE /dev/loop0": "/srv/c.img\n",
-            "--target /srv/c.img": "/dev/vdc ext4 /srv",
+            "BACK-FILE --raw /dev/loop0": "254:32 /srv/c.img\n",
+            "readlink /sys/dev/block/254:32": "vdc",
             "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdc": "/dev/vdc disk data",
         }
         blockwrites.before_switch(machine, "activate")
@@ -533,7 +533,7 @@ class HiddenVolume(unittest.TestCase):
                 "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdb": "/dev/vdb disk b",
             }
         )
-        self.assertIn("the subvolume /@hidden", subvolume.shared["b"])
+        self.assertIn("only /@hidden of its btrfs filesystem", subvolume.shared["b"])
 
     def test_a_hidden_volume_in_ram_lies_on_no_drive(self) -> None:
         for answers in (
@@ -542,15 +542,31 @@ class HiddenVolume(unittest.TestCase):
                 "--target /mnt/hidden": "/dev/zram0 ext4 /mnt/hidden",
                 "lsblk -nrspo PATH,TYPE,SERIAL /dev/zram0": "/dev/zram0 disk ",
             },
+            # The distribution tests' file on a tmpfs, by another path here.
             {
-                "--target /mnt/hidden": "/dev/loop1 ext4 /mnt/hidden",
-                "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
-                "losetup -nO BACK-FILE /dev/loop1": "/tmp/h.img",
-                "--target /tmp/h.img": "tmpfs tmpfs /tmp",
+                "--target /mnt/hidden": "/dev/mapper/data ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/mapper/data": (
+                    "/dev/mapper/data crypt \n/dev/loop1 loop "
+                ),
+                "losetup -nO BACK-MAJ:MIN,BACK-FILE --raw /dev/loop1": "0:45 /data.img",
+                "findmnt -nro MAJ:MIN,FSTYPE": "0:30 overlay\n0:45 tmpfs",
             },
         ):
             volume = self.volume(answers)
             self.assertEqual((volume.alone, volume.shared), (set(), {}), answers)
+
+    def test_a_file_on_btrfs_is_found_by_its_path(self) -> None:
+        volume = self.volume(
+            {
+                "--target /mnt/hidden": "/dev/loop1 ext4 /mnt/hidden",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
+                "BACK-FILE --raw /dev/loop1": "0:52 /srv/h.img",
+                "findmnt -nro MAJ:MIN,FSTYPE": "0:52 btrfs",
+                "--target /srv/h.img": "/dev/vdc[/@srv] btrfs /srv",
+                "lsblk -nrspo PATH,TYPE,SERIAL /dev/vdc": "/dev/vdc disk c",
+            }
+        )
+        self.assertEqual(volume.shared, {"c": "the file /srv/h.img holds it"})
 
     def test_what_it_cannot_tell_raises(self) -> None:
         for answers, why in (
@@ -561,6 +577,15 @@ class HiddenVolume(unittest.TestCase):
                     "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
                 },
                 "no backing file",
+            ),
+            (
+                {
+                    "--target /mnt/hidden": "/dev/loop1 ext4 /mnt/hidden",
+                    "lsblk -nrspo PATH,TYPE,SERIAL /dev/loop1": "/dev/loop1 loop ",
+                    "losetup -nO BACK-MAJ:MIN,BACK-FILE --raw /dev/loop1": "0:9 /x",
+                    "findmnt -nro MAJ:MIN,FSTYPE": "0:30 overlay",
+                },
+                "is not mounted here",
             ),
         ):
             with self.assertRaises(ValueError) as raised:

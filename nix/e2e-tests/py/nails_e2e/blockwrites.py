@@ -1243,11 +1243,8 @@ def _place(
 ) -> None:
     """Add the drives ``path`` lies on to ``volume``; ``beside``, when known,
     is the other data they hold."""
-    if depth > 3:
-        raise ValueError(f"{path} lies below too many loop devices")
-    quoted = shlex.quote(path)
     line = machine.succeed(
-        f"findmnt -nro SOURCE,FSTYPE,TARGET --target {quoted} | head -n 1"
+        f"findmnt -nro SOURCE,FSTYPE,TARGET --target {shlex.quote(path)} | head -n 1"
     ).strip()
     source, fstype, target = _row(line, 3)
     device, _, sub = source.partition("[")
@@ -1256,9 +1253,25 @@ def _place(
     if not device.startswith("/dev/"):
         raise ValueError(f"{path} lies on {source or 'nothing'} ({fstype})")
     if beside is None and sub.strip("]/"):
-        beside = f"{path} is the subvolume {sub.rstrip(']')} of its filesystem"
+        # A btrfs subvolume, or a directory bind-mounted alone.
+        beside = f"{path} is only {sub.rstrip(']')} of its {fstype} filesystem"
     if beside is None and os.path.normpath(target) != os.path.normpath(path):
         beside = f"{path} is a folder of the filesystem at {target}"
+    _below(machine, device, path, volume, beside, depth)
+
+
+def _below(
+    machine: Any,
+    device: str,
+    what: str,
+    volume: HiddenVolume,
+    beside: str | None,
+    depth: int,
+) -> None:
+    """Add the drives below the block ``device`` (that ``what`` lies on) to
+    ``volume``."""
+    if depth > 3:
+        raise ValueError(f"{what} lies below too many loop devices")
     chain: set[str] = set()
     disks: list[tuple[str, str]] = []
     for row in machine.succeed(
@@ -1267,18 +1280,14 @@ def _place(
         name, kind, serial = _row(row, 3)
         chain.add(name)
         if kind == "loop":
-            back = machine.succeed(f"losetup -nO BACK-FILE {shlex.quote(name)}")
-            back = back.strip()
-            if not back:
-                raise ValueError(f"{name}, below {path}, has no backing file")
-            _place(machine, back, volume, f"the file {back} holds it", depth + 1)
+            _backing(machine, name, what, volume, depth)
         elif kind == "disk" and not _RAM_DEVICE.fullmatch(name):
             if not serial:
-                raise ValueError(f"{name}, below {path}, has no serial")
+                raise ValueError(f"{name}, below {what}, has no serial")
             disks.append((name, serial))
     for disk, serial in disks:
-        what = beside
-        if what is None:
+        shared = beside
+        if shared is None:
             others = [
                 f"{name} ({fs})"
                 for name, fs in (
@@ -1289,11 +1298,46 @@ def _place(
                 )
                 if fs and name not in chain
             ]
-            what = ("it also holds " + ", ".join(others)) if others else None
-        if what is None:
+            shared = ("it also holds " + ", ".join(others)) if others else None
+        if shared is None:
             volume.alone.add(serial)
         else:
-            volume.shared[serial] = what
+            volume.shared[serial] = shared
+
+
+def _backing(
+    machine: Any, loop: str, what: str, volume: HiddenVolume, depth: int
+) -> None:
+    """Add the drives that hold the backing file of ``loop`` to ``volume``.
+    The file is found by its filesystem's device number: the path the loop
+    device keeps is the one its file had where it was set up, which the
+    hidden root may not show (the distribution tests' file on a tmpfs at
+    ``/run/blk`` is ``/data.img`` there)."""
+    row = machine.succeed(f"losetup -nO BACK-MAJ:MIN,BACK-FILE --raw {loop}")
+    number, back = _row(row.strip(), 2)
+    if ":" not in number:
+        raise ValueError(f"{loop}, below {what}, has no backing file")
+    beside = f"the file {back} holds it"
+    if not number.startswith("0:"):
+        name = machine.succeed(
+            f'basename "$(readlink /sys/dev/block/{number})"'
+        ).strip()
+        if not name:
+            raise ValueError(f"no block device has the number {number} of {back}")
+        _below(machine, f"/dev/{name}", back, volume, beside, depth + 1)
+        return
+    # No block device of its own: a tmpfs, or a filesystem such as btrfs that
+    # gives each subvolume an anonymous number.
+    fstypes = dict(
+        _row(line, 2)
+        for line in machine.succeed("findmnt -nro MAJ:MIN,FSTYPE").splitlines()
+    )
+    fstype = fstypes.get(number)
+    if fstype in _IN_RAM:
+        return
+    if fstype is None:
+        raise ValueError(f"the filesystem of {back} ({number}) is not mounted here")
+    _place(machine, back, volume, beside, depth + 1)
 
 
 def skip_control(machine: Any, why: str) -> None:
